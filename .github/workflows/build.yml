@@ -1,51 +1,66 @@
-name: Build workflow
+name: BTR unsigned tvOS IPA
 on:
-  pull_request:
+  workflow_dispatch:
   push:
-    branches: [ "main" ]
-
+    branches: [btr-port]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: btr-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
-    name: Build ipa
     runs-on: macos-26
-    permissions:
-      contents: write
+    timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: 'latest-stable'
-      - name: Build
-        run: |
-          fastlane build_unsign_ipa
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+          xcode-version: latest-stable
+      - uses: actions/setup-node@v4
         with:
-          name: BilbiliAtvDemo.ipa
-          path: BilbiliAtvDemo.ipa
-
-      # - name: List, filter and delete artifacts
-      #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-      #   uses: actions/github-script@v6
-      #   id: artifact
-      #   with:
-      #     script: |
-      #       const { owner, repo } = context.issue
-            
-      #       const res = await github.rest.actions.listArtifactsForRepo({
-      #         owner,
-      #         repo,
-      #       })
-            
-      #       res.data.artifacts
-      #         .forEach(({ id }) => { github.rest.actions.deleteArtifact({ owner, repo, artifact_id: id, }) })
-
-      - name: Delete GitHub release if exist then create release
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.repository.fork == false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          node-version: '22'
+      - name: Native policy and fault-injection tests
         run: |
-          mv BilbiliAtvDemo.ipa BilbiliAtvDemo-unsigned.ipa
-          gh release view "nightly" && gh release delete "nightly" -y --cleanup-tag
-          gh release create "nightly" BilbiliAtvDemo-unsigned.ipa -t "Nightly" -p
+          set -o pipefail
+          mkdir -p build
+          bash scripts/test-btr.sh 2>&1 | tee build/tests.log
+      - name: Archive without signing
+        run: |
+          set -o pipefail
+          xcodebuild -version | tee build/toolchain.txt
+          xcodebuild -project BilibiliLive.xcodeproj -scheme BilibiliLive \
+            -configuration Release -sdk appletvos -destination 'generic/platform=tvOS' \
+            -archivePath "$PWD/build/BTR.xcarchive" \
+            -resultBundlePath "$PWD/build/Archive.xcresult" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' DEVELOPMENT_TEAM='' SKIP_SWIFTFORMAT=YES archive 2>&1 | tee build/archive.log
+      - name: Package unsigned IPA and matching source
+        run: |
+          set -euo pipefail
+          test -d build/BTR.xcarchive/Products/Applications/BilibiliLive.app
+          mkdir -p build/package/Payload
+          ditto build/BTR.xcarchive/Products/Applications/BilibiliLive.app build/package/Payload/BilibiliLive.app
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleSupportedPlatforms:0' build/package/Payload/BilibiliLive.app/Info.plist | grep -x AppleTVOS
+          (cd build/package && zip -qry ../ATV-BTR-unsigned.ipa Payload)
+          git archive --format=zip --output=build/ATV-BTR-source.zip HEAD
+          git rev-parse HEAD > build/source-commit.txt
+          shasum -a 256 build/ATV-BTR-unsigned.ipa > build/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ATV-BTR-unsigned
+          if-no-files-found: error
+          path: |
+            build/ATV-BTR-unsigned.ipa
+            build/ATV-BTR-source.zip
+            build/source-commit.txt
+            build/SHA256.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: BTR-build-diagnostics
+          path: |
+            build/*.log
+            build/toolchain.txt
+            build/Archive.xcresult
