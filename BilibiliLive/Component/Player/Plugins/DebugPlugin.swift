@@ -96,6 +96,7 @@ class DebugPlugin: NSObject, CommonPlayerPlugin {
         player status:\(player.status.rawValue)
         """
 
+        if let extra = additionDebugInfo?(), !extra.isEmpty { logs = extra + "\n" + logs }
         guard let log = player.currentItem?.accessLog() else { return logs }
         guard let item = log.events.last else { return logs }
         // 完整 uri 有几百字符，会把浮层其他信息挤掉，只显示 host（完整地址在日志里）
@@ -116,9 +117,7 @@ class DebugPlugin: NSObject, CommonPlayerPlugin {
         indicatedAverageBitrate:\(bitrateStr(indicatedBitrate))
         """
 
-        if let additionDebugInfo = additionDebugInfo?(), !additionDebugInfo.isEmpty {
-            logs = additionDebugInfo + "\n" + logs
-        }
+
         if customInfo.isEmpty == false {
             logs = logs + "\n" + customInfo
         }

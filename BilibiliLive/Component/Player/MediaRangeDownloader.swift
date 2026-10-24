@@ -2,7 +2,7 @@
 //  MediaRangeDownloader.swift
 //  BilibiliLive
 //
-//  会话级自适应多 CDN 并发 Range 下载器（PR2）。
+//  BTR native port: priority queue, weighted assignment, resumable hedging.
 //  职责：有界并发、子块切分、CDN 健康模型、慢请求竞速、严格校验、有序流式交付。
 //  状态限定在当前媒体流/播放会话内，不跨视频持久化，不持有全局 CDN 排名。
 //
@@ -19,28 +19,83 @@ actor MediaDownloadBudget {
     static let shared = MediaDownloadBudget()
 
     /// 同时进行的全局请求上限（内部参数，实测调整）。
-    private let globalMax = 12
+    private let globalMax = 64
     /// 同 host 上限（内部参数，实测调整）。
-    private let perHostMax = 4
+    private let perHostMax = 8
 
     /// 已发出的有效许可集合；释放时必须持有对应 token，否则忽略。
     private var outstanding = Set<BudgetPermit>()
     private var perHostActive = [String: Int]()
+    private var owners = [BudgetPermit: BTRPlaybackSession]()
 
-    /// 立即尝试获取许可；无槽位时返回 nil（由调用方有界等待后重试）。
-    func tryAcquireNow(host: String) -> BudgetPermit? {
-        guard outstanding.count < globalMax,
-              (perHostActive[host] ?? 0) < perHostMax
-        else { return nil }
-        let permit = BudgetPermit(host: host)
-        outstanding.insert(permit)
-        perHostActive[host, default: 0] += 1
-        return permit
+    private struct Waiter {
+        let id: UUID
+        let host: String
+        let priority: Int
+        let sequence: Int
+        let queuedAt: Double
+        let session: BTRPlaybackSession?
+        let deadline: BTRDeadline?
+        let queueClass: Int
+        func rank(_ now: Double) -> Double {
+            let due = deadline?.value ?? .infinity
+            guard due.isFinite else { return Double(priority) }
+            let left = due - now
+            let urgency = left <= 0 ? 12.0 : left <= 750 ? 9.0 : left <= 2000 ? 6.0 : 0
+            return Double(priority) + urgency + (queueClass == 2 ? (now - queuedAt) * 20 / 900 : 0)
+        }
+    }
+    private var waiting = [Waiter]()
+    private var sequence = 0
+    private func activeCount(_ session: BTRPlaybackSession) -> Int { owners.values.filter { $0.id == session.id }.count }
+    private func notifyDemand() {
+        var sessions = [UUID: BTRPlaybackSession]()
+        for value in owners.values { sessions[value.id] = value }
+        for value in waiting.compactMap({ $0.session }) { sessions[value.id] = value }
+        for value in sessions.values {
+            value.demand(active: activeCount(value), queued: waiting.filter { $0.session?.id == value.id }.count)
+        }
+    }
+    func acquire(host: String, priority: Int, session: BTRPlaybackSession? = nil,
+                 deadline: BTRDeadline? = nil, queueClass: Int = 2) async throws -> BudgetPermit {
+        let id = UUID()
+        sequence += 1
+        waiting.append(Waiter(id: id, host: host, priority: priority, sequence: sequence,
+            queuedAt: BTRPlaybackSession.now, session: session, deadline: deadline, queueClass: queueClass))
+        defer { waiting.removeAll { $0.id == id }; notifyDemand() }
+        while true {
+            try Task.checkCancellation()
+            if let deadline, !deadline.valid { throw CancellationError() }
+            notifyDemand()
+            let now = BTRPlaybackSession.now
+            let eligible = waiting.filter {
+                (perHostActive[$0.host] ?? 0) < perHostMax
+                    && ($0.session.map { activeCount($0) < $0.limit } ?? true)
+                    && ($0.deadline?.valid ?? true)
+            }.sorted {
+                if $0.queueClass != $1.queueClass { return $0.queueClass < $1.queueClass }
+                let a = $0.rank(now), b = $1.rank(now)
+                return a == b ? $0.sequence < $1.sequence : a > b
+            }
+            if outstanding.count < globalMax, eligible.first?.id == id {
+                let permit = BudgetPermit(host: host)
+                outstanding.insert(permit)
+                perHostActive[host, default: 0] += 1
+                if let session { owners[permit] = session }
+                return permit
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
     }
 
     /// 释放许可。同一 token 只生效一次；未知 token 直接忽略。
     func release(_ permit: BudgetPermit) {
         guard outstanding.remove(permit) != nil else { return }
+        let owner = owners.removeValue(forKey: permit)
+        defer {
+            notifyDemand()
+            if let owner { owner.demand(active: activeCount(owner), queued: waiting.filter { $0.session?.id == owner.id }.count) }
+        }
         let host = permit.host
         if let current = perHostActive[host] {
             if current <= 1 {
@@ -61,43 +116,6 @@ struct BudgetPermit: Hashable, Sendable {
     fileprivate init(host: String) {
         self.host = host
         id = UUID()
-    }
-}
-
-// MARK: - CDN 健康模型（当前媒体流内有效）
-
-enum CDNErrorCategory: Sendable {
-    case timeout
-    case serverError(status: Int)
-    case forbidden
-    case notFound
-    case rangeNotSatisfiable
-    case tooManyRequests
-    case truncated
-    case mismatch
-    case network(Error)
-    case cancelled
-}
-
-struct CDNHostStats: Sendable {
-    var successCount = 0
-    var failureCount = 0
-    var consecutiveFailures = 0
-    var totalBytes: Int64 = 0
-    var totalTransferTime: TimeInterval = 0
-    var lastTTFB: TimeInterval?
-    var isolatedUntil: Date?
-
-    var estimatedMbps: Double? {
-        guard totalTransferTime > 0, totalBytes > 0 else { return nil }
-        return Double(totalBytes) * 8 / totalTransferTime / 1_000_000
-    }
-
-    var isIsolated: Bool {
-        if let until = isolatedUntil {
-            return Date() < until
-        }
-        return false
     }
 }
 
@@ -145,22 +163,24 @@ final class MediaBytePipe: @unchecked Sendable {
     }
 
     /// 异步写入。满时挂起直到消费者读取腾出空间；关闭/失败/取消时抛出。
-    func write(_ data: Data) async throws {
+    func write(_ data: Data, isCurrent: @Sendable () -> Bool = { true }) async throws {
         guard !data.isEmpty else { return }
         var offset = 0
         while offset < data.count {
+            guard isCurrent() else { throw CancellationError() }
             try Task.checkCancellation()
-            let chunkEnd = min(data.count, offset + 256 * 1024)
-            let chunk = data[offset..<chunkEnd]
-            try await writeChunk(Data(chunk))
+            let chunkEnd = min(data.count, offset + min(capacityBytes, 256 * 1024))
+            let chunk = data[(data.startIndex + offset)..<(data.startIndex + chunkEnd)]
+            try await writeChunk(Data(chunk), isCurrent: isCurrent)
             offset = chunkEnd
         }
     }
 
-    private func writeChunk(_ chunk: Data) async throws {
+    private func writeChunk(_ chunk: Data, isCurrent: @Sendable () -> Bool) async throws {
         if try tryAppend(chunk) { return }
         // 慢路径：等待空间（挂起，不阻塞线程），用轮询+短等待避免复杂延续队列
         while true {
+            guard isCurrent() else { throw CancellationError() }
             try Task.checkCancellation()
             if try tryAppend(chunk) { return }
             // 短暂让出，等待消费者读取
@@ -224,931 +244,383 @@ final class MediaBytePipe: @unchecked Sendable {
         condition.lock()
         if failure == nil {
             failure = error
+            if error is CancellationError { buffer.removeAll() }
         }
         condition.broadcast()
         condition.unlock()
     }
 }
 
-// MARK: - 下载器
-
-/// 单个播放会话拥有的 actor。
-/// 播放器不需要知道一个 Range 被拆成几个下载任务。
+// BTR native download engine. Ported from idm-downloader.js / cdn-resolver.js
+// Copyright (c) 2026 Bilibili-thread-ripper contributors (MIT).
+// The public name is retained as the ATV loopback adapter's source-compatible facade.
 actor MediaRangeDownloader {
-    // 内部自适应参数（初始建议值，非最优声明，实测调整）。
-    private let subrangeTargetBytes: Int64 = 512 * 1024 // 256KiB–1MiB 区间内
-    private let subrangeMaxBytes: Int64 = 1 * 1024 * 1024
-    private let subrangeMinBytes: Int64 = 256 * 1024
-    private let maxConcurrentPerMedia = 4
-    private let maxBufferedBytes: Int64 = 4 * 1024 * 1024
-    private let maxRetriesPerSubrange = 2
-    private let hedgingDelayNanoseconds: UInt64 = 1_000_000_000 // 1s
-    private let singleRequestMemoryCap: Int64 = 16 * 1024 * 1024
-    /// 跨 CDN 等价性采样长度：候选 host 首次参与拼接前，与参照源比对该字节数。
-    /// 有界（每 host 每媒体一次），新鲜度由调用方轮转保证。
-    private let equivalenceSampleBytes: Int64 = 32 * 1024
-
     private let candidates: [String]
     private let referer: String
     private let userAgent: String
     private let mode: MediaTransportMode
+    private let playback: BTRPlaybackSession
+    private let isAudio: Bool
+    private var timings = [BTRSegmentTiming]()
+    func setTimings(_ timings: [BTRSegmentTiming]) { self.timings = timings }
+    private let client = BTRHTTPClient()
+    private var policy = BTRPolicy()
+    private var total: Int64?
+    private var anchor: (MediaByteRange, Data)?
+    private var verified = Set<String>()
+    private var referenceSample: Data?
+    private var speeds = [String: (bps: Double, at: Double)]()
+    private var health = [String: (failures: Int, until: Double)]()
+    private var active = [String: Int]()
+    private var streams = 0
+    private var delivered: Int64 = 0
+    private var wireBytes: Int64 = 0
+    private var failures = 0
+    private var retries = 0
+    private var downgraded = false
+    private let memoryCap: Int64 = 16 * 1024 * 1024
+    private static var now: Double { ProcessInfo.processInfo.systemUptime }
 
-    private var hostStats = [String: CDNHostStats]()
-    private var knownTotalLength: Int64?
-    private var deliveredBytes: Int64 = 0
-    private var extraBytes: Int64 = 0
-    private var failureCount = 0
-    private var retryCount = 0
-    private var hedgedCount = 0
-    private var activeSubrequests = 0
-    /// 当前实际在途的子请求按 host 计数（诊断用，与累计统计 hostStats.keys 区分）。
-    private var activeHostCounts = [String: Int]()
-    private var downgradedToDirect = false
-    /// AIMD 自适应并发上限：成功且无竞速/失败时 +1，失败时减半；
-    /// 范围 [1, maxConcurrentPerMedia]，初始 2。仅调节并发数，不共享 CDN 排名。
-    private var adaptiveConcurrency = 2
-    /// 已通过跨 CDN 等价性采样的 host（本媒体流内有效）。未采样 host 的字节
-    /// 不得参与拼接，防止不同版本内容混入同一 Range 解码。
-    private var equivalenceVerifiedHosts = Set<String>()
-    /// 同一 host 的并发验证任务合并：后来者直接并入等待，不重复采样。
-    private var verifyTasks = [String: Task<Void, Error>]()
-    /// SIDX 锚点：播放列表生成时从 sidx 探测 URL 取回的 (索引区间, 原始字节)，
-    /// 作为等价性验证的可信参照（免去第二路采样）。缺失时退化为双边采样。
-    private var trustAnchor: (range: MediaByteRange, bytes: Data)?
-    /// 锚点过期标记：一旦确认过期则永久丢弃，转双边采样。
-    private var anchorDiscarded = false
-
-    private var session: URLSession?
-
-    init(candidates: [String], referer: String, userAgent: String = Keys.userAgent, mode: MediaTransportMode = .accelerated) {
-        self.candidates = candidates
-        self.referer = referer
-        self.userAgent = userAgent
-        self.mode = mode
+    init(candidates: [String], referer: String, userAgent: String = Keys.userAgent, mode: MediaTransportMode = .accelerated, playback: BTRPlaybackSession = BTRPlaybackSession(), isAudio: Bool = false) {
+        var seen = Set<String>()
+        self.candidates = candidates.filter { URL(string: $0)?.host != nil && seen.insert($0).inserted }
+        self.referer = referer; self.userAgent = userAgent; self.mode = mode
+        self.playback = playback; self.isAudio = isAudio
+        playback.registerHosts(self.candidates.compactMap { URL(string: $0)?.host?.lowercased() })
     }
-
-    deinit {
-        session?.invalidateAndCancel()
-    }
-
-    // MARK: 对外接口
-
-    /// 流式下载：边下载边按顺序向 pipe 交付已验证字节，完成后 close，失败时 fail。
-    /// 同一个请求最多交付一次，每次交付严格递增。
-    func stream(range: MediaByteRange, to pipe: MediaBytePipe) async {
-        do {
-            try Task.checkCancellation()
-            guard !candidates.isEmpty else {
-                pipe.fail(MediaRangeError.unsatisfiable(total: nil))
-                return
-            }
-            guard range.length <= singleRequestMemoryCap else {
-                // 超出安全容量：不做无界缓存，由调用方降级直连
-                downgradedToDirect = true
-                pipe.fail(MediaRangeError.unsatisfiable(total: knownTotalLength))
-                return
-            }
-            let subranges = split(range: range)
-            if mode == .proxy || subranges.count == 1 {
-                await streamSingle(range: range, to: pipe)
-                return
-            }
-            await streamConcurrent(parentRange: range, subranges: subranges, to: pipe)
-        } catch is CancellationError {
-            pipe.fail(MediaRangeError.cancelled)
-        } catch {
-            pipe.fail(error)
-        }
-    }
-
-    /// 一次性获取（供测试与小请求复用）。内部复用流式链路收集，避免两套校验。
-    func fetch(range: MediaByteRange) async throws -> Data {
-        let pipe = MediaBytePipe(capacityBytes: Int(min(maxBufferedBytes, max(range.length * 2, 256 * 1024))))
-        let streamTask = Task {
-            await stream(range: range, to: pipe)
-        }
-        var result = Data()
-        result.reserveCapacity(Int(min(range.length, singleRequestMemoryCap)))
-        do {
-            while true {
-                try Task.checkCancellation()
-                let chunk: Data?
-                do {
-                    chunk = try await Task.detached(priority: .utility) {
-                        try pipe.readSync(maxLength: 256 * 1024, timeout: 30)
-                    }.value
-                } catch {
-                    streamTask.cancel()
-                    throw error
-                }
-                guard let chunk else { break }
-                result.append(chunk)
-            }
-        } catch {
-            streamTask.cancel()
-            throw error
-        }
-        await streamTask.value
-        guard Int64(result.count) == range.length else {
-            throw MediaRangeError.truncated
-        }
-        return result
-    }
-
-    func diagnostics() -> MediaRangeDiagnostics {
-        // activeHosts 必须是当前实际在途的 host 数，而非累计出现过的 host 数。
-        let activeHosts = activeHostCounts.count
-        // 有效总吞吐按各 host 实测吞吐求和：多 host 并行时体现聚合，
-        // 单 host 串行时退化为该 host 的实测值。累计字节/累计时间之比会低估并行吞吐。
-        let mbps = hostStats.values.compactMap(\.estimatedMbps).reduce(0, +)
-        return MediaRangeDiagnostics(
-            transportMode: mode,
-            activeHosts: activeHosts,
-            estimatedAggregateMbps: mbps,
-            activeSubrequests: activeSubrequests,
-            failures: failureCount,
-            retries: retryCount,
-            deliveredBytes: deliveredBytes,
-            extraBytes: extraBytes,
-            downgradedToDirect: downgradedToDirect
-        )
-    }
-
-    func markDowngraded() {
-        downgradedToDirect = true
-    }
-
-    func knownTotal() -> Int64? {
-        knownTotalLength
-    }
-
-    /// 设置 SIDX 信任锚点（播放列表生成时调用，幂等覆盖同一值）。
-    /// 锚点仅用于等价性验证的参照，不参与媒体数据交付。
+    deinit { client.invalidate() }
+    func markDowngraded() { downgraded = true }
+    func knownTotal() -> Int64? { total }
+    func updateKnownTotal(_ value: Int64?) { if total == nil, let value, value > 0 { total = value } }
     func setTrustAnchor(range: MediaByteRange, bytes: Data) {
-        if trustAnchor == nil {
-            trustAnchor = (range, bytes)
-        }
+        if anchor == nil, Int64(bytes.count) == range.length { anchor = (range, bytes) }
     }
-
-    func updateKnownTotal(_ total: Int64?) {
-        if let total, total > 0 {
-            if let known = knownTotalLength, known != total {
-                // 总长不一致：不覆盖，由调用方按 mismatch 处理
-                return
-            }
-            knownTotalLength = total
-        }
+    func diagnostics() -> MediaRangeDiagnostics {
+        MediaRangeDiagnostics(transportMode: mode, activeHosts: active.count,
+            estimatedAggregateMbps: candidates.reduce(0) { $0 + speed($1) } * 8 / 1_000_000,
+            activeSubrequests: active.values.reduce(0, +), failures: failures, retries: retries,
+            deliveredBytes: delivered, extraBytes: max(0, wireBytes - delivered), downgradedToDirect: downgraded)
     }
-
-    // MARK: 切分
-
+    private func speed(_ url: String) -> Double {
+        guard let sample = speeds[url], Self.now - sample.at < 90 else { return 0 }
+        return sample.bps
+    }
+    private func sample(_ url: String, bytes: Int, elapsed: Double) {
+        guard bytes >= 48 * 1024, elapsed > 0 else { return }
+        let measured = Double(bytes) / elapsed
+        let old = speeds[url]?.bps ?? 0
+        speeds[url] = (old > 0 ? old * 0.65 + measured * 0.35 : measured, Self.now)
+    }
+    private func pool() -> [String] {
+        let open = candidates.filter { (health[$0]?.until ?? 0) <= Self.now }
+        let urls = open.isEmpty ? candidates : open
+        return urls.enumerated().sorted {
+            let a = speed($0.element), b = speed($1.element)
+            return a == b ? $0.offset < $1.offset : a > b
+        }.map(\.element)
+    }
     func split(range: MediaByteRange) -> [MediaByteRange] {
-        if range.length <= subrangeMinBytes {
-            return [range]
-        }
-        var result = [MediaByteRange]()
-        var cursor = range.start
-        // 目标 512KiB，大请求分块，小请求不强拆
-        let chunk: Int64 = min(max(subrangeTargetBytes, range.length / Int64(maxConcurrentPerMedia)), subrangeMaxBytes)
-        while cursor <= range.end {
-            let end = min(cursor + chunk - 1, range.end)
-            // 避免产生过小的尾块：剩余不足 min 则并入当前块
-            let remaining = range.end - end
-            if remaining > 0, remaining < subrangeMinBytes {
-                if let merged = try? MediaByteRange(start: cursor, end: range.end) {
-                    result.append(merged)
-                }
-                break
-            }
-            if let piece = try? MediaByteRange(start: cursor, end: end) {
-                result.append(piece)
-            }
-            cursor = end + 1
-        }
-        return result.isEmpty ? [range] : result
+        let slots = playback.limit
+        let reserve = max(1, Int(ceil(Double(slots) / 8)))
+        let limit = mode == .proxy ? 1 : isAudio ? reserve : max(1, slots - reserve)
+        return BTRPolicy.split(range, limit: limit,
+            minimum: policy.minimumChunk(length: range.length, limit: limit, hosts: candidates.count))
+    }
+    private final class RescueBudget {
+        var value: BTRRescue
+        init(_ slots: Int) { value = BTRRescue(max(1, Int(ceil(Double(slots) / 8)))) }
     }
 
-    // MARK: 单路（proxy 测试模式）
-
-    private func streamSingle(range: MediaByteRange, to pipe: MediaBytePipe) async {
+    func stream(range: MediaByteRange, to pipe: MediaBytePipe) async {
+        let generation = playback.generation
+        let presentation = timings.first { $0.range.end >= range.start && $0.range.start <= range.end }?.start
+        let deadline = BTRDeadline(session: playback, generation: generation, presentation: presentation)
+        let rescue = RescueBudget(playback.limit)
+        var admitted = false
+        defer { if admitted { streams -= 1 } }
         do {
-            let data = try await fetchSubrangeWithHedging(range, allowHedging: false)
-            try await pipe.write(data)
-            deliveredBytes += Int64(data.count)
-            pipe.close()
-        } catch is CancellationError {
-            pipe.fail(MediaRangeError.cancelled)
-        } catch {
-            pipe.fail(error)
-        }
-    }
-
-    // MARK: 并发流式
-
-    //
-    //  单一 TaskGroup 协调器：子区间下载工作以内联子任务形式运行，
-    //  group.next() 即真正的 first-completion 通知。选出首个完成即交付或继续，
-    //  落选者在 cancelAll 后因工作内联、可取消而迅速退出——不存在只取消
-    //  Task.value 等待者、底层下载继续跑的情况。
-
-    private func streamConcurrent(parentRange: MediaByteRange, subranges: [MediaByteRange], to pipe: MediaBytePipe) async {
-        // 有序交付状态（仅本请求内有效）
-        var pending = [Int: Data]()
-        var pendingBytes: Int64 = 0
-        var nextToDeliver = 0
-        var nextToStart = 0
-        // 本次 stream 的 outcome 快照（AIMD 用）：开始前记录，结束后比较
-        let failuresBefore = failureCount
-        let hedgesBefore = hedgedCount
-
-        // 子区间初始分配按 host 轮转：无统计时各子区间即分散到不同 CDN，
-        // 而非全部挤在首选 host 上等 Hedging 救援。统计出现后 orderedHosts 本身已排序。
-        // AIMD 当前上限快照（本请求内固定，避免中途抖动）
-        let concurrencyLimit = max(1, min(maxConcurrentPerMedia, adaptiveConcurrency))
-        // 本请求的独立在途计数：同一下载器可同时服务多个 Range 请求，
-        // 调度槽位必须按请求隔离；共享的 activeSubrequests 仅作诊断，
-        // 跨请求的真实网络并发上限由 MediaDownloadBudget 负责。
-        var inFlight = 0
-        // 异常退出（失败/取消）时把本请求未扣减的诊断计数一次性归还；
-        // 成功路径 inFlight 已归零，此处为无操作。
-        defer { activeSubrequests = max(0, activeSubrequests - inFlight) }
-        do {
-            try await withThrowingTaskGroup(of: (Int, Data).self) { group in
-                while nextToDeliver < subranges.count {
-                    if Task.isCancelled {
-                        group.cancelAll()
-                        throw CancellationError()
-                    }
-                    // 优先交付已就绪的最早分块（播放截止时间优先）
-                    if let ready = pending[nextToDeliver] {
-                        do {
-                            try await pipe.write(ready)
-                        } catch {
-                            group.cancelAll()
-                            throw error
-                        }
-                        deliveredBytes += Int64(ready.count)
-                        pendingBytes -= Int64(ready.count)
-                        pending[nextToDeliver] = nil
-                        nextToDeliver += 1
-                        continue
-                    }
-                    // 按本请求的独立计数补充在途任务（背压：已完成未交付超限则暂停）
-                    while nextToStart < subranges.count,
-                          inFlight < concurrencyLimit,
-                          pendingBytes < maxBufferedBytes
-                    {
-                        let index = nextToStart
-                        let sub = subranges[index]
-                        let hosts = hostsForSubrange(index)
-                        nextToStart += 1
-                        inFlight += 1
-                        activeSubrequests += 1
+            guard !candidates.isEmpty, range.length <= memoryCap else { throw MediaRangeError.unsatisfiable(total: total) }
+            // tvOS adaptation: two bounded streams per track. The byte pipe also backpressures.
+            while streams >= 2 {
+                guard deadline.valid else { throw CancellationError() }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            guard deadline.valid else { throw CancellationError() }
+            try Task.checkCancellation()
+            streams += 1; admitted = true
+            var cursor = range.start
+            // BTR startup media probe: promptly deliver a small verified head before the tail.
+            if mode == .accelerated, speeds.isEmpty, range.length > 64 * 1024 {
+                let head = try MediaByteRange(start: cursor, end: cursor + 64 * 1024 - 1)
+                let bytes = try await downloadPiece(head, preferred: pool(), priority: 120, delay: 0, deadline: deadline, rescue: rescue)
+                try await pipe.write(bytes, isCurrent: { deadline.valid }); delivered += Int64(bytes.count); cursor = head.end + 1
+            }
+            // BTR ordered chunks, bounded to 2 MiB windows rather than retaining a whole range.
+            while cursor <= range.end {
+                guard deadline.valid else { throw CancellationError() }
+                let window = try MediaByteRange(start: cursor, end: min(range.end, cursor + 2 * 1024 * 1024 - 1))
+                let pieces = split(range: window)
+                let urls = pool()
+                let measured = Dictionary(uniqueKeysWithValues: urls.map { ($0, speed($0)) })
+                let primaries = policy.assign(urls, count: pieces.count) { measured[$0] ?? 0 }
+                let delay = policy.hedgeDelay
+                try await withThrowingTaskGroup(of: (Int, Data).self) { group in
+                    defer { group.cancelAll() }
+                    for (index, piece) in pieces.enumerated() {
+                        let primary = primaries[index]
+                        let preferred = [primary] + urls.filter { $0 != primary }
                         group.addTask {
-                            let data = try await self.fetchSubrangeWithHedging(sub, allowHedging: true, candidateHosts: hosts)
+                            let data = try await self.downloadPiece(piece, preferred: preferred,
+                                priority: presentation == nil ? 220 : 50 - min(20, index), delay: delay, deadline: deadline, rescue: rescue)
                             return (index, data)
                         }
                     }
-                    // first-completion：工作内联，取消即作用于下载本身。
-                    // next() 返回即同步扣减本请求计数，不经延迟的 Task 跳转，
-                    // 调度器看到的槽位永远是最新的。
-                    guard let (index, data) = try await group.next() else {
-                        throw MediaRangeError.truncated
+                    var ordered = [Int: Data]()
+                    var next = 0
+                    while let (index, bytes) = try await group.next() {
+                        ordered[index] = bytes
+                        while let chunk = ordered.removeValue(forKey: next) {
+                            try await pipe.write(chunk, isCurrent: { deadline.valid })
+                            delivered += Int64(chunk.count)
+                            next += 1
+                        }
                     }
-                    inFlight -= 1
-                    activeSubrequests = max(0, activeSubrequests - 1)
-                    // 长度校验：必须是请求子区间的准确长度
-                    guard Int64(data.count) == subranges[index].length else {
-                        group.cancelAll()
-                        failureCount += 1
-                        throw MediaRangeError.truncated
-                    }
-                    pending[index] = data
-                    pendingBytes += Int64(data.count)
+                    guard next == pieces.count else { throw MediaRangeError.truncated }
                 }
+                cursor = window.end + 1
             }
-            // 完整覆盖校验
-            guard nextToDeliver == subranges.count else {
-                pipe.fail(MediaRangeError.truncated)
-                adjustConcurrencyAfterStream(failuresBefore: failuresBefore, hedgesBefore: hedgesBefore, succeeded: false)
-                return
-            }
-            adjustConcurrencyAfterStream(failuresBefore: failuresBefore, hedgesBefore: hedgesBefore, succeeded: true)
             pipe.close()
-        } catch is CancellationError {
-            adjustConcurrencyAfterStream(failuresBefore: failuresBefore, hedgesBefore: hedgesBefore, succeeded: false)
-            pipe.fail(MediaRangeError.cancelled)
-        } catch {
-            // 失败计数已在成因处恰好记一次（recordFailure/isolateHosts/等价性验证），
-            // 此处不再重复累加，保证诊断诚实；取消与预算耗尽本就不计入 CDN 失败。
-            adjustConcurrencyAfterStream(failuresBefore: failuresBefore, hedgesBefore: hedgesBefore, succeeded: false)
-            pipe.fail(error)
-        }
+        } catch { pipe.fail(error) }
+    }
+    func fetch(range: MediaByteRange) async throws -> Data {
+        guard range.length <= memoryCap else { throw MediaRangeError.unsatisfiable(total: total) }
+        let pipe = MediaBytePipe(capacityBytes: Int(max(64 * 1024, range.length)))
+        // The whole capped result fits: no blocking reader on a cooperative executor.
+        await stream(range: range, to: pipe)
+        var result = Data()
+        while let chunk = try pipe.readSync(maxLength: 256 * 1024) { result.append(chunk) }
+        guard Int64(result.count) == range.length else { throw MediaRangeError.truncated }
+        return result
     }
 
-    /// 子区间首选 host 轮转：把第 index 个子区间优先分配给第 (index % hosts) 个 host，
-    /// 使首轮并发即分散到不同 CDN，实现聚合；之后按实测统计排序。
-    private func hostsForSubrange(_ index: Int) -> [String] {
-        let base = orderedHosts()
-        guard base.count > 1 else { return base }
-        let r = index % base.count
-        return Array(base[r...] + base[..<r])
+    // idm-downloader.js downloadPiece: shared longest prefix and live primary recorder.
+    // Access to Piece/Context is confined to this actor; only BTRProgress crosses executors.
+    private final class Context {
+        let base: Data
+        let progress = BTRProgress()
+        let started = BTRPlaybackSession.now
+        var resumable = true
+        init(_ base: Data) { self.base = base }
+        var bytes: Data { var data = base; data.append(progress.snapshot()); return data }
     }
-
-    /// AIMD：干净成功（无新增失败、无竞速）则 +1 试探；失败则减半。
-    /// 缓冲背压（pendingBytes 上限暂停新任务）独立于该调节，始终生效。
-    private func adjustConcurrencyAfterStream(failuresBefore: Int, hedgesBefore: Int, succeeded: Bool) {
-        if succeeded, failureCount == failuresBefore, hedgedCount == hedgesBefore {
-            adaptiveConcurrency = min(maxConcurrentPerMedia, adaptiveConcurrency + 1)
-        } else if !succeeded {
-            adaptiveConcurrency = max(1, adaptiveConcurrency / 2)
-        }
-        // 成功但发生过竞速/失败：保持当前上限不变
-    }
-
-    // MARK: 子区间获取（含竞速与重试）
-
-    //
-    //  单一 TaskGroup 协调器：主路与备路的下载工作以内联子任务运行，
-    //  group.next() 即真正的 first-completion 通知。胜者选出后 cancelAll
-    //  直接取消落选者的下载工作（fetch 内各处检查取消并使用可取消的
-    //  URLSession 异步接口），不存在只取消 Task.value 等待者的情况。
-
-    private enum HedgeLane: Sendable {
-        case primary
-        case secondary
-    }
-
-    private enum HedgeOutcome: Sendable {
-        case data(lane: HedgeLane, data: Data, host: String)
-        case failed(lane: HedgeLane)
-        case hedgeTimer
-        case compareTimer
-    }
-
-    /// 跨 Task 传递子任务的原始错误（TaskGroup 元素须 Sendable，Error 不是）。
-    /// 每个 hedging 操作独占一个 box，不存在并发操作间的串扰。
-    private final class HedgeErrorBox: @unchecked Sendable {
-        private let lock = NSLock()
-        private var errors = [HedgeLane: Error]()
-        func set(_ error: Error, for lane: HedgeLane) {
-            lock.lock()
-            errors[lane] = error
-            lock.unlock()
-        }
-
-        func error(for lane: HedgeLane) -> Error? {
-            lock.lock()
-            defer { lock.unlock() }
-            return errors[lane]
-        }
-    }
-
-    private func fetchSubrangeWithHedging(
-        _ subrange: MediaByteRange,
-        allowHedging: Bool,
-        candidateHosts: [String]? = nil
-    ) async throws -> Data {
-        try Task.checkCancellation()
-        // candidateHosts 由调用方按轮转/统计排好序，原样采用，不再二次排序，
-        // 保证初始分配即分散；nil 时回退到当前统计排序。
-        let hosts = candidateHosts ?? orderedHosts()
-        guard !hosts.isEmpty else { throw MediaRangeError.unsatisfiable(total: knownTotalLength) }
-        if !allowHedging || hosts.count == 1 || subrange.length < subrangeMinBytes {
-            // 单路：无竞速，交付前仍需过等价性门控（单 host/代理模式内直接通过）。
-            let (data, host) = try await fetchSubrangeWithRetry(subrange, hosts: hosts)
-            try await ensureHostVerified(host, hosts: hosts)
-            return data
-        }
-        // Slow-Request Hedging：主请求慢时在另一 CDN 启动竞争。
-        // 触发考虑 TTFB、已接收字节/吞吐、剩余字节与播放紧迫度（此处用固定 1s 延迟
-        // + 剩余长度门限近似；首字节与吞吐在 fetchAttempt 内实测并记入统计）。
-        let alternate = alternateHosts(excludingFirstOf: hosts)
-        let errorBox = HedgeErrorBox()
-        return try await withThrowingTaskGroup(of: HedgeOutcome.self) { group in
-            group.addTask {
-                do {
-                    let (data, host) = try await self.fetchSubrangeWithRetry(subrange, hosts: hosts)
-                    return .data(lane: .primary, data: data, host: host)
-                } catch is CancellationError {
-                    // 外部取消或组取消：向上传播，保证及时退出；
-                    // 计时哨兵不走此路径（sleep 封装在独立子任务内）。
-                    if Task.isCancelled { throw CancellationError() }
-                    errorBox.set(CancellationError(), for: .primary)
-                    return .failed(lane: .primary)
-                } catch {
-                    errorBox.set(error, for: .primary)
-                    return .failed(lane: .primary)
-                }
+    private final class Piece {
+        var prefix = Data()
+        var contexts = [Context]()
+        func best() -> Data {
+            contexts.reduce(prefix) { current, context in
+                let live = context.resumable ? context.bytes : Data()
+                return live.count > current.count ? live : current
             }
-            group.addTask {
-                do {
-                    try await Task.sleep(nanoseconds: self.hedgingDelayNanoseconds)
-                    return .hedgeTimer
-                } catch {
-                    if Task.isCancelled { throw CancellationError() }
-                    // 极少见：sleep 非取消失败，视为计时到期处理
-                    return .hedgeTimer
-                }
-            }
-            var secondaryStarted = false
-            var primaryFailed = false
-            var secondaryFailed = false
-            var winnerLane: HedgeLane?
-            var winnerData: Data?
-            var winnerHost: String?
-            while let outcome = try await group.next() {
-                switch outcome {
-                case let .data(lane, data, host):
-                    if winnerData == nil {
-                        winnerLane = lane
-                        winnerData = data
-                        winnerHost = host
-                        if secondaryStarted {
-                            // 备路已启动：给落选者短宽限以完成并做字节级比较
-                            group.addTask {
-                                do {
-                                    try await Task.sleep(nanoseconds: 100_000_000)
-                                    return .compareTimer
-                                } catch {
-                                    if Task.isCancelled { throw CancellationError() }
-                                    return .compareTimer
-                                }
-                            }
-                        } else {
-                            // 备路尚未启动：先停计时器，再过等价性门控后交付
-                            group.cancelAll()
-                            try await ensureHostVerified(host, hosts: hosts)
-                            return data
-                        }
-                    } else {
-                        // 落选者在宽限内完成：必须来自另一 lane，与胜者逐字节比较
-                        if lane == winnerLane {
-                            group.cancelAll()
-                            try await ensureHostVerified(winnerHost!, hosts: hosts)
-                            return winnerData!
-                        }
-                        if data != winnerData {
-                            isolateHosts(hosts, reason: "overlap-mismatch")
-                            throw MediaRangeError.mismatch
-                        }
-                        addExtra(Int64(data.count))
-                        group.cancelAll()
-                        try await ensureHostVerified(winnerHost!, hosts: hosts)
-                        return winnerData!
-                    }
-                case let .failed(lane):
-                    if winnerData != nil {
-                        // 胜者已定，落选者失败可忽略
-                        group.cancelAll()
-                        try await ensureHostVerified(winnerHost!, hosts: hosts)
-                        return winnerData!
-                    }
-                    if lane == .primary {
-                        primaryFailed = true
-                    } else {
-                        secondaryFailed = true
-                    }
-                    if !secondaryStarted {
-                        // 主路在备路启动前即失败：重试已在 fetchSubrangeWithRetry 内耗尽，
-                        // 直接传播原始错误，不等待计时器
-                        group.cancelAll()
-                        throw errorBox.error(for: lane) ?? MediaRangeError.truncated
-                    }
-                    if primaryFailed, secondaryFailed {
-                        group.cancelAll()
-                        throw errorBox.error(for: .primary) ?? MediaRangeError.truncated
-                    }
-                // 另一路仍在跑，继续等待
-                case .hedgeTimer:
-                    if winnerData != nil {
-                        continue
-                    }
-                    if !secondaryStarted {
-                        secondaryStarted = true
-                        retryCount += 1
-                        hedgedCount += 1
-                        // 第二路：排除首选 host，优先不同 host
-                        group.addTask {
-                            do {
-                                let (data, host) = try await self.fetchSubrangeWithRetry(subrange, hosts: alternate)
-                                return .data(lane: .secondary, data: data, host: host)
-                            } catch is CancellationError {
-                                if Task.isCancelled { throw CancellationError() }
-                                errorBox.set(CancellationError(), for: .secondary)
-                                return .failed(lane: .secondary)
-                            } catch {
-                                errorBox.set(error, for: .secondary)
-                                return .failed(lane: .secondary)
-                            }
-                        }
-                    }
-                case .compareTimer:
-                    // 比较宽限到期：落选者未完成，门控胜者后交付
-                    // （落选者被 cancelAll 中止，已传输的部分字节已在其中止路径计入 extra）
-                    group.cancelAll()
-                    if let winnerData, let winnerHost {
-                        try await ensureHostVerified(winnerHost, hosts: hosts)
-                        return winnerData
-                    }
-                    continue
-                }
-            }
-            // 组耗尽仍无结果（理论不可达）：按失败处理；若意外持有胜者仍需过门控
-            if let winnerData, let winnerHost {
-                try await ensureHostVerified(winnerHost, hosts: hosts)
-                return winnerData
-            }
-            throw errorBox.error(for: .primary) ?? MediaRangeError.truncated
         }
     }
-
-    private func fetchSubrangeWithRetry(_ subrange: MediaByteRange, hosts: [String]) async throws -> (data: Data, host: String) {
-        var lastError: Error = MediaRangeError.unsatisfiable(total: knownTotalLength)
-        let attempts = min(hosts.count, maxRetriesPerSubrange + 1)
-        for attempt in 0..<attempts {
+    private enum Outcome {
+        case success(Data)
+        case failure(Error)
+        case timer
+    }
+    private func downloadPiece(_ range: MediaByteRange, preferred: [String], priority: Int, delay: Double, deadline: BTRDeadline, rescue: RescueBudget) async throws -> Data {
+        let state = Piece()
+        let started = Self.now
+        var last: Error = MediaRangeError.truncated
+        // BTR's three rounds, exponential pause, 25-second retry-admission window.
+        for round in 0..<3 {
             try Task.checkCancellation()
-            let host = hosts[attempt % hosts.count]
-            guard let urlString = urlString(forHost: host) else { continue }
-            do {
-                let data = try await fetchAttempt(subrange: subrange, urlString: urlString, host: host)
-                return (data, host)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                lastError = error
-                // 取消不计入 CDN 健康失败（由上层区分）
-                continue
+            if round > 0 {
+                retries += 1
+                if Self.now - started > 25 { break }
+                try await Task.sleep(nanoseconds: UInt64(min(2, 0.5 * pow(2, Double(round - 1))) * 1e9))
             }
-        }
-        throw lastError
-    }
-
-    /// 跨 CDN 等价性门控：serving host 的字节只有在其通过验证后才允许拼接。
-    /// 已验证则直接通过；否则加入（或并入）该 host 的验证任务并等待。
-    /// 验证本身见 verifyHostEquivalence。单 host/非加速模式直接通过。
-    private func ensureHostVerified(_ host: String, hosts: [String]) async throws {
-        guard mode == .accelerated, hosts.count > 1 else { return }
-        if equivalenceVerifiedHosts.contains(host) { return }
-        if let existing = verifyTasks[host] {
-            return try await existing.value
-        }
-        let task = Task<Void, Error> {
-            try await self.verifyHostEquivalence(host, hosts: hosts)
-        }
-        verifyTasks[host] = task
-        defer { verifyTasks[host] = nil }
-        return try await task.value
-    }
-
-    /// 小范围重叠采样：候选 host 的字节在首次参与拼接前必须先证明与同资源
-    /// 其他来源一致。验证源优先使用 SIDX 锚点（播放列表生成时已从 sidx 探测
-    /// URL 取回的索引字节，无需第二次网络往返）；无锚点时退化为与参照源的
-    /// 双边采样（已验证者优先，否则为第一个其他候选）。
-    /// - 通过：记为已验证，采样流量计入 extra（与后续整取重叠/纯开销）。
-    /// - 锚点冲突且尚无已验证 host：视为锚点过期，丢弃锚点后走双边采样。
-    /// - 锚点冲突但已有已验证 host，或双边冲突：无法确定正确来源，
-    ///   按 mismatch 终止（不隔离任何一方，由播放器级恢复回退直连）；
-    ///   失败计数恰好记一次。
-    /// - 参照源取样失败：结论不定，允许本次通行但不标记（下次再验）。
-    /// - host 自身取样失败：直接透出，由重试循环换 host。
-    private func verifyHostEquivalence(_ host: String, hosts: [String]) async throws {
-        try Task.checkCancellation()
-        if let anchor = trustAnchor, !anchorDiscarded {
-            guard let hostURL = urlString(forHost: host) else { return }
-            let sample: Data
-            do {
-                sample = try await fetchAttempt(subrange: anchor.range, urlString: hostURL, host: host)
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                throw error
-            }
-            addExtra(Int64(sample.count))
-            if sample == anchor.bytes {
-                equivalenceVerifiedHosts.insert(host)
-                return
-            }
-            // 锚点冲突：已有已验证 host 说明锚点可信，冲突来自该 host；
-            // 否则更可能是锚点过期，丢弃锚点转双边采样。
-            if !equivalenceVerifiedHosts.isEmpty {
-                failureCount += 1
-                throw MediaRangeError.mismatch
-            }
-            anchorDiscarded = true
-        }
-        // 双边采样：样本区间固定为文件起始 32KiB（各子区间共享结论）；
-        // 文件更小时 416 即结论不定，直接放行不标记。
-        let sampleEnd: Int64 = equivalenceSampleBytes - 1
-        guard let sampleRange = try? MediaByteRange(start: 0, end: sampleEnd) else { return }
-        guard let hostURL = urlString(forHost: host) else { return }
-        let reference = hosts.first(where: { $0 != host && equivalenceVerifiedHosts.contains($0) })
-            ?? hosts.first(where: { $0 != host })
-        guard let refHost = reference, let refURL = urlString(forHost: refHost) else { return }
-        // 先取 host 自身样本：失败说明该源不可用，直接透出走换源重试
-        let hostSample: Data
-        do {
-            hostSample = try await fetchAttempt(subrange: sampleRange, urlString: hostURL, host: host)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            if isInconclusiveSampleError(error) { return }
-            throw error
-        }
-        // 再取参照样本：失败则结论不定，本次放行但不标记
-        let refSample: Data
-        do {
-            refSample = try await fetchAttempt(subrange: sampleRange, urlString: refURL, host: refHost)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            return
-        }
-        // 两份样本均为已验证的 206 准确字节，此时比较才有意义
-        addExtra(Int64(hostSample.count) + Int64(refSample.count))
-        guard hostSample == refSample else {
-            failureCount += 1
-            throw MediaRangeError.mismatch
-        }
-        equivalenceVerifiedHosts.insert(host)
-        equivalenceVerifiedHosts.insert(refHost)
-    }
-
-    /// 采样区间超出文件尾（416/越界）属于结论不定，不应记为失败或冲突。
-    private func isInconclusiveSampleError(_ error: Error) -> Bool {
-        if let e = error as? MediaRangeError {
-            switch e {
-            case .unsatisfiable, .upstream(416):
-                return true
-            default:
-                return false
-            }
-        }
-        return false
-    }
-
-    private func urlString(forHost host: String) -> String? {
-        // 同一媒体流内可交换的 CDN 候选：host 匹配的第一个 URL。
-        // 字节一致性由等价性采样（verifyHostEquivalence）与重叠比较强制保证，
-        // 未验证的 host 不得参与拼接，而非默认信任。
-        for url in candidates {
-            if URLComponents(string: url)?.host == host {
-                return url
-            }
-        }
-        return candidates.first
-    }
-
-    private func orderedHosts() -> [String] {
-        var seen = Set<String>()
-        var hosts = [String]()
-        for url in candidates {
-            guard let host = URLComponents(string: url)?.host else { continue }
-            if seen.insert(host).inserted {
-                hosts.append(host)
-            }
-        }
-        // 隔离中的 host 沉底；其余按实测吞吐降序，TTFB 小者优先
-        return hosts.sorted { a, b in
-            let sa = hostStats[a]
-            let sb = hostStats[b]
-            let aIso = sa?.isIsolated ?? false
-            let bIso = sb?.isIsolated ?? false
-            if aIso != bIso { return !aIso }
-            let aMbps = sa?.estimatedMbps ?? -1
-            let bMbps = sb?.estimatedMbps ?? -1
-            if aMbps != bMbps { return aMbps > bMbps }
-            let aTTFB = sa?.lastTTFB ?? .greatestFiniteMagnitude
-            let bTTFB = sb?.lastTTFB ?? .greatestFiniteMagnitude
-            return aTTFB < bTTFB
-        }
-    }
-
-    private func alternateHosts(excludingFirstOf hosts: [String]) -> [String] {
-        guard hosts.count > 1 else { return hosts }
-        return Array(hosts.dropFirst()) + [hosts.first!]
-    }
-
-    private func isolateHosts(_ hosts: [String], reason: String) {
-        let until = Date().addingTimeInterval(30)
-        for host in hosts {
-            var stats = hostStats[host] ?? CDNHostStats()
-            stats.isolatedUntil = until
-            stats.consecutiveFailures += 1
-            stats.failureCount += 1
-            hostStats[host] = stats
-        }
-        failureCount += 1
-        _ = reason
-    }
-
-    private func addExtra(_ bytes: Int64) {
-        extraBytes += bytes
-    }
-
-    // MARK: 单次尝试（含严格校验）
-
-    private func fetchAttempt(subrange: MediaByteRange, urlString: String, host: String) async throws -> Data {
-        try Task.checkCancellation()
-        // 全局预算：许可 token 一一绑定，defer 恰好释放一次。
-        // 有界等待超时直接抛 budgetExhausted，绝不无许可发送。
-        let permit: BudgetPermit
-        if let acquired = await MediaDownloadBudget.shared.tryAcquireNow(host: host) {
-            permit = acquired
-        } else {
-            permit = try await waitForBudget(host: host)
-        }
-        // 诊断用实际在途 host 计数（与累计统计区分），退出时配对扣减
-        activeHostCounts[host, default: 0] += 1
-        defer {
-            if let current = self.activeHostCounts[host] {
-                self.activeHostCounts[host] = current > 1 ? current - 1 : nil
-            }
-            let permit = permit
-            Task { await MediaDownloadBudget.shared.release(permit) }
-        }
-
-        let session = ensureSession()
-        var request = URLRequest(url: URL(string: urlString)!)
-        request.httpMethod = "GET"
-        request.setValue("bytes=\(subrange.start)-\(subrange.end)", forHTTPHeaderField: "Range")
-        request.setValue(referer, forHTTPHeaderField: "Referer")
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = 15
-
-        let startDate = Date()
-        let (asyncBytes, response): (URLSession.AsyncBytes, URLResponse)
-        do {
-            (asyncBytes, response) = try await session.bytes(for: request)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let error as URLError where error.code == .cancelled {
-            throw CancellationError()
-        } catch {
-            await recordFailure(host: host, category: classify(error: error, status: nil))
-            throw error
-        }
-        // TTFB：首字节（响应头）到达耗时
-        let ttfb = Date().timeIntervalSince(startDate)
-        guard let http = response as? HTTPURLResponse else {
-            await recordFailure(host: host, category: .network(NSError(domain: "cdn", code: -1)))
-            throw MediaRangeError.upstream(status: -1)
-        }
-        // 取消不计入失败：调用方已取消时直接退出
-        if Task.isCancelled {
-            throw CancellationError()
-        }
-        guard http.statusCode == 206 else {
-            await recordFailure(host: host, category: classify(error: nil, status: http.statusCode))
-            if http.statusCode == 403 || http.statusCode == 404 || http.statusCode == 416 {
-                // 403/404/416 分类，避免无限重复同一无效候选
-                await isolateSingle(host: host)
-            }
-            throw MediaRangeError.upstream(status: http.statusCode)
-        }
-        // Content-Range 校验
-        guard let contentRangeValue = http.value(forHTTPHeaderField: "Content-Range"),
-              let parsed = MediaRangeParsing.parseContentRange(contentRangeValue)
-        else {
-            // 200 或缺失 Content-Range：拒绝不正确响应，不交付
-            await recordFailure(host: host, category: .mismatch)
-            throw MediaRangeError.mismatch
-        }
-        guard parsed.range == subrange else {
-            await recordFailure(host: host, category: .mismatch)
-            await isolateSingle(host: host)
-            throw MediaRangeError.mismatch
-        }
-        if let total = parsed.total {
-            if let known = knownTotalLength, known != total {
-                await recordFailure(host: host, category: .mismatch)
-                await isolateSingle(host: host)
-                throw MediaRangeError.mismatch
-            }
-            knownTotalLength = total
-            // 区间不得超出总长
-            if subrange.end >= total {
-                await recordFailure(host: host, category: .mismatch)
-                throw MediaRangeError.unsatisfiable(total: total)
-            }
-        }
-        // 逐字节读取，测量有效吞吐；重复下载字节不计入有效吞吐由上层 extraBytes 区分
-        var data = Data()
-        data.reserveCapacity(Int(subrange.length))
-        do {
-            for try await byte in asyncBytes {
-                data.append(byte)
-                if Task.isCancelled {
-                    throw CancellationError()
-                }
-                // 背压：单个子区间在内存中完整组装（已受 subrangeMaxBytes 与
-                // singleRequestMemoryCap 约束），此处不做额外限流
-                if Int64(data.count) > subrange.length {
-                    await recordFailure(host: host, category: .mismatch)
-                    throw MediaRangeError.mismatch
+            let offset = round % preferred.count
+            let rotated = Array(preferred[offset...]) + Array(preferred[..<offset])
+            let first = rotated[0]
+            let rest = rotated.dropFirst().sorted { speed($0) > speed($1) }
+            let urls = Array(([first] + rest).prefix(8))
+            let open = urls.filter { (health[$0]?.until ?? 0) <= Self.now }
+            let ordered = open + urls.filter { !open.contains($0) }
+            let width = mode == .proxy ? 1 : 2
+            for start in stride(from: 0, to: ordered.count, by: width) {
+                if start > 0 { retries += 1 }
+                let pair = Array(ordered[start..<min(start + width, ordered.count)])
+                do { return try await race(range, state: state, pair: pair, priority: priority, delay: delay, deadline: deadline, rescue: rescue) }
+                catch {
+                    try Task.checkCancellation()
+                    if !deadline.valid { throw CancellationError() }
+                    last = error
                 }
             }
-        } catch is CancellationError {
-            // 被取消前已传输的字节计入 extra（上游流量真实发生但未交付），
-            // 保证诊断的冗余比例可信；取消本身不计入 CDN 健康失败。
-            addExtra(Int64(data.count))
-            throw CancellationError()
-        } catch {
-            // 传输中断前已读取的部分同样计入 extra（未交付的上游流量）
-            addExtra(Int64(data.count))
-            await recordFailure(host: host, category: .truncated)
-            throw MediaRangeError.truncated
         }
-        // 实际数据长度校验
-        guard Int64(data.count) == subrange.length else {
-            await recordFailure(host: host, category: .truncated)
-            throw MediaRangeError.truncated
-        }
-        let transferTime = Date().timeIntervalSince(startDate)
-        await recordSuccess(host: host, bytes: Int64(data.count), ttfb: ttfb, transferTime: transferTime)
-        return data
+        throw last
     }
-
-    /// 有界等待预算许可。超时不再无许可通行，而是抛 budgetExhausted，
-    /// 由上层按失败传播（播放器级恢复做有预算的降级），并保持 release 配对。
-    private func waitForBudget(host: String) async throws -> BudgetPermit {
-        // 有界等待：最多 10s，每 50ms 重试一次，可取消
-        let deadline = Date().addingTimeInterval(10)
+    private func race(_ range: MediaByteRange, state: Piece, pair: [String], priority: Int, delay: Double, deadline: BTRDeadline, rescue: RescueBudget) async throws -> Data {
+        try await withThrowingTaskGroup(of: Outcome.self) { group in
+            defer { group.cancelAll() }
+            group.addTask { await self.lane(range, state: state, url: pair[0], priority: priority, deadline: deadline) }
+            if pair.count > 1 {
+                group.addTask {
+                    try await self.waitForHedge(range, state: state, delay: delay, deadline: deadline, copy: pair[1], rescue: rescue)
+                    return .timer
+                }
+            }
+            var secondary = false
+            var failed = 0
+            var last: Error = MediaRangeError.truncated
+            while let outcome = try await group.next() {
+                try Task.checkCancellation()
+                switch outcome {
+                case let .success(bytes):
+                    playback.delivered(bytes.count, generation: deadline.generation)
+                    return bytes // Promise.any: no 100ms loser grace period.
+                case let .failure(error):
+                    failed += 1; last = error
+                    if failed == pair.count { throw last }
+                    // BTR firstFailure: immediate rescue instead of waiting out the hedge timer.
+                    if pair.count > 1, !secondary {
+                        secondary = true; retries += 1; playback.rescued()
+                        group.addTask { await self.lane(range, state: state, url: pair[1], priority: priority + 20, deadline: deadline) }
+                    }
+                case .timer:
+                    if !secondary {
+                        secondary = true; retries += 1; playback.rescued()
+                        group.addTask { await self.lane(range, state: state, url: pair[1], priority: priority + 20, deadline: deadline) }
+                    }
+                }
+            }
+            throw last
+        }
+    }
+    private func waitForHedge(_ range: MediaByteRange, state: Piece, delay: Double,
+                              deadline: BTRDeadline, copy: String, rescue: RescueBudget) async throws {
+        // With no mapped playback deadline retain BTR compatibility-mode timing.
+        if deadline.presentation == nil {
+            try await Task.sleep(nanoseconds: UInt64(delay * 1e9)); return
+        }
+        var observation = BTRHedgeObservation(seenAt: BTRPlaybackSession.now)
         while true {
             try Task.checkCancellation()
-            if let permit = await MediaDownloadBudget.shared.tryAcquireNow(host: host) {
-                return permit
-            }
-            if Date() > deadline {
-                throw MediaRangeError.budgetExhausted
+            guard deadline.valid else { throw CancellationError() }
+            if deadline.value.isFinite, let first = state.contexts.first {
+                let got = first.progress.snapshot().count
+                if observation.due(now: BTRPlaybackSession.now, started: first.started,
+                    bytes: got, length: Int(range.length) - first.base.count, delay: delay * 1000,
+                    deadline: deadline.value, copyBps: speed(copy), connectionBps: policy.connectionBps,
+                    rescue: &rescue.value) { return }
             }
             try await Task.sleep(nanoseconds: 50_000_000)
         }
     }
-
-    private func ensureSession() -> URLSession {
-        if let session { return session }
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 15
-        config.timeoutIntervalForResource = 30
-        config.httpMaximumConnectionsPerHost = 4
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        let created = URLSession(configuration: config)
-        session = created
-        return created
-    }
-
-    private func recordSuccess(host: String, bytes: Int64, ttfb: TimeInterval, transferTime: TimeInterval) {
-        var stats = hostStats[host] ?? CDNHostStats()
-        stats.successCount += 1
-        stats.consecutiveFailures = 0
-        stats.isolatedUntil = nil
-        stats.totalBytes += bytes
-        // 有效吞吐按首字节之后的传输耗时近似（total - ttfb，至少 1ms）
-        stats.totalTransferTime += max(0.001, transferTime - ttfb)
-        stats.lastTTFB = ttfb
-        hostStats[host] = stats
-    }
-
-    private func recordFailure(host: String, category: CDNErrorCategory) {
-        if case .cancelled = category { return }
-        var stats = hostStats[host] ?? CDNHostStats()
-        stats.failureCount += 1
-        stats.consecutiveFailures += 1
-        failureCount += 1
-        // 连续失败 3 次则隔离 30s，避免无限重复同一无效候选
-        if stats.consecutiveFailures >= 3 {
-            stats.isolatedUntil = Date().addingTimeInterval(30)
-        }
-        hostStats[host] = stats
-    }
-
-    private func isolateSingle(host: String) {
-        var stats = hostStats[host] ?? CDNHostStats()
-        stats.isolatedUntil = Date().addingTimeInterval(30)
-        stats.consecutiveFailures += 1
-        hostStats[host] = stats
-    }
-
-    private func classify(error: Error?, status: Int?) -> CDNErrorCategory {
-        if let status {
-            switch status {
-            case 403: return .forbidden
-            case 404: return .notFound
-            case 416: return .rangeNotSatisfiable
-            case 429: return .tooManyRequests
-            case 500...599: return .serverError(status: status)
-            default: return .serverError(status: status)
+    private func lane(_ range: MediaByteRange, state: Piece, url: String, priority: Int, deadline: BTRDeadline) async -> Outcome {
+        do {
+            try Task.checkCancellation()
+            guard deadline.valid else { throw CancellationError() }
+            try await verify(url, deadline: deadline)
+            let host = URL(string: url)!.host!.lowercased()
+            let permit = try await MediaDownloadBudget.shared.acquire(host: host, priority: priority, session: playback, deadline: deadline, queueClass: priority >= 200 ? 0 : priority >= 100 ? 1 : 2)
+            do {
+                try Task.checkCancellation()
+                // BTR begin(): snapshot only after obtaining a slot, not at queue admission.
+                var base = state.best()
+                if base.count < 32 * 1024 || Int64(base.count) >= range.length { base = Data() }
+                let context = Context(base)
+                state.contexts.append(context)
+                defer {
+                    let bytes = context.bytes
+                    if context.resumable, bytes.count > state.prefix.count, Int64(bytes.count) < range.length { state.prefix = bytes }
+                    state.contexts.removeAll { $0 === context }
+                }
+                let tail = try MediaByteRange(start: range.start + Int64(base.count), end: range.end)
+                do {
+                    _ = try await raw(tail, url: url, progress: context.progress, permit: permit, deadline: deadline)
+                    let result = context.bytes
+                    guard Int64(result.count) == range.length else { throw MediaRangeError.truncated }
+                    await MediaDownloadBudget.shared.release(permit)
+                    return .success(result)
+                } catch {
+                    // Never resume malformed/overlong bodies; valid interrupted 206 prefixes survive.
+                    if let e = error as? MediaRangeError, e == .mismatch { context.resumable = false; state.prefix = Data(); state.contexts.removeAll { $0 === context } }
+                    throw error
+                }
+            } catch {
+                await MediaDownloadBudget.shared.release(permit)
+                throw error
             }
+        } catch {
+            playback.recordError(error, isAudio: isAudio, generation: deadline.generation)
+            return .failure(error)
         }
-        if let urlError = error as? URLError {
-            switch urlError.code {
-            case .timedOut: return .timeout
-            case .cancelled: return .cancelled
-            default: return .network(urlError)
+    }
+    private func raw(_ range: MediaByteRange, url: String, progress: BTRProgress,
+                     permit: BudgetPermit, deadline: BTRDeadline? = nil) async throws -> Int64? {
+        let requestDeadline = deadline ?? BTRDeadline(session: playback, generation: playback.generation, presentation: nil)
+        let host = permit.host
+        active[host, default: 0] += 1
+        let started = Self.now
+        defer {
+            let bytes = progress.snapshot().count
+            wireBytes += Int64(bytes)
+            active[host] = (active[host] ?? 1) > 1 ? active[host]! - 1 : nil
+            sample(url, bytes: bytes, elapsed: Self.now - started)
+        }
+        var request = URLRequest(url: URL(string: url)!)
+        request.setValue("bytes=\(range.start)-\(range.end)", forHTTPHeaderField: "Range")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        request.setValue(referer, forHTTPHeaderField: "Referer")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        do {
+            let length = try await client.fetch(request, range: range, progress: progress, knownTotal: total,
+                isCurrent: { requestDeadline.valid }, onProgress: { [playback] in playback.activity(generation: requestDeadline.generation) })
+            try Task.checkCancellation()
+            if let length {
+                if let total, total != length { throw MediaRangeError.mismatch }
+                total = length
             }
+            health[url] = (0, 0)
+            policy.record(bytes: progress.snapshot().count, elapsed: Self.now - started)
+            return length
+        } catch {
+            if Task.isCancelled || !requestDeadline.valid { throw CancellationError() }
+            let status: Int?
+            if let mediaError = error as? MediaRangeError, case let .upstream(value) = mediaError { status = value } else { status = nil }
+            playback.failure(status: status, noBytes: (error as? URLError)?.code == .timedOut && progress.snapshot().isEmpty, generation: requestDeadline.generation)
+            failures += 1
+            let count = (health[url]?.failures ?? 0) + 1
+            health[url] = (count, Self.now + min(60, 3 * pow(2, Double(min(count, 4)))))
+            throw error
         }
-        if error is CancellationError { return .cancelled }
-        return .network(error ?? NSError(domain: "cdn", code: -1))
+    }
+    private func sampleBytes(_ range: MediaByteRange, url: String, deadline: BTRDeadline) async throws -> Data {
+        let permit = try await MediaDownloadBudget.shared.acquire(host: URL(string: url)!.host!.lowercased(), priority: 220, session: playback, deadline: deadline, queueClass: 0)
+        let progress = BTRProgress()
+        do {
+            _ = try await raw(range, url: url, progress: progress, permit: permit, deadline: deadline)
+            await MediaDownloadBudget.shared.release(permit)
+            return progress.snapshot()
+        } catch { await MediaDownloadBudget.shared.release(permit); throw error }
+    }
+    // Native safety gate before BTR may splice a prefix from another URL. Unlike the old
+    // implementation, inconclusive samples are not accepted. Signed URLs stay unmodified.
+    private func verify(_ url: String, deadline: BTRDeadline) async throws {
+        guard candidates.count > 1, !verified.contains(url) else { return }
+        if let (range, bytes) = anchor {
+            guard try await sampleBytes(range, url: url, deadline: deadline) == bytes else { throw MediaRangeError.mismatch }
+        } else {
+            let length = min(total ?? (32 * 1024), 32 * 1024)
+            let range = try MediaByteRange(start: 0, end: length - 1)
+            if referenceSample == nil {
+                referenceSample = try await sampleBytes(range, url: candidates[0], deadline: deadline)
+                verified.insert(candidates[0])
+            }
+            guard try await sampleBytes(range, url: url, deadline: deadline) == referenceSample else { throw MediaRangeError.mismatch }
+        }
+        verified.insert(url)
     }
 }

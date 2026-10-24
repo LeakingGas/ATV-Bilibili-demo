@@ -69,12 +69,14 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     private(set) var proxyAvailable = false
     /// 媒体代理注册表（线程安全，Swifter 同步 handler 与播放列表生成并发访问）。
     private let proxyRegistry = MediaProxyRegistry()
+    let btrPlayback = BTRPlaybackSession()
     private let diagLock = NSLock()
     private var _accelerationText = ""
     /// 播放中途检测到当前 host 吞吐撑不住时，外部（BVideoPlayPlugin）指定的优先 host，
     /// sidx 探测会把它排到候选队首，覆盖默认 URL 顺序
     private var preferredHost: String?
     deinit {
+        btrPlayback.invalidate()
         cancelPendingIndexLoads()
         httpServer.stop()
     }
@@ -255,6 +257,8 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
 
         """
         offset += 1
+        var btrTimings = [BTRSegmentTiming]()
+        var presentation = 0.0 // HLS timeline starts at zero; match the playlist we actually serve.
         for segInfo in segment.segments {
             let segStr = """
             #EXTINF:\(Double(segInfo.duration) / Double(segment.timescale)),
@@ -262,10 +266,18 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
             \(mediaURL)
 
             """
+            if segment.timescale > 0, segInfo.size > 0,
+               let byteRange = try? MediaByteRange(start: Int64(offset), end: Int64(offset + segInfo.size - 1)) {
+                btrTimings.append(BTRSegmentTiming(range: byteRange, start: presentation))
+                presentation += Double(segInfo.duration) / Double(segment.timescale)
+            }
             playList.append(segStr)
             offset += (segInfo.size)
         }
 
+        if let downloader = proxyRegistry.downloader(for: info.info) {
+            await downloader.setTimings(btrTimings)
+        }
         playList.append("\n#EXT-X-ENDLIST")
 
         return playList
@@ -624,6 +636,10 @@ private extension BilibiliVideoResourceLoaderDelegate {
         return "http://127.0.0.1:\(httpPort)/media/\(id)"
     }
 
+    private func infoIsAudio(_ media: VideoPlayURLInfo.DashInfo.DashMediaInfo) -> Bool {
+        playInfo?.dash.audio?.contains(where: { $0 == media }) == true
+    }
+
     private func registerProxyMedia(aid: Int) {
         let referer = Keys.referer(for: aid)
         // 同一 DashMediaInfo 的多 CDN URL 共享同一媒体 ID；不同清晰度/codec/音视频轨道
@@ -635,7 +651,7 @@ private extension BilibiliVideoResourceLoaderDelegate {
             let candidates = media.playableURLs
             guard !candidates.isEmpty else { continue }
             let mode: MediaTransportMode = transportMode == .accelerated ? .accelerated : .proxy
-            let downloader = MediaRangeDownloader(candidates: candidates, referer: referer, mode: mode)
+            let downloader = MediaRangeDownloader(candidates: candidates, referer: referer, mode: mode, playback: btrPlayback, isAudio: infoIsAudio(media))
             proxyRegistry.register(media: media, candidates: candidates, referer: referer, downloader: downloader)
         }
     }

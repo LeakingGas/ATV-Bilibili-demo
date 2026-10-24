@@ -26,6 +26,9 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private var lastMaxQuality: Int?
     private var lastStreamIndex: Int?
 
+    private var btrTimer: Timer?
+    private var btrJumpObserver: NSObjectProtocol?
+    private var btrLastRate = 1.0
     private var networkLogTimer: Timer?
     private var lastStalls = 0
     private var lastDroppedFrames = 0
@@ -97,6 +100,9 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     }
 
     deinit {
+        btrTimer?.invalidate()
+        if let btrJumpObserver { NotificationCenter.default.removeObserver(btrJumpObserver) }
+        playerDelegate?.btrPlayback.invalidate()
         networkLogTimer?.invalidate()
     }
 
@@ -106,6 +112,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         if let mode = playerDelegate?.effectiveTransportMode, mode != .direct {
             lines.append("transport: \(mode == .accelerated ? "accel" : "proxy")")
         }
+        if transportMode == .accelerated, let session = playerDelegate?.btrPlayback { lines.append(session.debug) }
         if let host = playerDelegate?.currentSegmentHost {
             lines.append("segment host: \(host)")
         }
@@ -143,6 +150,8 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func playerDidCleanUp(player: AVPlayer) {
+        stopBTRMonitoring()
+        playerDelegate?.btrPlayback.invalidate()
         stopNetworkLogging()
         player.pause()
         player.replaceCurrentItem(with: nil)
@@ -180,6 +189,48 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             self?.cdnProbeReport = report
             self?.isProbingCDN = false
         }
+    }
+
+    private func stopBTRMonitoring() {
+        btrTimer?.invalidate(); btrTimer = nil
+        if let btrJumpObserver { NotificationCenter.default.removeObserver(btrJumpObserver) }
+        btrJumpObserver = nil
+    }
+    private func startBTRMonitoring(player: AVPlayer) {
+        stopBTRMonitoring()
+        guard transportMode == .accelerated, let item = player.currentItem else { return }
+        btrLastRate = Double(Settings.mediaPlayerSpeed.value)
+        sampleBTR(player: player)
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self, weak player] _ in
+            guard let self, let player, self.playerVC?.player === player else { return }
+            self.sampleBTR(player: player)
+        }
+        btrTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        btrJumpObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemTimeJumped,
+            object: item, queue: .main) { [weak self, weak player] _ in
+                guard let self, let player, self.playerVC?.player === player else { return }
+                self.sampleBTR(player: player, jumped: true)
+            }
+    }
+    private func sampleBTR(player: AVPlayer, jumped: Bool = false) {
+        guard let item = player.currentItem, let session = playerDelegate?.btrPlayback else { return }
+        let position = player.currentTime().seconds
+        guard position.isFinite else { return }
+        if player.rate > 0 { btrLastRate = Double(player.rate) }
+        // loadedTimeRanges may contain disconnected seek islands. Only merge ranges
+        // contiguous with the playhead, never count a distant prefetched island.
+        let ranges = item.loadedTimeRanges.map { $0.timeRangeValue }.sorted { $0.start.seconds < $1.start.seconds }
+        var end = position
+        for range in ranges {
+            let start = range.start.seconds, finish = CMTimeRangeGetEnd(range).seconds
+            if start.isFinite && finish.isFinite && start <= end + 0.05 && finish > end { end = finish }
+        }
+        session.update(position: position, rate: btrLastRate,
+            advancing: player.timeControlStatus == .playing,
+            intended: player.timeControlStatus != .paused,
+            waiting: player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+            ahead: max(0, end - position), jumped: jumped)
     }
 
     private func startNetworkLogging() {
@@ -471,6 +522,8 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         loadTask?.cancel()
         loadTask = nil
         loadGeneration += 1
+        stopBTRMonitoring()
+        playerDelegate?.btrPlayback.invalidate()
         playerDelegate = nil
         if tearingDown {
             playerVC = nil
@@ -510,6 +563,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         let playerVC = try ensureActiveLoad(generation)
         let delegate = prepared.delegate
         let asset = prepared.asset
+        if playerDelegate !== delegate { playerDelegate?.btrPlayback.invalidate() }
         playerDelegate = delegate
         // 以实际传输模式为准：代理启动失败时播放列表已回退直连 URI，
         // 此时不得按加速处理（否则卡顿会被误送入加速恢复流程）。
@@ -705,5 +759,6 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             return
         }
         playerVC.player = player
+        startBTRMonitoring(player: player)
     }
 }

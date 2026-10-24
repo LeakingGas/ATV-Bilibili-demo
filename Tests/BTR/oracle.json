@@ -1,0 +1,1464 @@
+{
+  "tests": [
+    {
+      "urls": [
+        "a",
+        "b"
+      ],
+      "speeds": [
+        0,
+        0
+      ],
+      "count": 7,
+      "rounds": [
+        [
+          "a",
+          "b",
+          "a",
+          "b",
+          "a",
+          "b",
+          "a"
+        ],
+        [
+          "b",
+          "a",
+          "b",
+          "a",
+          "b",
+          "a",
+          "b"
+        ],
+        [
+          "a",
+          "b",
+          "a",
+          "b",
+          "a",
+          "b",
+          "a"
+        ],
+        [
+          "b",
+          "a",
+          "b",
+          "a",
+          "b",
+          "a",
+          "b"
+        ],
+        [
+          "a",
+          "b",
+          "a",
+          "b",
+          "a",
+          "b",
+          "a"
+        ],
+        [
+          "b",
+          "a",
+          "b",
+          "a",
+          "b",
+          "a",
+          "b"
+        ],
+        [
+          "a",
+          "b",
+          "a",
+          "b",
+          "a",
+          "b",
+          "a"
+        ],
+        [
+          "b",
+          "a",
+          "b",
+          "a",
+          "b",
+          "a",
+          "b"
+        ]
+      ]
+    },
+    {
+      "urls": [
+        "a",
+        "b",
+        "c"
+      ],
+      "speeds": [
+        1200,
+        300,
+        1
+      ],
+      "count": 7,
+      "rounds": [
+        [
+          "a",
+          "a",
+          "b",
+          "a",
+          "a",
+          "a",
+          "a"
+        ],
+        [
+          "a",
+          "a",
+          "b",
+          "a",
+          "a",
+          "a",
+          "a"
+        ],
+        [
+          "a",
+          "a",
+          "b",
+          "a",
+          "a",
+          "a",
+          "a"
+        ],
+        [
+          "a",
+          "a",
+          "b",
+          "a",
+          "a",
+          "a",
+          "a"
+        ],
+        [
+          "a",
+          "a",
+          "b",
+          "a",
+          "a",
+          "a",
+          "a"
+        ],
+        [
+          "a",
+          "a",
+          "b",
+          "a",
+          "a",
+          "a",
+          "a"
+        ],
+        [
+          "a",
+          "a",
+          "b",
+          "a",
+          "a",
+          "a",
+          "a"
+        ],
+        [
+          "a",
+          "a",
+          "b",
+          "a",
+          "a",
+          "a",
+          "a"
+        ]
+      ]
+    },
+    {
+      "urls": [
+        "a",
+        "b",
+        "c"
+      ],
+      "speeds": [
+        1200,
+        0,
+        0
+      ],
+      "count": 7,
+      "rounds": [
+        [
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "b"
+        ],
+        [
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "c"
+        ],
+        [
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "b"
+        ],
+        [
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "c"
+        ],
+        [
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "b"
+        ],
+        [
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "c"
+        ],
+        [
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "b"
+        ],
+        [
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "a",
+          "c"
+        ]
+      ]
+    },
+    {
+      "urls": [
+        "a",
+        "b"
+      ],
+      "speeds": [
+        1200,
+        0
+      ],
+      "count": 2,
+      "rounds": [
+        [
+          "a",
+          "a"
+        ],
+        [
+          "a",
+          "a"
+        ],
+        [
+          "a",
+          "a"
+        ],
+        [
+          "a",
+          "b"
+        ],
+        [
+          "a",
+          "a"
+        ],
+        [
+          "a",
+          "a"
+        ],
+        [
+          "a",
+          "a"
+        ],
+        [
+          "a",
+          "b"
+        ]
+      ]
+    },
+    {
+      "urls": [
+        "a",
+        "b",
+        "c"
+      ],
+      "speeds": [
+        100,
+        100,
+        100
+      ],
+      "count": 13,
+      "rounds": [
+        [
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a"
+        ],
+        [
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b"
+        ],
+        [
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c"
+        ],
+        [
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a"
+        ],
+        [
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b"
+        ],
+        [
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c"
+        ],
+        [
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a"
+        ],
+        [
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b",
+          "c",
+          "a",
+          "b"
+        ]
+      ]
+    }
+  ],
+  "splits": [
+    {
+      "length": 1,
+      "limit": 1,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 17,
+          "length": 1
+        }
+      ]
+    },
+    {
+      "length": 1,
+      "limit": 4,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 17,
+          "length": 1
+        }
+      ]
+    },
+    {
+      "length": 1,
+      "limit": 7,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 17,
+          "length": 1
+        }
+      ]
+    },
+    {
+      "length": 32769,
+      "limit": 1,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 32785,
+          "length": 32769
+        }
+      ]
+    },
+    {
+      "length": 32769,
+      "limit": 4,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 32785,
+          "length": 32769
+        }
+      ]
+    },
+    {
+      "length": 32769,
+      "limit": 7,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 32785,
+          "length": 32769
+        }
+      ]
+    },
+    {
+      "length": 65536,
+      "limit": 1,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 65552,
+          "length": 65536
+        }
+      ]
+    },
+    {
+      "length": 65536,
+      "limit": 4,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 65552,
+          "length": 65536
+        }
+      ]
+    },
+    {
+      "length": 65536,
+      "limit": 7,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 65552,
+          "length": 65536
+        }
+      ]
+    },
+    {
+      "length": 131073,
+      "limit": 1,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 131089,
+          "length": 131073
+        }
+      ]
+    },
+    {
+      "length": 131073,
+      "limit": 4,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 43707,
+          "length": 43691
+        },
+        {
+          "index": 1,
+          "start": 43708,
+          "end": 87398,
+          "length": 43691
+        },
+        {
+          "index": 2,
+          "start": 87399,
+          "end": 131089,
+          "length": 43691
+        }
+      ]
+    },
+    {
+      "length": 131073,
+      "limit": 7,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 43707,
+          "length": 43691
+        },
+        {
+          "index": 1,
+          "start": 43708,
+          "end": 87398,
+          "length": 43691
+        },
+        {
+          "index": 2,
+          "start": 87399,
+          "end": 131089,
+          "length": 43691
+        }
+      ]
+    },
+    {
+      "length": 2097152,
+      "limit": 1,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 2097168,
+          "length": 2097152
+        }
+      ]
+    },
+    {
+      "length": 2097152,
+      "limit": 4,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 524304,
+          "length": 524288
+        },
+        {
+          "index": 1,
+          "start": 524305,
+          "end": 1048592,
+          "length": 524288
+        },
+        {
+          "index": 2,
+          "start": 1048593,
+          "end": 1572880,
+          "length": 524288
+        },
+        {
+          "index": 3,
+          "start": 1572881,
+          "end": 2097168,
+          "length": 524288
+        }
+      ]
+    },
+    {
+      "length": 2097152,
+      "limit": 7,
+      "pieces": [
+        {
+          "index": 0,
+          "start": 17,
+          "end": 299610,
+          "length": 299594
+        },
+        {
+          "index": 1,
+          "start": 299611,
+          "end": 599203,
+          "length": 299593
+        },
+        {
+          "index": 2,
+          "start": 599204,
+          "end": 898796,
+          "length": 299593
+        },
+        {
+          "index": 3,
+          "start": 898797,
+          "end": 1198389,
+          "length": 299593
+        },
+        {
+          "index": 4,
+          "start": 1198390,
+          "end": 1497982,
+          "length": 299593
+        },
+        {
+          "index": 5,
+          "start": 1497983,
+          "end": 1797575,
+          "length": 299593
+        },
+        {
+          "index": 6,
+          "start": 1797576,
+          "end": 2097168,
+          "length": 299593
+        }
+      ]
+    }
+  ],
+  "meters": [
+    {
+      "bytes": 1000,
+      "seconds": 1,
+      "delay": 0.9,
+      "minimum": 65536
+    },
+    {
+      "bytes": 65536,
+      "seconds": 0.4,
+      "delay": 0.6,
+      "minimum": 65536
+    },
+    {
+      "bytes": 524288,
+      "seconds": 0.8,
+      "delay": 0.78,
+      "minimum": 131072
+    },
+    {
+      "bytes": 131072,
+      "seconds": 2,
+      "delay": 0.9,
+      "minimum": 131072
+    }
+  ],
+  "autos": [
+    [
+      {
+        "at": 0,
+        "op": "newSession",
+        "threads": 16,
+        "steps": 1,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 3000,
+        "op": "buffer",
+        "ahead": 16,
+        "playing": true,
+        "threads": 12,
+        "steps": 2,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 6000,
+        "op": "buffer",
+        "ahead": 16,
+        "playing": true,
+        "threads": 8,
+        "steps": 3,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      }
+    ],
+    [
+      {
+        "at": 1000,
+        "op": "delivered",
+        "bytes": 1000000,
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 1000000,
+        "saturation": 0
+      },
+      {
+        "at": 2000,
+        "op": "delivered",
+        "bytes": 1000000,
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 1600000,
+        "saturation": 0
+      },
+      {
+        "at": 3000,
+        "op": "slow",
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 1600000,
+        "saturation": 0
+      },
+      {
+        "at": 3000,
+        "op": "stall",
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 1600000,
+        "saturation": 0
+      },
+      {
+        "at": 3000,
+        "op": "demand",
+        "active": 12,
+        "limit": 12,
+        "queued": 1,
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 1600000,
+        "saturation": 0
+      },
+      {
+        "at": 14000,
+        "op": "delivered",
+        "bytes": 1000,
+        "threads": 8,
+        "steps": 2,
+        "trialFrom": -1,
+        "throughput": 1000,
+        "saturation": 1
+      },
+      {
+        "at": 17000,
+        "op": "slow",
+        "threads": 8,
+        "steps": 2,
+        "trialFrom": -1,
+        "throughput": 1000,
+        "saturation": 1
+      },
+      {
+        "at": 20000,
+        "op": "stall",
+        "threads": 16,
+        "steps": 3,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 1
+      }
+    ],
+    [
+      {
+        "at": 0,
+        "op": "newSession",
+        "threads": 16,
+        "steps": 1,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 3000,
+        "op": "pushback",
+        "status": 429,
+        "threads": 12,
+        "steps": 2,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 6000,
+        "op": "stall",
+        "threads": 12,
+        "steps": 2,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 10000,
+        "op": "newSession",
+        "threads": 12,
+        "steps": 2,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 200000,
+        "op": "stall",
+        "threads": 16,
+        "steps": 3,
+        "trialFrom": 12,
+        "throughput": 0,
+        "saturation": 0
+      }
+    ],
+    [
+      {
+        "at": 1000,
+        "op": "activity",
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 1000,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 1250,
+        "op": "activity",
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 1250,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 1500,
+        "op": "activity",
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 1500,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 1750,
+        "op": "activity",
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 1750,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 2000,
+        "op": "activity",
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 2000,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 2250,
+        "op": "activity",
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 2250,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 2500,
+        "op": "activity",
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 2500,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 2750,
+        "op": "activity",
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 2750,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 3000,
+        "op": "activity",
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 3000,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 3250,
+        "op": "activity",
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 3250,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 3500,
+        "op": "activity",
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 3500,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 3750,
+        "op": "activity",
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 3750,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 4000,
+        "op": "activity",
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 4000,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 4250,
+        "op": "activity",
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 4250,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 4500,
+        "op": "activity",
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 4500,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 4750,
+        "op": "activity",
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 4750,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 5000,
+        "op": "activity",
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 5000,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 5250,
+        "op": "activity",
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 5250,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 5500,
+        "op": "activity",
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 5500,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 16,
+        "steps": 2,
+        "trialFrom": 12,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 5750,
+        "op": "activity",
+        "threads": 16,
+        "steps": 2,
+        "trialFrom": 12,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 5750,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 16,
+        "steps": 2,
+        "trialFrom": 12,
+        "throughput": 0,
+        "saturation": 0
+      }
+    ],
+    [
+      {
+        "at": 0,
+        "op": "newSession",
+        "threads": 16,
+        "steps": 1,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 3000,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": false,
+        "threads": 16,
+        "steps": 1,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 31000,
+        "op": "buffer",
+        "ahead": 2,
+        "playing": true,
+        "threads": 16,
+        "steps": 1,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 32000,
+        "op": "pushback",
+        "status": 412,
+        "threads": 12,
+        "steps": 2,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      }
+    ],
+    [
+      {
+        "at": 3000,
+        "op": "demand",
+        "active": 8,
+        "limit": 8,
+        "queued": 1,
+        "threads": 8,
+        "steps": 0,
+        "trialFrom": -1,
+        "throughput": 0,
+        "saturation": 0
+      },
+      {
+        "at": 7000,
+        "op": "slow",
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 0.8
+      },
+      {
+        "at": 8000,
+        "op": "demand",
+        "active": 0,
+        "limit": 12,
+        "queued": 0,
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": 8,
+        "throughput": 0,
+        "saturation": 1
+      },
+      {
+        "at": 20000,
+        "op": "delivered",
+        "bytes": 65536,
+        "threads": 12,
+        "steps": 1,
+        "trialFrom": -1,
+        "throughput": 65536,
+        "saturation": 0
+      }
+    ]
+  ],
+  "hedges": [
+    {
+      "now": 100,
+      "bytes": 0,
+      "length": 200000,
+      "deadline": 2000,
+      "copy": 200000,
+      "seenAt": 0,
+      "due": false,
+      "remaining": 1
+    },
+    {
+      "now": 1000,
+      "bytes": 0,
+      "length": 200000,
+      "deadline": 2000,
+      "copy": 200000,
+      "seenAt": 0,
+      "due": true,
+      "remaining": 1
+    },
+    {
+      "now": 1000,
+      "bytes": 100000,
+      "length": 150000,
+      "deadline": 10000,
+      "copy": 100000,
+      "seenAt": 1000,
+      "due": false,
+      "remaining": 1
+    },
+    {
+      "now": 1000,
+      "bytes": 100000,
+      "length": 300000,
+      "deadline": 2000,
+      "copy": 200000,
+      "seenAt": 1000,
+      "due": true,
+      "remaining": 1
+    },
+    {
+      "now": 1000,
+      "bytes": 30000,
+      "length": 300000,
+      "deadline": 2000,
+      "copy": 100000,
+      "seenAt": 1000,
+      "due": true,
+      "remaining": 1
+    },
+    {
+      "now": 1000,
+      "bytes": 100000,
+      "length": 300000,
+      "deadline": 2000,
+      "copy": 0,
+      "seenAt": 1000,
+      "due": true,
+      "remaining": 1
+    },
+    {
+      "now": 1000,
+      "bytes": 100000,
+      "length": 300000,
+      "deadline": 2000,
+      "copy": 100000,
+      "seenAt": 1000,
+      "due": true,
+      "remaining": 0
+    },
+    {
+      "now": 2000,
+      "bytes": 100000,
+      "length": 300000,
+      "deadline": 2500,
+      "copy": 100000,
+      "seenAt": 500,
+      "due": true,
+      "remaining": 1
+    }
+  ]
+}
