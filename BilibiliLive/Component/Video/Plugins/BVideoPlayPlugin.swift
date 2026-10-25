@@ -20,7 +20,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private let isMuted: Bool
     private let mediaWarmupManager: PlayerMediaWarmupManager?
     private var currentQualityId: Int?
-    private var currentPlaybackTime: Double = 0
+    private var resumeState = PlaybackResumeState()
     // 记录最近一次实际用于加载的 maxQuality/streamIndex，host 切换时原样复用，
     // 不去动用户当前的画质模式（自动多档 fallback 还是手动锁定某一档）
     private var lastMaxQuality: Int?
@@ -144,9 +144,10 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func playerWillStart(player: AVPlayer) {
-        if let playerStartPos = playData.playerStartPos {
-            player.seek(to: CMTime(seconds: Double(playerStartPos), preferredTimescale: 1), toleranceBefore: .zero, toleranceAfter: .zero)
-        }
+        guard playerVC?.player === player,
+              let target = resumeState.initialTarget(history: playData.playerStartPos.map { Double($0) }) else { return }
+        BTRTrace.shared.event("seek_requested",["source":"initial-history","target":target,"generation":loadGeneration])
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
     func playerDidStart(player _: AVPlayer) {
@@ -562,12 +563,9 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     func switchQuality(to qualityId: Int, streamIndex: Int?) async {
         guard let player = playerVC?.player else { return }
 
-        let currentTime = player.currentTime().seconds
-        guard currentTime > 0 else { return }
-
-        // 保存当前播放位置
-        currentPlaybackTime = currentTime
-        BTRTrace.shared.event("quality_switch",["from":currentQualityId ?? -1,"to":qualityId,"streamIndex":streamIndex ?? -1])
+        // Snapshot per switch: later overlapping switches cannot overwrite this target.
+        guard let target = resumeState.qualityTarget(current: player.currentTime().seconds) else { return }
+        BTRTrace.shared.event("quality_switch",["from":currentQualityId ?? -1,"to":qualityId,"streamIndex":streamIndex ?? -1,"target":target])
         currentQualityId = qualityId
 
         // 重新加载视频，使用新的画质
@@ -586,8 +584,10 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
                   playerVC != nil,
                   let newPlayer = playerVC?.player
             else { return }
-            await newPlayer.seek(to: CMTime(seconds: currentPlaybackTime, preferredTimescale: 1), toleranceBefore: .zero, toleranceAfter: .zero)
-            guard loadGeneration == generation, !Task.isCancelled else { return }
+            BTRTrace.shared.event("seek_requested",["source":"quality-switch","target":target,"generation":generation])
+            let completed = await newPlayer.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            BTRTrace.shared.event("seek_completed",["source":"quality-switch","target":target,"generation":generation,"completed":completed])
+            guard loadGeneration == generation, !Task.isCancelled, playerVC?.player === newPlayer else { return }
             newPlayer.play()
         } catch is CancellationError {
             return

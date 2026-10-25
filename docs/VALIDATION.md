@@ -123,3 +123,7 @@ Supersedes the diag8 experiment: restored diag7 window scheduling and added opt-
 ## diag10 device-proven large Range rejection
 
 Device trace requested bytes=322059864-339048564 (16988701 bytes), 12 repeats. Proxy returned range-over-limit; preceding range ending 322059863 completed. Buffer exhausted and playhead stopped at 130.03685 s. Remove both stream and proxy 16 MiB rejection; keep fetch/Data cap and original bounded windows/backpressure. Native regression replays exact range via 128 KiB pipe and validates every byte/header/cleanup plus fetch cap. Python fixture and syntax checks passed locally; native Swift regression and Xcode archive not run locally. Earlier recoverable stall is a separate unresolved issue.
+
+## diag11 resume once
+
+Device trace restored 23 s after quality change then jumped to 135 s on readiness and later stalled at 156.2959 s. Code reapplied playData.playerStartPos on every new ready player. Consume history once, including when quality switches before initial readiness; capture per-switch fractional target. Add seek source/target events and native state-sequence regression. Existing large-range fix is device-verified (16988701 and 19136126 bytes completed); sustained slow video requests remain unresolved. Syntax/whitespace checks pass locally; native tests/archive pending Actions.

@@ -16,6 +16,23 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         }
     }
     static func run() async throws {
+        // Reproduce the ordering seen on device: saved history, rewind, quality seek,
+        // then delayed readyToPlay. History must never override the captured position.
+        var resumeState = PlaybackResumeState()
+        try require(resumeState.initialTarget(history:135) == 135, "first entry restores history")
+        let qualityTarget = resumeState.qualityTarget(current:23.142742862)
+        try require(qualityTarget == 23.142742862, "quality switch preserves fractional position")
+        try require(resumeState.initialTarget(history:135) == nil, "quality readiness must not reapply history")
+        try require(resumeState.initialTarget(history:135) == nil, "duplicate readiness does not seek")
+        _ = resumeState.qualityTarget(current:40)
+        try require(qualityTarget == 23.142742862, "later switch cannot alter earlier captured target")
+        var earlySwitch = PlaybackResumeState()
+        try require(earlySwitch.qualityTarget(current:0) == 0, "quality change at start is valid")
+        try require(earlySwitch.initialTarget(history:135) == nil, "early quality switch suppresses late history callback")
+        var separateVideo = PlaybackResumeState()
+        try require(separateVideo.initialTarget(history:42) == 42, "new video retains independent resume")
+        print("PASS: history restore once; quality target survives delayed readiness and overlapping switches")
+
         let json = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))) as! [String: Any]
         for test in json["tests"] as! [[String: Any]] {
             var policy = BTRPolicy()

@@ -1097,7 +1097,7 @@ final class BTRTraceExport {
             BTRTrace.shared.freeze()
             let bytes = Data(BTRTrace.shared.export().utf8)
             return HttpResponse.raw(200,"OK",["Content-Type":"application/x-ndjson; charset=utf-8",
-                "Content-Disposition":"attachment; filename=btr-diag10.jsonl",
+                "Content-Disposition":"attachment; filename=btr-diag11.jsonl",
                 "Cache-Control":"no-store","Content-Length":String(bytes.count)]) { writer in
                 try writer.write(bytes)
             }

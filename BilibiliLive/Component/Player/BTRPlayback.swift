@@ -169,7 +169,7 @@ final class BTRPlaybackSession: @unchecked Sendable {
         let fresh = Self.now - sampledAt <= 1500
         let state = closed ? "closed" : !fresh ? "stale" : !intended ? "paused" : waiting ? "waiting" : "playing"
         let deadlineState = !closed && fresh && intended ? "mapped" : "off"
-        var lines = ["BTR diag:10 trace auto:\(auto.threads) reason:\(auto.reason) gen:\(epoch)",
+        var lines = ["BTR diag:11 trace auto:\(auto.threads) reason:\(auto.reason) gen:\(epoch)",
                      "slots:\(activeRequests)/\(auto.threads) queue:\(queuedRequests) rescue:\(rescues)",
                      String(format: "play:%@ ahead:%.1fs rate:%.2fx deadline:%@", state, bufferAhead, rate, deadlineState)]
         let now = Self.now
@@ -339,7 +339,7 @@ final class BTRTrace: @unchecked Sendable {
     }
     func export() -> String {
         lock.lock(); defer { lock.unlock() }
-        let header: [String: Any] = ["format":"btr-trace-1", "build":"diag10-large-range",
+        let header: [String: Any] = ["format":"btr-trace-1", "build":"diag11-resume-once",
             "startedUTC":wallStart, "recording":active, "events":rows.count,
             "overwritten":max(0, sequence - rows.count), "maxSeconds":600]
         let data = try! JSONSerialization.data(withJSONObject:header,options:[.sortedKeys])
@@ -358,5 +358,23 @@ final class BTRTrace: @unchecked Sendable {
         let e = error as NSError
         // Do not include userInfo, which can contain signed URLs.
         return ["errorDomain":e.domain,"errorCode":e.code]
+    }
+}
+
+
+// History applies only on first entry, never again when replacing the player for quality.
+// Capturing a quality target also consumes history if initial readiness hasn't arrived yet.
+struct PlaybackResumeState {
+    private var historyConsumed = false
+    mutating func initialTarget(history: Double?) -> Double? {
+        guard !historyConsumed else { return nil }
+        historyConsumed = true
+        guard let history, history.isFinite, history > 0 else { return nil }
+        return history
+    }
+    mutating func qualityTarget(current: Double) -> Double? {
+        guard current.isFinite, current >= 0 else { return nil }
+        historyConsumed = true
+        return current
     }
 }
