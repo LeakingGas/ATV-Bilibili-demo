@@ -459,12 +459,14 @@ actor MediaRangeDownloader {
                 do {
                     let bytes = try await self.downloadPiece(piece, preferred: preferred, priority: priority, delay: delay, deadline: deadline, rescue: rescue)
                     slot.data = bytes; slot.finished = true
-                    await self.refill()
+                    self.refill()
                     return bytes
                 } catch {
+                    // No refill here: the reader waiting on this slot is about to fail (or was
+                    // cancelled); re-creating its piece would leak a request. Gaps are filled by
+                    // the next schedule() of a live reader.
                     slot.finished = true
-                    await self.remove(slot)
-                    await self.refill()
+                    self.remove(slot)
                     throw error
                 }
             }
