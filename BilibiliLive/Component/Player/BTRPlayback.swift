@@ -153,7 +153,7 @@ final class BTRPlaybackSession: @unchecked Sendable {
         let fresh = Self.now - sampledAt <= 1500
         let state = closed ? "closed" : !fresh ? "stale" : !intended ? "paused" : waiting ? "waiting" : "playing"
         let deadlineState = !closed && fresh && intended ? "mapped" : "off"
-        var lines = ["BTR diag:3 auto:\(auto.threads) reason:\(auto.reason) gen:\(epoch)",
+        var lines = ["BTR diag:5 auto:\(auto.threads) reason:\(auto.reason) gen:\(epoch)",
                      "slots:\(activeRequests)/\(auto.threads) queue:\(queuedRequests) rescue:\(rescues)",
                      String(format: "play:%@ ahead:%.1fs rate:%.2fx deadline:%@", state, bufferAhead, rate, deadlineState)]
         for track in ["video", "audio"] {
@@ -193,10 +193,12 @@ final class BTRPlaybackSession: @unchecked Sendable {
         locked {
             guard !closed else { return }
             let projected = self.position + (self.advancing ? max(0, now - sampledAt) / 1000 * self.rate : 0)
-            let discontinuity = initialized && (jumped || abs(position - projected) > 1.5)
+            // AVPlayer may issue target-range requests BEFORE its time-jump notification.
+            // Those immutable byte requests remain valid; only item teardown invalidates them.
+            let fresh = now - sampledAt <= 1500
+            let discontinuity = initialized && fresh && abs(position - projected) > 1.5
             if !initialized || discontinuity {
-                if discontinuity { epoch += 1 }
-                errors.removeAll(); rescues = 0
+                // Keep error history across seeks for post-failure diagnosis.
                 auto.newSession(at: now)
             }
             if waiting && !self.waiting && intended && initialized && !discontinuity { auto.stall(at: now) }

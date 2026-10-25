@@ -73,7 +73,9 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         session.update(position:10.5,rate:2,advancing:false,intended:false,waiting:false,ahead:5,now:1250)
         try require(session.deadline(presentation:20,generation:epoch,now:1300).isInfinite, "paused no deadline")
         session.update(position:100,rate:1,advancing:false,intended:true,waiting:true,ahead:0,jumped:true,now:1500)
-        try require(!session.isCurrent(epoch), "seek invalidates old epoch")
+        try require(session.isCurrent(epoch), "seek must preserve accepted byte-range responses")
+        session.update(position:100,rate:1,advancing:false,intended:true,waiting:true,ahead:0,jumped:true,now:1550)
+        try require(session.isCurrent(epoch), "duplicate time-jump notification preserves requests")
         try require(session.deadline(presentation:100,generation:session.generation,now:1600)==1600, "overdue head is immediate")
         try require(session.deadline(presentation:101,generation:session.generation,now:4000).isInfinite, "stale snapshot has no deadline")
         session.invalidate()
@@ -132,10 +134,22 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         let old = Task { try await obsolete.fetch(range:range) }
         try await Task.sleep(nanoseconds:100_000_000)
         let seekAt = ProcessInfo.processInfo.systemUptime
-        moving.update(position:100,rate:1,advancing:false,intended:true,waiting:true,ahead:0,jumped:true)
+        moving.invalidate()
         var oldRejected=false
         do { _ = try await old.value } catch { oldRejected=true }
-        try require(oldRejected && ProcessInfo.processInfo.systemUptime-seekAt < 2, "seek aborts actual URLSession request")
+        try require(oldRejected && ProcessInfo.processInfo.systemUptime-seekAt < 2, "item teardown aborts actual URLSession request")
+        // AVPlayer can submit the target request before announcing its seek.
+        let seeking = BTRPlaybackSession()
+        seeking.update(position:0,rate:1,advancing:false,intended:true,waiting:true,ahead:0)
+        let seekDownloader = MediaRangeDownloader(candidates:[base+"/slow"],referer:base,mode:.proxy,playback:seeking)
+        let targetRange = Task { try await seekDownloader.fetch(range:range) }
+        try await Task.sleep(nanoseconds:100_000_000)
+        seeking.update(position:100,rate:1,advancing:false,intended:true,waiting:true,ahead:0,jumped:true)
+        let targetBytes = try await targetRange.value
+        try require(targetBytes == expected(0,524288), "seek notification must not truncate an accepted HTTP response")
+        let seekDone = await seekDownloader.diagnostics()
+        try require(seekDone.activeSubrequests == 0, "seek-surviving response releases permits")
+        print("PASS: seek preserves response; teardown still cancels network request")
         // A consumer slower than the producer must not deadlock a 64KiB pipe.
         let pipe = MediaBytePipe(capacityBytes:65536)
         let producer = Task { try await pipe.write(expected(0,524288)); pipe.close() }

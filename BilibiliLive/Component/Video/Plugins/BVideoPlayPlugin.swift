@@ -30,6 +30,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     // already hold the incoming load. Keep ownership independent of that pointer.
     private weak var btrOwner: AVPlayer?
     private var btrOwnedSession: BTRPlaybackSession?
+    private var btrFailureSnapshot = ""
     private var btrTimer: Timer?
     private var btrJumpObserver: NSObjectProtocol?
     private var btrLastRate = 1.0
@@ -113,8 +114,8 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     /// 供 DebugPlugin 浮层显示的网络诊断信息
     var networkDebugInfo: String {
         var lines = [String]()
-        if let mode = playerDelegate?.effectiveTransportMode, mode != .direct {
-            lines.append("transport: \(mode == .accelerated ? "accel" : "proxy")")
+        if let mode = playerDelegate?.effectiveTransportMode {
+            lines.append("transport: \(mode == .accelerated ? "accel" : mode == .proxy ? "proxy" : "direct")")
         }
         if transportMode == .accelerated, let session = playerDelegate?.btrPlayback { lines.append("lifecycle:4\n" + session.debug) }
         if let host = playerDelegate?.currentSegmentHost {
@@ -123,15 +124,24 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         if let accel = playerDelegate?.accelerationDebugInfo, !accel.isEmpty {
             lines.append(accel)
         }
+        if !btrFailureSnapshot.isEmpty { lines.append(btrFailureSnapshot) }
         if !cdnProbeReport.isEmpty {
             lines.append(cdnProbeReport)
         }
         return lines.joined(separator: "\n")
     }
 
-    func playerDidFail(player _: AVPlayer) {
+    func playerDidFail(player: AVPlayer) {
         // 加速传输整体失败时有限恢复为直连；用户暂停时不擅自续播（由恢复路径保护）。
-        guard transportMode == .accelerated else { return }
+        guard transportMode == .accelerated, playerVC?.player === player else { return }
+        // Persist only numeric codes and our sanitized diagnostics, never error URLs.
+        let error = (player.currentItem?.error ?? player.error) as NSError?
+        let code = error.map { String($0.code) } ?? "unknown"
+        let underlying = error?.userInfo[NSUnderlyingErrorKey] as? NSError
+        let underlyingCode = underlying.map { String($0.code) } ?? "none"
+        btrFailureSnapshot = "BTR failure -> direct; player:\(code) underlying:\(underlyingCode)\n"
+            + (playerDelegate?.btrPlayback.debug ?? "no session")
+            + "\n" + (playerDelegate?.accelerationDebugInfo ?? "")
         Task { @MainActor [weak self] in
             await self?.recoverAcceleratedToDirect()
         }

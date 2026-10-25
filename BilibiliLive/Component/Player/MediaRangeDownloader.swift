@@ -390,7 +390,10 @@ actor MediaRangeDownloader {
                 cursor = window.end + 1
             }
             pipe.close()
-        } catch { pipe.fail(error) }
+        } catch {
+            playback.recordError(error, isAudio: isAudio, generation: generation)
+            pipe.fail(error)
+        }
     }
     func fetch(range: MediaByteRange) async throws -> Data {
         guard range.length <= memoryCap else { throw MediaRangeError.unsatisfiable(total: total) }
