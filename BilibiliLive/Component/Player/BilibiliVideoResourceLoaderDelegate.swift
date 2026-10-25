@@ -710,10 +710,7 @@ private extension BilibiliVideoResourceLoaderDelegate {
             }
             return strictProxyFailure("total-unknown")
         case let .single(range):
-            // 超出当前16MiB请求上限时明确失败，不重定向
-            if range.length > 16 * 1024 * 1024 {
-                return strictProxyFailure("range-over-limit")
-            }
+            // Large valid ranges are streamed through bounded windows and the byte pipe.
             return serveVerifiedRange(range, entry: entry, mediaID: mediaID)
         }
     }
@@ -1100,7 +1097,7 @@ final class BTRTraceExport {
             BTRTrace.shared.freeze()
             let bytes = Data(BTRTrace.shared.export().utf8)
             return HttpResponse.raw(200,"OK",["Content-Type":"application/x-ndjson; charset=utf-8",
-                "Content-Disposition":"attachment; filename=btr-diag9.jsonl",
+                "Content-Disposition":"attachment; filename=btr-diag10.jsonl",
                 "Cache-Control":"no-store","Content-Length":String(bytes.count)]) { writer in
                 try writer.write(bytes)
             }

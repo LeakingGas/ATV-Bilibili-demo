@@ -195,6 +195,41 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         let seekDone = await seekDownloader.diagnostics()
         try require(seekDone.activeSubrequests == 0, "seek-surviving response releases permits")
         print("PASS: seek preserves response; teardown still cancels network request")
+        // Exact failed 4K range from the device trace: 211485 bytes above 16 MiB.
+        // Streaming must succeed without allocating the entire requested range.
+        let deviceRange = try MediaByteRange(start:322059864,end:339048564)
+        try require(deviceRange.length == 16988701, "device range length")
+        let headers = MediaRangeResponseHeaders.partialContent(range:deviceRange,totalLength:1870645454)
+        try require(headers["Content-Length"] == "16988701", "large range response length")
+        try require(headers["Content-Range"] == "bytes 322059864-339048564/1870645454", "large range response header")
+        let largeEngine = MediaRangeDownloader(candidates:[base+"/large-range"],referer:base)
+        let boundedPipe = MediaBytePipe(capacityBytes:128*1024)
+        let largeProducer = Task { await largeEngine.stream(range:deviceRange,to:boundedPipe) }
+        let checkedBytes: Int
+        do {
+            checkedBytes = try await Task.detached { () throws -> Int in
+                var count = 0
+                while let part = try boundedPipe.readSync(maxLength:65536,timeout:15) {
+                    try require(part == expected(Int(deviceRange.start)+count,part.count), "large stream exact byte order")
+                    count += part.count
+                }
+                return count
+            }.value
+        } catch {
+            largeProducer.cancel(); boundedPipe.fail(error)
+            await largeProducer.value
+            throw error
+        }
+        await largeProducer.value
+        try require(Int64(checkedBytes) == deviceRange.length, "large stream is not truncated")
+        let largeDone = await largeEngine.diagnostics()
+        try require(largeDone.activeSubrequests == 0, "large stream releases all requests")
+        // The API that returns a single Data still keeps its allocation cap.
+        var fullFetchRejected = false
+        do { _ = try await largeEngine.fetch(range:deviceRange) }
+        catch { fullFetchRejected = true }
+        try require(fullFetchRejected, "whole-buffer API retains memory cap")
+        print("PASS: device 16988701-byte range streams in order through 128KiB pipe; full-buffer cap retained")
         // A consumer slower than the producer must not deadlock a 64KiB pipe.
         let pipe = MediaBytePipe(capacityBytes:65536)
         let producer = Task { try await pipe.write(expected(0,524288)); pipe.close() }

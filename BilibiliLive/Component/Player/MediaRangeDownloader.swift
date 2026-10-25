@@ -357,7 +357,8 @@ actor MediaRangeDownloader {
         var admitted = false
         defer { if admitted { streams -= 1 } }
         do {
-            guard !candidates.isEmpty, range.length <= memoryCap else { throw MediaRangeError.unsatisfiable(total: total) }
+            // A stream is bounded by its 2 MiB window and pipe, not by the total HTTP range.
+            guard !candidates.isEmpty else { throw MediaRangeError.unsatisfiable(total: total) }
             // tvOS adaptation: two bounded streams per track. The byte pipe also backpressures.
             let admissionStarted = BTRTrace.now
             while streams >= 2 {
@@ -378,7 +379,7 @@ actor MediaRangeDownloader {
             // BTR ordered chunks, bounded to 2 MiB windows rather than retaining a whole range.
             while cursor <= range.end {
                 guard deadline.valid else { throw CancellationError() }
-                let window = try MediaByteRange(start: cursor, end: min(range.end, cursor + 2 * 1024 * 1024 - 1))
+                let window = try MediaByteRange(start: cursor, end: cursor + min(range.end - cursor, 2 * 1024 * 1024 - 1))
                 let pieces = split(range: window)
                 BTRTrace.shared.event("window_begin",["start":window.start,"end":window.end,"pieces":pieces.count])
                 let urls = pool()
@@ -411,6 +412,7 @@ actor MediaRangeDownloader {
                     }
                     guard next == pieces.count else { throw MediaRangeError.truncated }
                 }
+                if window.end == range.end { break }
                 cursor = window.end + 1
             }
             BTRTrace.shared.event("stream_complete")

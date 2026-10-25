@@ -119,3 +119,7 @@ Local validation: Swift syntax parser and git whitespace checks pass. Python HTT
 ## diag9 diagnostic baseline
 
 Supersedes the diag8 experiment: restored diag7 window scheduling and added opt-in flight recording only. See DIAGNOSTICS.zh-CN.md. Native trace tests are added, not locally executed; Xcode and device LAN export validation remain outstanding.
+
+## diag10 device-proven large Range rejection
+
+Device trace requested bytes=322059864-339048564 (16988701 bytes), 12 repeats. Proxy returned range-over-limit; preceding range ending 322059863 completed. Buffer exhausted and playhead stopped at 130.03685 s. Remove both stream and proxy 16 MiB rejection; keep fetch/Data cap and original bounded windows/backpressure. Native regression replays exact range via 128 KiB pipe and validates every byte/header/cleanup plus fetch cap. Python fixture and syntax checks passed locally; native Swift regression and Xcode archive not run locally. Earlier recoverable stall is a separate unresolved issue.
