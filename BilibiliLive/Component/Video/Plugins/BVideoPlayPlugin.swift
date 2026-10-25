@@ -26,6 +26,10 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private var lastMaxQuality: Int?
     private var lastStreamIndex: Int?
 
+    // Cleanup callbacks refer to an outgoing player, while playerDelegate may
+    // already hold the incoming load. Keep ownership independent of that pointer.
+    private weak var btrOwner: AVPlayer?
+    private var btrOwnedSession: BTRPlaybackSession?
     private var btrTimer: Timer?
     private var btrJumpObserver: NSObjectProtocol?
     private var btrLastRate = 1.0
@@ -112,7 +116,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         if let mode = playerDelegate?.effectiveTransportMode, mode != .direct {
             lines.append("transport: \(mode == .accelerated ? "accel" : "proxy")")
         }
-        if transportMode == .accelerated, let session = playerDelegate?.btrPlayback { lines.append(session.debug) }
+        if transportMode == .accelerated, let session = playerDelegate?.btrPlayback { lines.append("lifecycle:4\n" + session.debug) }
         if let host = playerDelegate?.currentSegmentHost {
             lines.append("segment host: \(host)")
         }
@@ -150,9 +154,13 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func playerDidCleanUp(player: AVPlayer) {
-        stopBTRMonitoring()
-        playerDelegate?.btrPlayback.invalidate()
-        stopNetworkLogging()
+        if btrOwner === player {
+            stopBTRMonitoring()
+            btrOwnedSession?.invalidate()
+            btrOwnedSession = nil
+            btrOwner = nil
+            stopNetworkLogging()
+        }
         player.pause()
         player.replaceCurrentItem(with: nil)
     }
@@ -758,6 +766,10 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             player.replaceCurrentItem(with: nil)
             return
         }
+        // The nil assignment above synchronously cleans up the old player.
+        // Bind the incoming session only after that callback, before publishing it.
+        btrOwner = player
+        btrOwnedSession = playerDelegate?.btrPlayback
         playerVC.player = player
         startBTRMonitoring(player: player)
     }
