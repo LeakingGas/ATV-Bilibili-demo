@@ -355,7 +355,7 @@ actor MediaRangeDownloader {
             if mode == .accelerated, speeds.isEmpty, range.length > 64 * 1024 {
                 let head = try MediaByteRange(start: cursor, end: cursor + 64 * 1024 - 1)
                 let bytes = try await downloadPiece(head, preferred: pool(), priority: 120, delay: 0, deadline: deadline, rescue: rescue)
-                try await pipe.write(bytes, isCurrent: { deadline.valid }); delivered += Int64(bytes.count); cursor = head.end + 1
+                try await pipe.write(bytes, isCurrent: { deadline.valid }); delivered += Int64(bytes.count); playback.ordered(bytes.count, generation: generation); cursor = head.end + 1
             }
             // BTR ordered chunks, bounded to 2 MiB windows rather than retaining a whole range.
             while cursor <= range.end {
@@ -384,6 +384,7 @@ actor MediaRangeDownloader {
                         while let chunk = ordered.removeValue(forKey: next) {
                             try await pipe.write(chunk, isCurrent: { deadline.valid })
                             delivered += Int64(chunk.count)
+                            playback.ordered(chunk.count, generation: generation)
                             next += 1
                         }
                     }
@@ -568,6 +569,7 @@ actor MediaRangeDownloader {
         let requestDeadline = deadline ?? BTRDeadline(session: playback, generation: playback.generation, presentation: nil)
         let host = permit.host
         active[host, default: 0] += 1
+        playback.transferStarted(host: host)
         let started = Self.now
         var outcome = "ok"
         defer {
@@ -575,6 +577,7 @@ actor MediaRangeDownloader {
             recentAttempts.append("range=\(range.start)-\(range.end) got=\(bytes) result=\(outcome)")
             if recentAttempts.count > 12 { recentAttempts.removeFirst(recentAttempts.count - 12) }
             wireBytes += Int64(bytes)
+            playback.transferEnded(host: host)
             active[host] = (active[host] ?? 1) > 1 ? active[host]! - 1 : nil
             sample(url, bytes: bytes, elapsed: Self.now - started)
         }

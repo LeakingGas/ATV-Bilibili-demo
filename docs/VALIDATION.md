@@ -84,3 +84,26 @@ Debug 始终显示 transport，包括 direct；BTR diag:5；失败回退保留�
 下载器新增最多12条不含URL的请求记录（Range起止、实际接收长度、结果码）；测试失败时打印该记录，stdout不缓存，顶层捕获错误并退出1。未跳过失败测试。
 
 本机HTTP fixture smoke通过：正确Range、错误头、64KiB截断、尾部恢复；Swift语法解析通过。尚未在macOS运行本次Swift修订，不能声称已修复真实网络卡顿或本次CI根因。新运行如仍失败，请提供 RESUME ATTEMPTS 和 BTR TEST FAILED 行、test-server.log。
+
+
+## diag:6 实机证据与诊断修正
+
+实机diag:5显示：有序播放、ahead 16.8s；之后自动额度16、slots13、queue3到5、ahead9.6到8.6、历史网络错误-1001/-1005；最终transport:direct。说明请求实际运行且发生回退，不足以证明网络带宽是唯一根因。rescue为累计启动副本数量，不是失败数量。
+
+确认两个诊断缺陷并修复：60秒waiting看门狗绕过playerDidFail里的快照保存；旧hosts/sub仅来自最后完成请求所对应下载器，不是实时会话值。将回退快照移到公共入口，标明waiting-60s或player-failed；新增会话live hosts/http、最近5秒写入有序管道的平均Mbps、上次网络数据和有序写入距今时间。ordered5s是音视频及索引合计写入管道速度，不是AVPlayer实际消费速度；暂停或缓冲充足时低值正常。旧行标明last completed track。
+
+未增加线程或调整救援阈值；本轮是诊断准确性修正，不能宣称修复了吞吐或卡顿。原生语法解析与diff检查通过，Actions类型检查/测试及真机尚待执行。看门狗快照为历史值。
+
+
+追加：用户报告direct后又自动回到accel。源码确认switchHost调用playmedia(isQualitySwitch:true)，preparedMedia原本重新读取全局BTR开关，覆盖了失败后的direct状态。diag6现保留换源/换画质前的当前传输模式；退出重开视频才重新读取设置。新增异步测速generation检查、回退重入保护、恢复seek/play前检查，防止旧操作操纵新播放器。此行为修正可消除该条模式反复切换路径，但没有证明网络超时全部解决；原生UI回归仍待真机。
+
+
+## diag:7 BTR-only（用户明确要求）
+
+本节取代之前各节的直连回退说明。点播DASH链路始终使用BTR，忽略旧multiCDNEnabled存储值；设置显示BTR CDN并行（始终开启）。预热、换画质、新视频统一强制加速模式。删除播放器级直连恢复和旧CDN测速换源路径。失败仅记录，不重建成直连。60秒等待仍记录诊断，正在进行的BTR请求可继续恢复。
+
+删除SIDX失败时生成外部媒体播放列表的分支；解析失败抛BTRStrict错误。代理不可用时加载失败。播放器媒体URL仅为loopback；字幕的本地重定向保留。无Range、未知总长的开放/后缀Range、超16MiB请求明确返回503与X-BTR-Error，不再307到外部CDN。此处采用拒绝策略，尚未实现这些请求类型的BTR传输，所以可能降低兼容性；不能将不再直连等同于解决卡顿。
+
+作用范围是本次改造的B站点播音视频链路；BTR本身仍需从CDN下载，SIDX元数据探测、字幕/API及独立直播模块不是这里所说的AVPlayer直连媒体降级。
+
+验证：Swift语法解析、无外部媒体重定向/直连播放列表回退的静态检查和ZIP检查。没有macOS本地编译，也没有真机结果。需Actions构建后验证普通播放、换画质、超时等待、索引失败、代理失败；网络故障期间不得出现transport:direct。标记BTR diag:7 / BTR ONLY。

@@ -142,6 +142,22 @@ final class BTRPlaybackSession: @unchecked Sendable {
     private var queuedRequests = 0
     private var errors = [String: (message: String, at: Double)]()
     private var rescues = 0
+    private var liveHosts = [String: Int]()
+    private var orderedSamples = [(at: Double, bytes: Int)]()
+    private var lastNetworkProgress = -Double.infinity
+    private var lastOrderedProgress = -Double.infinity
+    func transferStarted(host: String) { locked { liveHosts[host, default: 0] += 1 } }
+    func transferEnded(host: String) { locked {
+        if let count = liveHosts[host], count > 1 { liveHosts[host] = count - 1 }
+        else { liveHosts.removeValue(forKey: host) }
+    } }
+    func ordered(_ bytes: Int, generation: Int) { locked {
+        guard !closed, epoch == generation else { return }
+        let now = Self.now
+        orderedSamples.removeAll { now - $0.at > 5000 }
+        orderedSamples.append((now, bytes))
+        lastOrderedProgress = now
+    } }
     private var hosts = Set<String>()
     func registerHosts(_ values: [String]) {
         locked { hosts.formUnion(values); auto.maximumThreads = max(8, min(64, hosts.count * 8)) }
@@ -153,9 +169,16 @@ final class BTRPlaybackSession: @unchecked Sendable {
         let fresh = Self.now - sampledAt <= 1500
         let state = closed ? "closed" : !fresh ? "stale" : !intended ? "paused" : waiting ? "waiting" : "playing"
         let deadlineState = !closed && fresh && intended ? "mapped" : "off"
-        var lines = ["BTR diag:5 auto:\(auto.threads) reason:\(auto.reason) gen:\(epoch)",
+        var lines = ["BTR diag:7 auto:\(auto.threads) reason:\(auto.reason) gen:\(epoch)",
                      "slots:\(activeRequests)/\(auto.threads) queue:\(queuedRequests) rescue:\(rescues)",
                      String(format: "play:%@ ahead:%.1fs rate:%.2fx deadline:%@", state, bufferAhead, rate, deadlineState)]
+        let now = Self.now
+        orderedSamples.removeAll { now - $0.at > 5000 }
+        let orderedMbps = Double(orderedSamples.reduce(0) { $0 + $1.bytes }) * 8 / 5_000_000
+        let networkAge = lastNetworkProgress.isFinite ? String(format: "%.1fs", max(0, now - lastNetworkProgress) / 1000) : "none"
+        let orderedAge = lastOrderedProgress.isFinite ? String(format: "%.1fs", max(0, now - lastOrderedProgress) / 1000) : "none"
+        lines.append(String(format: "live hosts:%d http:%d ordered5s:%.2fMbps", liveHosts.count, liveHosts.values.reduce(0,+), orderedMbps))
+        lines.append("last network:\(networkAge) ordered:\(orderedAge)")
         for track in ["video", "audio"] {
             if let error = errors[track] {
                 lines.append(String(format: "%@ last:%@ (%.0fs ago)", track, error.message, max(0, Self.now - error.at) / 1000))
@@ -217,7 +240,7 @@ final class BTRPlaybackSession: @unchecked Sendable {
             return now + max(0, presentation - playhead) / rate * 1000
         }
     }
-    func activity(generation: Int) { locked { if !closed && generation == epoch { auto.activity(at: Self.now) } } }
+    func activity(generation: Int) { locked { if !closed && generation == epoch { lastNetworkProgress = Self.now; auto.activity(at: Self.now) } } }
     func delivered(_ bytes: Int, generation: Int) { locked { if !closed && generation == epoch { auto.delivered(bytes, at: Self.now) } } }
     func demand(active: Int, queued: Int) { locked { activeRequests = active; queuedRequests = queued; auto.demand(active: active, limit: auto.threads, queued: queued, at: Self.now) } }
     func failure(status: Int?, noBytes: Bool, generation: Int) {

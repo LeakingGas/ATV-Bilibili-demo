@@ -25,7 +25,7 @@ enum PlayerMediaFactory {
                         maxQuality: Int? = nil,
                         streamIndex: Int? = nil,
                         preferredHost: String? = nil,
-                        transportMode: MediaTransportMode = .direct) async throws -> PreparedPlayerMedia
+                        transportMode: MediaTransportMode = .accelerated) async throws -> PreparedPlayerMedia
     {
         let playURL = URL(string: BilibiliVideoResourceLoaderDelegate.URLs.play)!
         let headers: [String: String] = [
@@ -86,7 +86,7 @@ actor PlayerMediaWarmupManager {
         guard cancellationGeneration == generation else { throw CancellationError() }
         // 传输模式纳入缓存身份：直连与代理资源不得复用。创建任务时固定快照，
         // 开关只影响新建会话，已准备的旧模式资产保持原生命周期。
-        let transportSnapshot: MediaTransportMode = Settings.multiCDNEnabled ? .accelerated : .direct
+        let transportSnapshot: MediaTransportMode = .accelerated
         let key = resolvedPlayInfo.sequenceKey + "#" + transportCacheKey(for: transportSnapshot)
         if let cached = prepared[key] {
             touch(key)

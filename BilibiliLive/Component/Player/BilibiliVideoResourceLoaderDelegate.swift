@@ -57,15 +57,14 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     private(set) var primaryVideoBandwidth = 0
     /// 最近一次生成媒体播放列表时实际选用的分片 host
     private(set) var currentSegmentHost: String?
-    /// 实际传输模式（内部执行模式，非用户设置）。默认 .direct 保持原行为。
-    private(set) var transportMode: MediaTransportMode = .direct
-    /// 播放器实际生效的传输模式：代理启动失败时播放列表已回退直连 URI，
-    /// 此时按 .direct 处理，避免错误进入加速恢复流程。
+    /// 实际传输模式（内部执行模式，非用户设置）。始终使用 BTR。
+    private(set) var transportMode: MediaTransportMode = .accelerated
+    /// Mandatory BTR; unavailable proxy fails loading instead of changing modes.
     var effectiveTransportMode: MediaTransportMode {
-        transportMode == .direct ? .direct : (proxyAvailable ? transportMode : .direct)
+        .accelerated
     }
 
-    /// 本地代理是否可用（服务器启动成功且已注册媒体）。不可用时播放列表回退直连。
+    /// 本地代理是否可用（服务器启动成功且已注册媒体）。不可用时拒绝媒体加载。
     private(set) var proxyAvailable = false
     /// 媒体代理注册表（线程安全，Swifter 同步 handler 与播放列表生成并发访问）。
     private let proxyRegistry = MediaProxyRegistry()
@@ -205,7 +204,7 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         Logger.info("cdn candidates for qn \(video.id) (\(video.bandwidth / 1000)kbps):\n\(detail)")
     }
 
-    private func getVideoPlayList(info: PlaybackInfo) async -> String {
+    private func getVideoPlayList(info: PlaybackInfo) async throws -> String {
         let sidxResult = await segmentInfoCache.sidx(from: info.info, preferredHost: preferredHost)
         let inits = info.info.segment_base.initialization.components(separatedBy: "-")
         guard let moovIdxStr = inits.last,
@@ -215,18 +214,9 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
               var offset = Int(offsetStr),
               let sidxResult = sidxResult
         else {
-            currentSegmentHost = URLComponents(string: info.url)?.host
-            return """
-            #EXTM3U
-            #EXT-X-VERSION:7
-            #EXT-X-TARGETDURATION:\(info.duration)
-            #EXT-X-MEDIA-SEQUENCE:1
-            #EXT-X-INDEPENDENT-SEGMENTS
-            #EXT-X-PLAYLIST-TYPE:VOD
-            #EXTINF:\(info.duration)
-            \(info.url)
-            #EXT-X-ENDLIST
-            """
+            updateAccelerationText("BTR ONLY error: index-unavailable")
+            throw NSError(domain: "BTRStrict", code: 1, userInfo: [NSLocalizedDescriptionKey: "BTR索引不可用；直连已禁用"])
+
         }
 
         // 使用 sidx 实际下载成功的 URL——它已经完成了对 CDN 可用性的探测，
@@ -244,8 +234,11 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
             await downloader.setTrustAnchor(range: anchorRange, bytes: sidxResult.indexBytes)
         }
         // 代理启用且媒体已成功注册时，用本地 HTTP URL 替换 CDN 地址；
-        // 保留原 Range、分段持续时间和全部 HLS 标签。SIDX 失败回退分支保持直连。
-        let mediaURL = mediaTransportURL(for: info.info) ?? segmentURL
+        // 保留原 Range、分段持续时间和全部 HLS 标签。SIDX 失败抛出明确错误。
+        guard let mediaURL = mediaTransportURL(for: info.info) else {
+            updateAccelerationText("BTR ONLY error: proxy-unavailable")
+            throw NSError(domain: "BTRStrict", code: 2, userInfo: [NSLocalizedDescriptionKey: "BTR代理不可用；直连已禁用"])
+        }
         var playList = """
         #EXTM3U
         #EXT-X-VERSION:7
@@ -370,14 +363,14 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         playlists.append(playList)
     }
 
-    func setBilibili(info: VideoPlayURLInfo, subtitles: [SubtitleData], aid: Int, maxQuality: Int? = nil, streamIndex: Int? = nil, preferredHost: String? = nil, transportMode: MediaTransportMode = .direct) {
+    func setBilibili(info: VideoPlayURLInfo, subtitles: [SubtitleData], aid: Int, maxQuality: Int? = nil, streamIndex: Int? = nil, preferredHost: String? = nil, transportMode: MediaTransportMode = .accelerated) {
         playInfo = info
         self.aid = aid
         self.preferredHost = preferredHost
-        self.transportMode = transportMode
+        self.transportMode = .accelerated
         reset()
         // reset() 会清 proxyAvailable；恢复本会话的模式（reset 后设置，避免被清掉）
-        self.transportMode = transportMode
+        self.transportMode = .accelerated
         hasSubtitle = subtitles.count > 0
         var videos = info.dash.video
         if Settings.preferAvc {
@@ -468,7 +461,7 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
             addAudioPlayBackInfo(info: firstAudio, url: firstUrl, duration: info.dash.duration)
         }
 
-        if hasSubtitle || transportMode != .direct {
+        do {
             // 只使用当前实例的 Server，不为媒体另建监听器；限制 loopback，动态端口。
             httpServer.listenAddressIPv4 = "127.0.0.1"
             do {
@@ -476,13 +469,13 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
                 bindHttpServer()
                 httpPort = (try? httpServer.port()) ?? 0
                 // 注册当前会话的媒体流及其 CDN 候选（播放列表生成时用本地 URL）。
-                if transportMode != .direct, httpPort > 0 {
+                if httpPort > 0 {
                     registerProxyMedia(aid: aid)
                     proxyAvailable = true
                 }
             } catch {
-                // 监听器启动失败则保持原来的直连模式
-                Logger.warn("media proxy http server failed, fallback direct: \(error)")
+                // 监听器启动失败则拒绝加载媒体
+                Logger.warn("BTR proxy startup failed; direct disabled")
                 proxyAvailable = false
             }
         }
@@ -555,6 +548,11 @@ private extension BilibiliVideoResourceLoaderDelegate {
         let urlStr = customUrl.absoluteString
         Logger.debug("handleCustomPlaylistRequest: \(urlStr)")
         if urlStr == URLs.play {
+            guard proxyAvailable else {
+                updateAccelerationText("BTR ONLY error: proxy-startup-failed")
+                loadingRequest.finishLoading(with: NSError(domain: "BTRStrict", code: 2))
+                return
+            }
             report(loadingRequest, content: masterPlaylist)
             return
         }
@@ -567,7 +565,8 @@ private extension BilibiliVideoResourceLoaderDelegate {
         if urlStr.hasPrefix(URLs.customDashPrefix), let index = Int(customUrl.lastPathComponent) {
             let info = videoInfo[index]
             Task {
-                report(loadingRequest, content: await getVideoPlayList(info: info))
+                do { report(loadingRequest, content: try await getVideoPlayList(info: info)) }
+                catch { loadingRequest.finishLoading(with: error) }
             }
         }
         if urlStr.hasPrefix(URLs.customSubtitlePrefix) {
@@ -629,7 +628,7 @@ private extension BilibiliVideoResourceLoaderDelegate {
         return range
     }
 
-    /// 为当前会话已注册的媒体流生成本地 URL；未注册/不可用时返回 nil（调用方回退直连）。
+    /// 为当前会话已注册的媒体流生成本地 URL；未注册/不可用时返回 nil（调用方抛错）。
     func mediaTransportURL(for media: VideoPlayURLInfo.DashInfo.DashMediaInfo) -> String? {
         guard transportMode != .direct, proxyAvailable, httpPort > 0 else { return nil }
         guard let id = proxyRegistry.id(for: media) else { return nil }
@@ -680,13 +679,7 @@ private extension BilibiliVideoResourceLoaderDelegate {
         let parsed = MediaRangeParsing.parse(header: rangeHeader, fileLength: entry.totalLength)
         switch parsed {
         case .missing:
-            // 无 Range 的整文件请求：307 重定向回原 CDN，不伪造 206。
-            // 注意：Swifter 的 movedTemporarily 实际发送 307；AVPlayer 是否保留
-            // Range 语义跟随跳转仍需真机验证（见验收 P2）。
-            if let fallback = entry.candidates.first, URL(string: fallback) != nil {
-                return HttpResponse.movedTemporarily(fallback)
-            }
-            return HttpResponse.badRequest(nil)
+            return strictProxyFailure("range-required")
         case .multiUnsupported:
             let headers = MediaRangeResponseHeaders.rangeNotSatisfiable(totalLength: entry.totalLength)
             return HttpResponse.raw(416, "Range Not Satisfiable", headers, nil)
@@ -696,7 +689,7 @@ private extension BilibiliVideoResourceLoaderDelegate {
             let headers = MediaRangeResponseHeaders.rangeNotSatisfiable(totalLength: total ?? entry.totalLength)
             return HttpResponse.raw(416, "Range Not Satisfiable", headers, nil)
         case .openEnded, .suffix:
-            // 需 total 归一化；未知 total 时走直连重定向降级，不阻塞等待探测
+            // 需 total 归一化；未知 total 明确失败，不重定向
             if let total = entry.totalLength {
                 let normalized = MediaRangeParsing.normalizeUnbounded(parsed, fileLength: total)
                 if case let .single(range) = normalized {
@@ -705,20 +698,19 @@ private extension BilibiliVideoResourceLoaderDelegate {
                 let headers = MediaRangeResponseHeaders.rangeNotSatisfiable(totalLength: total)
                 return HttpResponse.raw(416, "Range Not Satisfiable", headers, nil)
             }
-            if let fallback = entry.candidates.first {
-                return HttpResponse.movedTemporarily(fallback)
-            }
-            return HttpResponse.badRequest(nil)
+            return strictProxyFailure("total-unknown")
         case let .single(range):
-            // 超出安全容量的请求降级直连（PR2 的流式输出仍以 16MiB 为单请求上限）
+            // 超出当前16MiB请求上限时明确失败，不重定向
             if range.length > 16 * 1024 * 1024 {
-                if let fallback = entry.candidates.first {
-                    return HttpResponse.movedTemporarily(fallback)
-                }
-                return HttpResponse.badRequest(nil)
+                return strictProxyFailure("range-over-limit")
             }
             return serveVerifiedRange(range, entry: entry, mediaID: mediaID)
         }
+    }
+
+    private func strictProxyFailure(_ reason: String) -> HttpResponse {
+        updateAccelerationText("BTR ONLY error: " + reason)
+        return HttpResponse.raw(503, "BTR transport unavailable", ["Content-Length": "0", "X-BTR-Error": reason], nil)
     }
 
     private func serveVerifiedRange(_ range: MediaByteRange, entry: MediaProxyRegistry.MediaSnapshot, mediaID: String) -> HttpResponse {
