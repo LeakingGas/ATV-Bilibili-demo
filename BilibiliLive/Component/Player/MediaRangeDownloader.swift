@@ -404,6 +404,34 @@ actor MediaRangeDownloader {
             BTRTrace.shared.event("readahead_evicted",["start":slot.range.start,"end":slot.range.end,"finished":slot.finished])
         }
     }
+    // diag13: start the segment AVPlayer will ask for first, before it asks.
+    private var prewarmID: UUID?
+    func prewarm(range: MediaByteRange) {
+        guard mode == .accelerated, prewarmID == nil, slotAt(range.start) == nil else { return }
+        let id = UUID()
+        prewarmID = id
+        readers[id] = Reader(cursor: range.start, requestEnd: range.end, readAhead: false,
+                             generation: playback.generation, rescue: RescueBudget(playback.limit))
+        BTRTrace.shared.event("prewarm_begin",["track":traceID,"start":range.start,"end":range.end])
+        if let reader = readers[id] { schedule(reader) }
+        Task {
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            self.endPrewarm(id)
+        }
+    }
+    private func endPrewarm(_ id: UUID) {
+        guard prewarmID == id else { return }
+        readers[id] = nil; prewarmID = nil
+        evict()
+    }
+    /// Verify every node concurrently instead of one node per first lane.
+    func verifyAllHosts() {
+        let deadline = BTRDeadline(session: playback, generation: playback.generation, presentation: nil)
+        for url in candidates where !verified.contains(url) {
+            Task { try? await self.verify(url, deadline: deadline) }
+        }
+    }
+
     /// Cancels and drains read-ahead that no active reader needs (tests, item teardown).
     func cancelReadAhead() async {
         let idle = slots.filter { !wanted($0) }
@@ -512,11 +540,13 @@ actor MediaRangeDownloader {
             var cursor = range.start
             let reused = slotAt(cursor) != nil
             BTRTrace.shared.event("stream_admitted",["waitMs":BTRTrace.now-admissionStarted,"readAheadHit":reused])
-            // BTR startup media probe: promptly deliver a small verified head before the tail.
-            if mode == .accelerated, speeds.isEmpty, !reused, range.length > 64 * 1024 {
-                let head = try MediaByteRange(start: cursor, end: cursor + 64 * 1024 - 1)
-                let bytes = try await downloadPiece(head, preferred: pool(), priority: 120, delay: 0, deadline: deadline, rescue: rescue)
-                try await pipe.write(bytes, isCurrent: { deadline.valid }); delivered += Int64(bytes.count); playback.ordered(bytes.count, generation: generation); cursor = head.end + 1
+            // diag13: no serial 64 KiB startup probe. AVPlayer plays an HLS segment only once the
+            // whole segment has arrived, so the probe only added one cold round trip before the
+            // parallel pieces started.
+            if let id = prewarmID, let warm = readers[id], cursor >= warm.cursor, cursor <= warm.requestEnd {
+                // The player now asks for the prewarmed segment: this reader takes over.
+                readers[id] = nil; prewarmID = nil
+                BTRTrace.shared.event("prewarm_handoff",["start":cursor,"readyBytes":slots.filter { $0.finished }.reduce(0) { $0 + $1.range.length }])
             }
             let reader = Reader(cursor: cursor, requestEnd: range.end, readAhead: readAhead, generation: generation, rescue: rescue)
             readers[readerID] = reader
@@ -797,8 +827,17 @@ actor MediaRangeDownloader {
         health[url] = (99, .infinity)
         BTRTrace.shared.event("host_banned",["host":URL(string:url)?.host ?? "","reason":"content-mismatch"])
     }
+    private var verifying = [String: Task<Void, Error>]()
     private func verify(_ url: String, deadline: BTRDeadline) async throws {
         guard candidates.count > 1, !verified.contains(url) else { return }
+        if let running = verifying[url] { return try await running.value }
+        let task = Task { try await self.verifyNow(url, deadline: deadline) }
+        verifying[url] = task
+        defer { verifying[url] = nil }
+        try await task.value
+    }
+    private func verifyNow(_ url: String, deadline: BTRDeadline) async throws {
+        guard !verified.contains(url) else { return }
         if let (range, bytes) = anchor {
             guard try await sampleBytes(range, url: url, deadline: deadline) == bytes else { banMismatch(url); throw MediaRangeError.mismatch }
         } else {

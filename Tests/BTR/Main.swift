@@ -327,6 +327,21 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         let aheadDone = await ahead.diagnostics()
         try require(aheadDone.activeSubrequests == 0 && aheadDone.readAheadSlots == 0, "read-ahead drained")
         print("PASS: read-ahead across player ranges, reused without refetch")
+        // diag13: a prewarmed segment is handed to the player's request without refetching.
+        let warm = MediaRangeDownloader(candidates:[base+"/warm"],referer:base)
+        let warmRange = try MediaByteRange(start:0,end:2*1024*1024-1)
+        await warm.prewarm(range:warmRange)
+        try await Task.sleep(nanoseconds:500_000_000)
+        let warmPipe = MediaBytePipe()
+        let warmProducer = Task { await warm.stream(range:warmRange,to:warmPipe) }
+        let warmCount = try await drain(warmPipe, from:0)
+        await warmProducer.value
+        try require(warmCount == 2*1024*1024, "prewarmed range delivered")
+        await warm.cancelReadAhead()
+        let (warmLog,_) = try await URLSession.shared.data(from: URL(string: base+"/stats")!)
+        let warmRows = (try JSONSerialization.jsonObject(with: warmLog) as! [[String: Any]]).filter { ($0["path"] as? String) == "/warm" && (($0["start"] as? Int) ?? -1) < 2*1024*1024 }
+        try require(warmRows.count == 2, "prewarm reused by player request (\(warmRows.count) requests)")
+        print("PASS: prewarmed start segment handed to the player request")
         // A consumer slower than the producer must not deadlock a 64KiB pipe.
         let pipe = MediaBytePipe(capacityBytes:65536)
         let producer = Task { try await pipe.write(expected(0,524288)); pipe.close() }

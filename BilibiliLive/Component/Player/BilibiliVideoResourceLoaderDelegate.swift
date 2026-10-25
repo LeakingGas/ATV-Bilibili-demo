@@ -37,6 +37,14 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     private var playlists = [String]()
     private var subtitles = [String: String]()
     private var videoInfo = [PlaybackInfo]()
+    /// diag13: 历史进度。生成媒体播放列表时写入 EXT-X-START，让 AVPlayer 直接从该位置
+    /// 请求首段，而不是先下 0 秒处的首段、ready 后再 seek。仅首次进入时设置。
+    var startOffset: Double?
+    /// 当前首选视频流的简短描述（debug 浮层显示）。
+    var primaryVideoDescription: String {
+        guard let media = videoInfo.first?.info else { return "" }
+        return "qn=\(media.id) \(media.codecs) \(media.width ?? 0)x\(media.height ?? 0) \(String(format: "%.1f", Double(media.bandwidth) / 1_000_000))Mbps"
+    }
     // Keep SIDX selection scoped to this playback session. A shared cache can
     // leak the CDN chosen for one player into another concurrent player (for
     // example, picture-in-picture) because preferredHost is not part of the
@@ -252,6 +260,10 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         #EXT-X-MAP:URI="\(mediaURL)",BYTERANGE="\(moovIdx + 1)@\(moovOffset)"
 
         """
+        if let startOffset, startOffset > 0 {
+            playList.append("#EXT-X-START:TIME-OFFSET=\(String(format: "%.3f", startOffset)),PRECISE=YES\n")
+            BTRTrace.shared.event("playlist_start_offset",["quality":info.info.id,"offset":startOffset])
+        }
         offset += 1
         var btrTimings = [BTRSegmentTiming]()
         var presentation = 0.0 // HLS timeline starts at zero; match the playlist we actually serve.
@@ -387,6 +399,14 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
 
         // 先过滤黑名单编码（避免后续强制模式选择了被黑名单的流）
         videos = videos.filter { !videoCodecBlackList.contains($0.codecs) }
+        // diag13: 同一画质优先 HEVC（含杜比视界）。B 站 4K AVC 常见 20-30 Mbps，HEVC 约一半，
+        // 首段更小、起播更快、更不容易卡。Apple TV 4K 均有 HEVC 硬解。用户开启「Avc优先」时不生效。
+        if !Settings.preferAvc {
+            let videosMap = Dictionary(grouping: videos, by: { $0.id })
+            for (key, values) in videosMap where values.contains(where: { $0.isHevc }) {
+                videos.removeAll(where: { $0.id == key && !$0.isHevc })
+            }
+        }
 
         // 智能画质模式：
         // 1. 如果用户手动选择了具体的流（streamIndex 不为 nil），只使用该流
@@ -497,6 +517,37 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         masterPlaylist.append("\n#EXT-X-ENDLIST\n")
 
         Logger.debug("masterPlaylist: \(masterPlaylist)")
+    }
+
+    /// diag13: 播放器开口之前预下载起播位置所在的视频/音频段（AVPlayer 需整段到齐才出画面），
+    /// 并发校验全部节点。只在真正开始播放时调用（预加载的下一集不调用，避免浪费带宽）。
+    func prewarmStart(at seconds: Double) async {
+        guard transportMode == .accelerated else { return }
+        var seen = Set<VideoPlayURLInfo.DashInfo.DashMediaInfo>()
+        let firstAudio = videoInfo.first { infoIsAudio($0.info) }?.info
+        let targets = [videoInfo.first?.info, firstAudio].compactMap { $0 }
+        for media in targets where seen.insert(media).inserted {
+            guard let downloader = proxyRegistry.downloader(for: media) else { continue }
+            await downloader.verifyAllHosts()
+            guard let sidx = await segmentInfoCache.sidx(from: media, preferredHost: preferredHost)?.sidx,
+                  sidx.timescale > 0,
+                  let indexEnd = media.segment_base.index_range.components(separatedBy: "-").last.flatMap({ Int64($0) })
+            else { continue }
+            var offset = indexEnd + 1
+            var presentation = 0.0
+            for (index, segment) in sidx.segments.enumerated() {
+                let duration = Double(segment.duration) / Double(sidx.timescale)
+                let size = Int64(segment.size)
+                if seconds < presentation + duration || index == sidx.segments.count - 1 {
+                    if size > 0, let range = try? MediaByteRange(start: offset, end: offset + size - 1) {
+                        await downloader.prewarm(range: range)
+                    }
+                    break
+                }
+                offset += size
+                presentation += duration
+            }
+        }
     }
 
     func prewarmPrimaryVideoIndex() async {
@@ -1094,7 +1145,7 @@ final class BTRTraceExport {
             BTRTrace.shared.freeze()
             let bytes = Data(BTRTrace.shared.export().utf8)
             return HttpResponse.raw(200,"OK",["Content-Type":"application/x-ndjson; charset=utf-8",
-                "Content-Disposition":"attachment; filename=btr-diag12.jsonl",
+                "Content-Disposition":"attachment; filename=btr-diag13.jsonl",
                 "Cache-Control":"no-store","Content-Length":String(bytes.count)]) { writer in
                 try writer.write(bytes)
             }

@@ -119,6 +119,8 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         if let host = playerDelegate?.currentSegmentHost {
             lines.append("segment host: \(host)")
         }
+        if let media = playerDelegate?.primaryVideoDescription, !media.isEmpty { lines.append("stream: " + media) }
+        if !startupMarks.isEmpty { lines.append("\(startupKind): " + startupMarks.joined(separator: " → ")) }
         if let accel = playerDelegate?.accelerationDebugInfo, !accel.isEmpty {
             lines.append("last completed track: " + accel)
         }
@@ -144,6 +146,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func playerWillStart(player: AVPlayer) {
+        if playerVC?.player === player { markStartup("ready") }
         guard playerVC?.player === player,
               let target = resumeState.initialTarget(history: playData.playerStartPos.map { Double($0) }) else { return }
         BTRTrace.shared.event("seek_requested",["source":"initial-history","target":target,"generation":loadGeneration])
@@ -223,6 +226,17 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             }
     }
     private var lastTraceSample = -Double.infinity
+    // diag13: startup timeline shown in the debug overlay.
+    private var startupBegan: Double?
+    private var startupKind = "起播"
+    private var startupMarks = [String]()
+    private func markStartup(_ name: String) {
+        guard let began = startupBegan, !startupMarks.contains(where: { $0.hasPrefix(name) }) else { return }
+        let elapsed = (BTRTrace.now - began) / 1000
+        startupMarks.append(String(format: "%@ %.1fs", name, elapsed))
+        BTRTrace.shared.event("startup_mark",["mark":name,"kind":startupKind,"elapsedMs":BTRTrace.now - began])
+        if name == "playing" { startupBegan = nil }
+    }
     // diag10 ended with 13.9 s buffered while AVPlayer kept waiting "to minimize stalls" until the
     // 60 s watchdog fired: its keep-up estimate lags behind the burst-y BTR delivery. With several
     // seconds contiguous at the playhead, resume playback instead of freezing.
@@ -253,6 +267,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             if start.isFinite && finish.isFinite && start <= end + 0.05 && finish > end { end = finish }
         }
         kickStartIfBuffered(player: player, ahead: max(0, end - position))
+        if player.timeControlStatus == .playing { markStartup("playing") }
         session.update(position: position, rate: btrLastRate,
             advancing: player.timeControlStatus == .playing,
             intended: player.timeControlStatus != .paused,
@@ -433,6 +448,9 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     {
         acceleratedWaitingSince = nil
         transportMode = .accelerated
+        startupBegan = BTRTrace.now
+        startupKind = isQualitySwitch ? "切画质" : "起播"
+        startupMarks = []
         let generation = beginLoadGeneration()
         loadTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -508,6 +526,14 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         let asset = prepared.asset
         if playerDelegate !== delegate { playerDelegate?.btrPlayback.invalidate() }
         playerDelegate = delegate
+        markStartup("prepared")
+        // diag13: start the first segment before AVPlayer asks for it, from the history position
+        // when there is one (EXT-X-START makes AVPlayer request that segment directly).
+        if !isQualitySwitch {
+            let history = playData.playerStartPos.map { Double($0) }.flatMap { $0 > 0 ? $0 : nil }
+            delegate.startOffset = history
+            Task { await delegate.prewarmStart(at: history ?? 0) }
+        }
         // Mandatory BTR; proxy startup failure is a resource-loading error.
         transportMode = delegate.effectiveTransportMode
 
