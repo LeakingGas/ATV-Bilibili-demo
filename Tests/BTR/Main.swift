@@ -292,7 +292,16 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
             return "\(row["ms"] ?? "")ms \(event) \(row["start"] ?? "")"
         }.joined(separator:" | ")
         print("PIPELINE TIMELINE: " + timeline)
-        try require(pipelineElapsed < 1.15, "pipeline overlaps first-byte latency (\(pipelineElapsed)s) " + timeline)
+        // Overlap, not wall time (the unoptimised byte check above dominates CI time):
+        // every post-probe piece must be on the wire before the first of them answers.
+        let rows = BTRTrace.shared.export().split(separator:"\n").compactMap {
+            try? JSONSerialization.jsonObject(with:Data($0.utf8)) as? [String:Any]
+        }
+        func times(_ name: String) -> [Int] {
+            rows.filter { ($0["event"] as? String) == name && (($0["start"] as? Int) ?? 0) > 0 }.compactMap { $0["ms"] as? Int }
+        }
+        let begins = times("http_begin"), firstHeaders = times("http_headers").min() ?? 0
+        try require(begins.count >= 4 && (begins.max() ?? .max) < firstHeaders, "pipeline overlaps first-byte latency " + timeline)
         await latency.cancelReadAhead()
         print(String(format:"PASS: 4 MiB with 0.4 s first-byte latency streamed in %.2fs", pipelineElapsed))
         // diag12: the bytes after a player range are prefetched and reused by the next request.
