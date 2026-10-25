@@ -293,12 +293,12 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         }.joined(separator:" | ")
         print("PIPELINE TIMELINE: " + timeline)
         // Overlap, not wall time (the unoptimised byte check above dominates CI time):
-        // every post-probe piece must be on the wire before the first of them answers.
+        // every piece must be on the wire before the first of them answers (no serial probe).
         let rows = BTRTrace.shared.export().split(separator:"\n").compactMap {
             try? JSONSerialization.jsonObject(with:Data($0.utf8)) as? [String:Any]
         }
         func times(_ name: String) -> [Int] {
-            rows.filter { ($0["event"] as? String) == name && (($0["start"] as? Int) ?? 0) > 0 }.compactMap { $0["ms"] as? Int }
+            rows.filter { ($0["event"] as? String) == name && ($0["start"] as? Int) != nil }.compactMap { $0["ms"] as? Int }
         }
         let begins = times("http_begin"), firstHeaders = times("http_headers").min() ?? 0
         try require(begins.count >= 4 && (begins.max() ?? .max) < firstHeaders, "pipeline overlaps first-byte latency " + timeline)
