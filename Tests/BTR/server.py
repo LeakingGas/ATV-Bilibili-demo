@@ -15,6 +15,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with LOCK: LOG.append({'path':self.path,'start':start,'end':end})
         print(f'REQUEST {self.path} bytes={start}-{end}', flush=True)
         if self.path == '/wait': time.sleep(10)
+        if self.path == '/latency': time.sleep(0.4)
         if self.path == '/refused': self.send_error(403); return
         total=1870645454 if self.path == "/large-range" else len(DATA)
         self.send_response(200 if self.path == '/full' else 206)

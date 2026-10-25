@@ -57,6 +57,10 @@ enum Settings {
     @UserDefault("Settings.preferAvc", defaultValue: false)
     static var preferAvc: Bool
 
+    /// BTR CDN node expansion region (cdn-resolver.js). Default overseas: this port targets overseas Apple TVs.
+    @UserDefaultCodable("Settings.btrNodeRegion", defaultValue: .overseas)
+    static var btrNodeRegion: BTRNodeRegion
+
     @UserDefault("Settings.multiCDNEnabled", defaultValue: false)
     static var multiCDNEnabled: Bool
 

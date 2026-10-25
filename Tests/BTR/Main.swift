@@ -239,6 +239,7 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         }
         await largeProducer.value
         try require(Int64(checkedBytes) == deviceRange.length, "large stream is not truncated")
+        await largeEngine.cancelReadAhead()
         let largeDone = await largeEngine.diagnostics()
         try require(largeDone.activeSubrequests == 0, "large stream releases all requests")
         // The API that returns a single Data still keeps its allocation cap.
@@ -247,6 +248,67 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         catch { fullFetchRejected = true }
         try require(fullFetchRejected, "whole-buffer API retains memory cap")
         print("PASS: device 16988701-byte range streams in order through 128KiB pipe; full-buffer cap retained")
+        // diag12: CDN node expansion keeps the signed path/query and never moves relays.
+        let akamai = "https://upos-hz-mirrorakam.akamaized.net/upgcxcode/1/2/3/x.m4s?e=SIG&os=akam"
+        let cosov = "https://upos-sz-mirrorcosov.bilivideo.com/upgcxcode/1/2/3/x.m4s?e=SIG&os=cosovbv"
+        let overseas = BTRCDN.candidates([akamai, cosov], region: .overseas)
+        try require(overseas.first == akamai && overseas.count == 5, "overseas expansion count \(overseas.count)")
+        try require(Set(overseas.map(BTRCDN.host)).isSuperset(of: BTRCDN.overseasHosts), "overseas nodes present")
+        try require(overseas.allSatisfy { $0.contains("/upgcxcode/1/2/3/x.m4s?e=SIG") }, "signed address preserved")
+        let mainland = BTRCDN.candidates([akamai], region: .mainland)
+        try require(mainland.count == BTRCDN.mainlandHosts.count && !mainland.contains(akamai), "akamai-only donors for mainland")
+        let relay = "https://xy1x2x3x4xy.mcdn.bilivideo.cn:4483/upgcxcode/x.m4s?e=SIG"
+        try require(BTRCDN.candidates([relay], region: .overseas) == [relay], "relay-only kept as-is")
+        try require(!BTRCDN.candidates([relay, cosov], region: .overseas).contains(relay), "relay never mixed with nodes")
+        try require(BTRCDN.candidates([akamai, cosov], region: .original) == [akamai, cosov], "original mode untouched")
+        print("PASS: BTR cdn-resolver node expansion")
+        // diag12: pieces overlap their first-byte latency instead of paying it per window.
+        func drain(_ pipe: MediaBytePipe, from start: Int) async throws -> Int {
+            try await Task.detached { () throws -> Int in
+                var count = 0
+                while let part = try pipe.readSync(maxLength:65536,timeout:15) {
+                    try require(part == expected(start+count,part.count), "pipelined stream exact byte order")
+                    count += part.count
+                }
+                return count
+            }.value
+        }
+        let latency = MediaRangeDownloader(candidates:[base+"/latency"],referer:base)
+        let whole = try MediaByteRange(start:0,end:4*1024*1024-1)
+        let latencyPipe = MediaBytePipe()
+        let pipelineStarted = ProcessInfo.processInfo.systemUptime
+        let latencyProducer = Task { await latency.stream(range:whole,to:latencyPipe) }
+        let latencyCount = try await drain(latencyPipe, from:0)
+        await latencyProducer.value
+        let pipelineElapsed = ProcessInfo.processInfo.systemUptime - pipelineStarted
+        try require(latencyCount == 4*1024*1024, "pipelined stream length")
+        // Old windowed engine: probe + 2 windows, each paying 0.4 s + hedges. Pipeline: ~2 latencies.
+        try require(pipelineElapsed < 1.15, "pipeline overlaps first-byte latency (\(pipelineElapsed)s)")
+        await latency.cancelReadAhead()
+        print(String(format:"PASS: 4 MiB with 0.4 s first-byte latency streamed in %.2fs", pipelineElapsed))
+        // diag12: the bytes after a player range are prefetched and reused by the next request.
+        let ahead = MediaRangeDownloader(candidates:[base+"/prefetch"],referer:base)
+        let firstRange = try MediaByteRange(start:0,end:1024*1024-1)
+        let firstPipe = MediaBytePipe()
+        let firstProducer = Task { await ahead.stream(range:firstRange,to:firstPipe) }
+        _ = try await drain(firstPipe, from:0)
+        await firstProducer.value
+        try await Task.sleep(nanoseconds:500_000_000)
+        let prefetched = await ahead.diagnostics()
+        try require(prefetched.readAheadSlots > 0 && prefetched.readAheadBytes > 0, "read-ahead holds next bytes")
+        let secondRange = try MediaByteRange(start:1024*1024,end:3*1024*1024-1)
+        let secondPipe = MediaBytePipe()
+        let secondProducer = Task { await ahead.stream(range:secondRange,to:secondPipe) }
+        let secondCount = try await drain(secondPipe, from:1024*1024)
+        await secondProducer.value
+        try require(secondCount == 2*1024*1024, "read-ahead served next range")
+        await ahead.cancelReadAhead()
+        let (aheadLog,_) = try await URLSession.shared.data(from: URL(string: base+"/stats")!)
+        let aheadRows = (try JSONSerialization.jsonObject(with: aheadLog) as! [[String: Any]]).filter { ($0["path"] as? String) == "/prefetch" }
+        try require(aheadRows.filter { ($0["start"] as? Int) == 1024*1024 }.count == 1, "prefetched piece fetched once")
+        let aheadDone = await ahead.diagnostics()
+        try require(aheadDone.activeSubrequests == 0 && aheadDone.readAheadSlots == 0, "read-ahead drained")
+        print("PASS: read-ahead across player ranges, reused without refetch")
         // A consumer slower than the producer must not deadlock a 64KiB pipe.
         let pipe = MediaBytePipe(capacityBytes:65536)
         let producer = Task { try await pipe.write(expected(0,524288)); pipe.close() }

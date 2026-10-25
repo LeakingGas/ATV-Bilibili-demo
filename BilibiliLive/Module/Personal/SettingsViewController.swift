@@ -192,6 +192,13 @@ class SettingsViewController: UIViewController {
                 }
                 Toggle(title: "Avc优先(卡顿尝试开启)", setting: Settings.preferAvc, onChange: Settings.preferAvc.toggle())
                 CellModel(title: "BTR CDN 并行", desp: "始终开启", action: nil)
+                Actions(title: "BTR 节点", message: "同一视频地址分发到多个CDN节点并行下载；海外用户选海外节点",
+                        current: Settings.btrNodeRegion.title,
+                        options: BTRNodeRegion.allCases,
+                        optionString: BTRNodeRegion.allCases.map({ $0.title }))
+                {
+                    Settings.btrNodeRegion = $0
+                }
                 Navigation(title: "BTR 诊断日志", desp: "记录 / 导出") { [weak self] in
                     self?.showBTRTraceMenu()
                 }

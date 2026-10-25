@@ -169,7 +169,7 @@ final class BTRPlaybackSession: @unchecked Sendable {
         let fresh = Self.now - sampledAt <= 1500
         let state = closed ? "closed" : !fresh ? "stale" : !intended ? "paused" : waiting ? "waiting" : "playing"
         let deadlineState = !closed && fresh && intended ? "mapped" : "off"
-        var lines = ["BTR diag:11 trace auto:\(auto.threads) reason:\(auto.reason) gen:\(epoch)",
+        var lines = ["BTR diag:12 trace auto:\(auto.threads) reason:\(auto.reason) gen:\(epoch)",
                      "slots:\(activeRequests)/\(auto.threads) queue:\(queuedRequests) rescue:\(rescues)",
                      String(format: "play:%@ ahead:%.1fs rate:%.2fx deadline:%@", state, bufferAhead, rate, deadlineState)]
         let now = Self.now
@@ -339,7 +339,7 @@ final class BTRTrace: @unchecked Sendable {
     }
     func export() -> String {
         lock.lock(); defer { lock.unlock() }
-        let header: [String: Any] = ["format":"btr-trace-1", "build":"diag11-resume-once",
+        let header: [String: Any] = ["format":"btr-trace-1", "build":"diag12-pipeline",
             "startedUTC":wallStart, "recording":active, "events":rows.count,
             "overwritten":max(0, sequence - rows.count), "maxSeconds":600]
         let data = try! JSONSerialization.data(withJSONObject:header,options:[.sortedKeys])

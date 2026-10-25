@@ -134,6 +134,10 @@ struct MediaRangeDiagnostics: Sendable {
     var extraBytes: Int64
     var attemptTrace: String = ""
     var downgradedToDirect: Bool
+    var candidateCount = 0
+    var bannedCount = 0
+    var readAheadSlots = 0
+    var readAheadBytes: Int64 = 0
 
     var redundancyRatio: Double {
         guard deliveredBytes > 0 else { return 0 }
@@ -307,7 +311,9 @@ actor MediaRangeDownloader {
         MediaRangeDiagnostics(transportMode: mode, activeHosts: active.count,
             estimatedAggregateMbps: candidates.reduce(0) { $0 + speed($1) } * 8 / 1_000_000,
             activeSubrequests: active.values.reduce(0, +), failures: failures, retries: retries,
-            deliveredBytes: delivered, extraBytes: max(0, wireBytes - delivered), attemptTrace: recentAttempts.joined(separator: " | "), downgradedToDirect: downgraded)
+            deliveredBytes: delivered, extraBytes: max(0, wireBytes - delivered), attemptTrace: recentAttempts.joined(separator: " | "), downgradedToDirect: downgraded,
+            candidateCount: candidates.count, bannedCount: candidates.filter { health[$0]?.until == .infinity }.count,
+            readAheadSlots: slots.count, readAheadBytes: slots.reduce(0) { $0 + Int64($1.data?.count ?? 0) })
     }
     private func speed(_ url: String) -> Double {
         guard let sample = speeds[url], Self.now - sample.at < 90 else { return 0 }
@@ -320,8 +326,10 @@ actor MediaRangeDownloader {
         speeds[url] = (old > 0 ? old * 0.65 + measured * 0.35 : measured, Self.now)
     }
     private func pool() -> [String] {
-        let open = candidates.filter { (health[$0]?.until ?? 0) <= Self.now }
-        let urls = open.isEmpty ? candidates : open
+        let usable = candidates.filter { health[$0]?.until != .infinity }
+        let base = usable.isEmpty ? candidates : usable
+        let open = base.filter { (health[$0]?.until ?? 0) <= Self.now }
+        let urls = open.isEmpty ? base : open
         return urls.enumerated().sorted {
             let a = speed($0.element), b = speed($1.element)
             return a == b ? $0.offset < $1.offset : a > b
@@ -341,10 +349,138 @@ actor MediaRangeDownloader {
 
     func stream(range: MediaByteRange, to pipe: MediaBytePipe) async {
         await BTRTrace.$requestID.withValue(pipe.traceID) {
-            await streamRecorded(range: range, to: pipe)
+            await streamRecorded(range: range, to: pipe, readAhead: mode == .accelerated)
         }
     }
-    private func streamRecorded(range: MediaByteRange, to pipe: MediaBytePipe) async {
+
+    // MARK: - diag12 pipelined read-ahead
+    //
+    // Device traces (diag9/diag10) showed cold overseas edges answering after 0.5-2.5 s while a
+    // started body arrived at >200 Mbps. The diag5-11 port waited for a whole 2 MiB window before
+    // starting the next one, so every window paid that latency: ~2 MiB per ~3 s = 5 Mbps, below a
+    // 20-25 Mbps 4K track. Upstream BTR splits the whole player range at once. Here a bounded
+    // sliding pipeline keeps `depth` pieces in flight, delivers strictly in order, refills as soon
+    // as any piece settles and continues past the player's range into the next HLS segment
+    // (which AVPlayer requests next), bounded by `aheadBytes` of memory per track.
+    private final class Slot {
+        let range: MediaByteRange
+        var task: Task<Data, Error>?
+        var data: Data?
+        var finished = false
+        let created = BTRPlaybackSession.now
+        init(_ range: MediaByteRange) { self.range = range }
+    }
+    private final class Reader {
+        var cursor: Int64
+        let requestEnd: Int64
+        let readAhead: Bool
+        let generation: Int
+        let rescue: RescueBudget
+        init(cursor: Int64, requestEnd: Int64, readAhead: Bool, generation: Int, rescue: RescueBudget) {
+            self.cursor = cursor; self.requestEnd = requestEnd; self.readAhead = readAhead
+            self.generation = generation; self.rescue = rescue
+        }
+    }
+    private var slots = [Slot]()
+    private var readers = [UUID: Reader]()
+    private var pieceBytes: Int64 { mode == .proxy ? 512 * 1024 : isAudio ? 256 * 1024 : 1024 * 1024 }
+    private var aheadBytes: Int64 { isAudio ? 4 * 1024 * 1024 : 24 * 1024 * 1024 }
+    private var depth: Int {
+        let limit = playback.limit
+        let reserve = max(1, Int(ceil(Double(limit) / 8)))
+        return mode == .proxy ? 1 : isAudio ? max(2, reserve) : max(2, limit - reserve)
+    }
+    private func slotAt(_ position: Int64) -> Slot? {
+        slots.first { $0.range.start <= position && position <= $0.range.end }
+    }
+    private func remove(_ slot: Slot) { slots.removeAll { $0 === slot } }
+    private func wanted(_ slot: Slot) -> Bool {
+        readers.values.contains { slot.range.end >= $0.cursor && slot.range.start <= $0.cursor + aheadBytes }
+    }
+    private func evict() {
+        let now = BTRPlaybackSession.now
+        for slot in slots where !wanted(slot) || (slot.finished && now - slot.created > 60000) {
+            slot.task?.cancel(); remove(slot)
+            BTRTrace.shared.event("readahead_evicted",["start":slot.range.start,"end":slot.range.end,"finished":slot.finished])
+        }
+    }
+    /// Cancels and drains read-ahead that no active reader needs (tests, item teardown).
+    func cancelReadAhead() async {
+        let idle = slots.filter { !wanted($0) }
+        for slot in idle { slot.task?.cancel(); remove(slot) }
+        for slot in idle { _ = try? await slot.task?.value }
+    }
+    private func refill() {
+        for reader in readers.values { schedule(reader) }
+    }
+    private func schedule(_ reader: Reader) {
+        guard playback.isCurrent(reader.generation) else { return }
+        var position = reader.cursor
+        while let existing = slotAt(position) { position = existing.range.end + 1 }
+        // Memory bound: never schedule more than aheadBytes past the delivery cursor.
+        let windowEnd = reader.cursor + aheadBytes - 1
+        let end: Int64
+        if reader.readAhead, let total { end = min(total - 1, windowEnd) }
+        else { end = min(reader.requestEnd, windowEnd) }
+        var pending = slots.filter { !$0.finished }.count
+        var planned = [MediaByteRange]()
+        // The piece at the reader's cursor is always admitted, even when read-ahead filled `depth`.
+        while position <= end, pending < depth || (planned.isEmpty && position == reader.cursor) {
+            var pieceEnd = min(end, position + pieceBytes - 1)
+            if position <= reader.requestEnd { pieceEnd = min(pieceEnd, reader.requestEnd) }
+            if let next = slots.filter({ $0.range.start > position }).min(by: { $0.range.start < $1.range.start }) {
+                pieceEnd = min(pieceEnd, next.range.start - 1)
+            }
+            guard let piece = try? MediaByteRange(start: position, end: pieceEnd) else { break }
+            planned.append(piece)
+            slots.append(Slot(piece))
+            pending += 1
+            position = pieceEnd + 1
+            while let existing = slotAt(position) { position = existing.range.end + 1 }
+        }
+        guard !planned.isEmpty else { return }
+        slots.sort { $0.range.start < $1.range.start }
+        let urls = pool()
+        let measured = Dictionary(uniqueKeysWithValues: urls.map { ($0, speed($0)) })
+        let primaries = policy.assign(urls, count: planned.count) { measured[$0] ?? 0 }
+        let delay = policy.hedgeDelay
+        for (index, piece) in planned.enumerated() {
+            guard let slot = slots.first(where: { $0.range == piece }) else { continue }
+            let primary = primaries[index]
+            let preferred = [primary] + urls.filter { $0 != primary }
+            let presentation = timings.first { $0.range.end >= piece.start && $0.range.start <= piece.end }?.start
+            let deadline = BTRDeadline(session: playback, generation: reader.generation, presentation: presentation)
+            let distance = slots.filter { $0.range.start >= reader.cursor && $0.range.start < piece.start }.count
+            let priority = presentation == nil ? 220 : 50 - min(20, distance)
+            let ahead = piece.start > reader.requestEnd
+            BTRTrace.shared.event("piece_scheduled",["start":piece.start,"end":piece.end,"host":URL(string:primary)?.host ?? "","readAhead":ahead,"depth":depth])
+            let rescue = reader.rescue
+            slot.task = Task {
+                do {
+                    let bytes = try await self.downloadPiece(piece, preferred: preferred, priority: priority, delay: delay, deadline: deadline, rescue: rescue)
+                    slot.data = bytes; slot.finished = true
+                    await self.refill()
+                    return bytes
+                } catch {
+                    slot.finished = true
+                    await self.remove(slot)
+                    await self.refill()
+                    throw error
+                }
+            }
+        }
+    }
+    private func value(of slot: Slot) async throws -> Data {
+        if let data = slot.data { return data }
+        guard let task = slot.task else { throw MediaRangeError.truncated }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func streamRecorded(range: MediaByteRange, to pipe: MediaBytePipe, readAhead: Bool) async {
         BTRTrace.shared.event("stream_begin", ["track":traceID,"session":playback.id.uuidString,
             "audio":isAudio,"start":range.start,"end":range.end,"media":traceLabel,"hosts":candidates.compactMap { URL(string:$0)?.host }])
 
@@ -355,9 +491,12 @@ actor MediaRangeDownloader {
         BTRTrace.shared.event("stream_deadline",["presentation":presentation ?? -1,"remainingMs":due.isFinite ? due-BTRPlaybackSession.now : -1])
         let rescue = RescueBudget(playback.limit)
         var admitted = false
-        defer { if admitted { streams -= 1 } }
+        let readerID = UUID()
+        defer {
+            if admitted { streams -= 1 }
+            readers[readerID] = nil
+        }
         do {
-            // A stream is bounded by its 2 MiB window and pipe, not by the total HTTP range.
             guard !candidates.isEmpty else { throw MediaRangeError.unsatisfiable(total: total) }
             // tvOS adaptation: two bounded streams per track. The byte pipe also backpressures.
             let admissionStarted = BTRTrace.now
@@ -368,53 +507,39 @@ actor MediaRangeDownloader {
             guard deadline.valid else { throw CancellationError() }
             try Task.checkCancellation()
             streams += 1; admitted = true
-            BTRTrace.shared.event("stream_admitted",["waitMs":BTRTrace.now-admissionStarted])
             var cursor = range.start
+            let reused = slotAt(cursor) != nil
+            BTRTrace.shared.event("stream_admitted",["waitMs":BTRTrace.now-admissionStarted,"readAheadHit":reused])
             // BTR startup media probe: promptly deliver a small verified head before the tail.
-            if mode == .accelerated, speeds.isEmpty, range.length > 64 * 1024 {
+            if mode == .accelerated, speeds.isEmpty, !reused, range.length > 64 * 1024 {
                 let head = try MediaByteRange(start: cursor, end: cursor + 64 * 1024 - 1)
                 let bytes = try await downloadPiece(head, preferred: pool(), priority: 120, delay: 0, deadline: deadline, rescue: rescue)
                 try await pipe.write(bytes, isCurrent: { deadline.valid }); delivered += Int64(bytes.count); playback.ordered(bytes.count, generation: generation); cursor = head.end + 1
             }
-            // BTR ordered chunks, bounded to 2 MiB windows rather than retaining a whole range.
+            let reader = Reader(cursor: cursor, requestEnd: range.end, readAhead: readAhead, generation: generation, rescue: rescue)
+            readers[readerID] = reader
+            evict()
             while cursor <= range.end {
                 guard deadline.valid else { throw CancellationError() }
-                let window = try MediaByteRange(start: cursor, end: cursor + min(range.end - cursor, 2 * 1024 * 1024 - 1))
-                let pieces = split(range: window)
-                BTRTrace.shared.event("window_begin",["start":window.start,"end":window.end,"pieces":pieces.count])
-                let urls = pool()
-                let measured = Dictionary(uniqueKeysWithValues: urls.map { ($0, speed($0)) })
-                let primaries = policy.assign(urls, count: pieces.count) { measured[$0] ?? 0 }
-                let delay = policy.hedgeDelay
-                try await withThrowingTaskGroup(of: (Int, Data).self) { group in
-                    defer { group.cancelAll() }
-                    for (index, piece) in pieces.enumerated() {
-                        let primary = primaries[index]
-                        let preferred = [primary] + urls.filter { $0 != primary }
-                        group.addTask {
-                            let data = try await self.downloadPiece(piece, preferred: preferred,
-                                priority: presentation == nil ? 220 : 50 - min(20, index), delay: delay, deadline: deadline, rescue: rescue)
-                            return (index, data)
-                        }
-                    }
-                    var ordered = [Int: Data]()
-                    var next = 0
-                    while let (index, bytes) = try await group.next() {
-                        ordered[index] = bytes
-                        BTRTrace.shared.event("piece_ready",["start":pieces[index].start,"end":pieces[index].end,"waitingFor":pieces[next].start,"heldPieces":ordered.count])
-                        while let chunk = ordered.removeValue(forKey: next) {
-                            try await pipe.write(chunk, isCurrent: { deadline.valid })
-                            delivered += Int64(chunk.count)
-                            playback.ordered(chunk.count, generation: generation)
-                            BTRTrace.shared.event("ordered_delivery",["start":pieces[next].start,"end":pieces[next].end,"bytes":chunk.count])
-                            next += 1
-                        }
-                    }
-                    guard next == pieces.count else { throw MediaRangeError.truncated }
-                }
-                if window.end == range.end { break }
-                cursor = window.end + 1
+                reader.cursor = cursor
+                schedule(reader)
+                guard let slot = self.slotAt(cursor) else { throw MediaRangeError.truncated }
+                let waitStarted = BTRTrace.now
+                let data = try await value(of: slot)
+                guard Int64(data.count) == slot.range.length else { throw MediaRangeError.truncated }
+                let upto = min(slot.range.end, range.end)
+                let from = Int(cursor - slot.range.start), to = Int(upto - slot.range.start) + 1
+                let chunk = from == 0 && to == data.count ? data : data.subdata(in: (data.startIndex + from)..<(data.startIndex + to))
+                try await pipe.write(chunk, isCurrent: { deadline.valid })
+                delivered += Int64(chunk.count)
+                playback.ordered(chunk.count, generation: generation)
+                BTRTrace.shared.event("ordered_delivery",["start":cursor,"end":upto,"bytes":chunk.count,"waitMs":BTRTrace.now-waitStarted,
+                    "inFlight":slots.filter { !$0.finished }.count,"held":slots.filter { $0.finished }.count])
+                if upto == slot.range.end { remove(slot) }
+                cursor = upto + 1
             }
+            reader.cursor = cursor
+            if readAhead { refill() }
             BTRTrace.shared.event("stream_complete")
             pipe.close()
         } catch {
@@ -427,7 +552,9 @@ actor MediaRangeDownloader {
         guard range.length <= memoryCap else { throw MediaRangeError.unsatisfiable(total: total) }
         let pipe = MediaBytePipe(capacityBytes: Int(max(64 * 1024, range.length)))
         // The whole capped result fits: no blocking reader on a cooperative executor.
-        await stream(range: range, to: pipe)
+        await BTRTrace.$requestID.withValue(pipe.traceID) {
+            await streamRecorded(range: range, to: pipe, readAhead: false)
+        }
         var result = Data()
         while let chunk = try pipe.readSync(maxLength: 256 * 1024) { result.append(chunk) }
         guard Int64(result.count) == range.length else { throw MediaRangeError.truncated }
@@ -476,7 +603,9 @@ actor MediaRangeDownloader {
             let rotated = Array(preferred[offset...]) + Array(preferred[..<offset])
             let first = rotated[0]
             let rest = rotated.dropFirst().sorted { speed($0) > speed($1) }
-            let urls = Array(([first] + rest).prefix(8))
+            let all = [first] + rest
+            let usable = all.filter { health[$0]?.until != .infinity }
+            let urls = Array((usable.isEmpty ? all : usable).prefix(8))
             let open = urls.filter { (health[$0]?.until ?? 0) <= Self.now }
             let ordered = open + urls.filter { !open.contains($0) }
             let width = mode == .proxy ? 1 : 2
@@ -645,7 +774,9 @@ actor MediaRangeDownloader {
             playback.failure(status: status, noBytes: (error as? URLError)?.code == .timedOut && progress.snapshot().isEmpty, generation: requestDeadline.generation)
             failures += 1
             let count = (health[url]?.failures ?? 0) + 1
-            health[url] = (count, Self.now + min(60, 3 * pow(2, Double(min(count, 4)))))
+            // A node that refuses this signed address (synthetic BTR node) will keep refusing it.
+            let permanent = status.map { [403, 404, 410].contains($0) } ?? false
+            health[url] = (count, permanent ? .infinity : Self.now + min(60, 3 * pow(2, Double(min(count, 4)))))
             throw error
         }
     }
@@ -660,10 +791,14 @@ actor MediaRangeDownloader {
     }
     // Native safety gate before BTR may splice a prefix from another URL. Unlike the old
     // implementation, inconclusive samples are not accepted. Signed URLs stay unmodified.
+    private func banMismatch(_ url: String) {
+        health[url] = (99, .infinity)
+        BTRTrace.shared.event("host_banned",["host":URL(string:url)?.host ?? "","reason":"content-mismatch"])
+    }
     private func verify(_ url: String, deadline: BTRDeadline) async throws {
         guard candidates.count > 1, !verified.contains(url) else { return }
         if let (range, bytes) = anchor {
-            guard try await sampleBytes(range, url: url, deadline: deadline) == bytes else { throw MediaRangeError.mismatch }
+            guard try await sampleBytes(range, url: url, deadline: deadline) == bytes else { banMismatch(url); throw MediaRangeError.mismatch }
         } else {
             let length = min(total ?? (32 * 1024), 32 * 1024)
             let range = try MediaByteRange(start: 0, end: length - 1)
@@ -671,7 +806,7 @@ actor MediaRangeDownloader {
                 referenceSample = try await sampleBytes(range, url: candidates[0], deadline: deadline)
                 verified.insert(candidates[0])
             }
-            guard try await sampleBytes(range, url: url, deadline: deadline) == referenceSample else { throw MediaRangeError.mismatch }
+            guard try await sampleBytes(range, url: url, deadline: deadline) == referenceSample else { banMismatch(url); throw MediaRangeError.mismatch }
         }
         verified.insert(url)
     }

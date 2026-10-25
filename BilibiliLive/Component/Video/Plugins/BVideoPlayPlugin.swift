@@ -223,6 +223,22 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             }
     }
     private var lastTraceSample = -Double.infinity
+    // diag10 ended with 13.9 s buffered while AVPlayer kept waiting "to minimize stalls" until the
+    // 60 s watchdog fired: its keep-up estimate lags behind the burst-y BTR delivery. With several
+    // seconds contiguous at the playhead, resume playback instead of freezing.
+    private var bufferedWaitingSince: Double?
+    private var lastKickStart = -Double.infinity
+    private func kickStartIfBuffered(player: AVPlayer, ahead: Double) {
+        guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+              player.reasonForWaitingToPlay == .toMinimizeStalls,
+              !isUserPaused, ahead >= 6 else { bufferedWaitingSince = nil; return }
+        let now = BTRTrace.now
+        guard let since = bufferedWaitingSince else { bufferedWaitingSince = now; return }
+        guard now - since >= 1500, now - lastKickStart >= 5000 else { return }
+        lastKickStart = now; bufferedWaitingSince = nil
+        BTRTrace.shared.event("player_kickstart",["ahead":ahead,"waitedMs":now - since,"position":player.currentTime().seconds])
+        player.playImmediately(atRate: Float(btrLastRate))
+    }
     private func sampleBTR(player: AVPlayer, jumped: Bool = false) {
         guard let item = player.currentItem, let session = playerDelegate?.btrPlayback else { return }
         let position = player.currentTime().seconds
@@ -236,6 +252,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             let start = range.start.seconds, finish = CMTimeRangeGetEnd(range).seconds
             if start.isFinite && finish.isFinite && start <= end + 0.05 && finish > end { end = finish }
         }
+        kickStartIfBuffered(player: player, ahead: max(0, end - position))
         session.update(position: position, rate: btrLastRate,
             advancing: player.timeControlStatus == .playing,
             intended: player.timeControlStatus != .paused,

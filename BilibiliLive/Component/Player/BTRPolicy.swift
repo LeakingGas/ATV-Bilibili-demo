@@ -78,3 +78,83 @@ struct BTRPolicy {
         return result
     }
 }
+
+// cdn-resolver.js representationUrls: a signed upos address is accepted by every ordinary
+// node, so BTR asks the same address of several nodes. Relays (mcdn / custom ports / v1
+// resource paths) only work on relays and are never moved.
+enum BTRNodeRegion: String, Codable, CaseIterable, Sendable {
+    case overseas
+    case mainland
+    case original
+
+    var title: String {
+        switch self {
+        case .overseas: return "海外节点"
+        case .mainland: return "大陆节点"
+        case .original: return "仅B站下发地址"
+        }
+    }
+}
+
+enum BTRCDN {
+    static let mainlandHosts = [
+        "upos-sz-mirrorali.bilivideo.com",
+        "upos-sz-mirrorhw.bilivideo.com",
+        "upos-sz-mirrorbos.bilivideo.com",
+        "upos-sz-mirror08c.bilivideo.com",
+        "upos-sz-mirrorbd.bilivideo.com",
+        "upos-sz-mirror14b.bilivideo.com",
+        "upos-sz-estgoss.bilivideo.com",
+        "upos-sz-mirrorcos.bilivideo.com",
+        "upos-sz-mirrorcoso1.bilivideo.com",
+    ]
+    static let overseasHosts = [
+        "upos-sz-mirrorcosov.bilivideo.com",
+        "upos-sz-mirroraliov.bilivideo.com",
+        "cn-hk-eq-01-01.bilivideo.com",
+        "cn-hk-eq-01-03.bilivideo.com",
+    ]
+
+    static func host(_ url: String) -> String { URLComponents(string: url)?.host?.lowercased() ?? "" }
+    static func isAkamai(_ url: String) -> Bool { host(url).hasSuffix(".akamaized.net") }
+    static func isRelay(_ url: String) -> Bool {
+        guard let components = URLComponents(string: url), let host = components.host?.lowercased() else { return true }
+        if components.port != nil { return true }
+        if host.range(of: #"(^|\.)mcdn\."#, options: .regularExpression) != nil { return true }
+        if host.hasSuffix("szbdyd.com") || host.hasSuffix("mountaintoys.cn") { return true }
+        if components.path.lowercased().hasPrefix("/v1/resource/") { return true }
+        return components.queryItems?.first { $0.name == "os" }?.value?.lowercased() == "mcdn"
+    }
+    static func swap(_ url: String, to host: String) -> String? {
+        guard var components = URLComponents(string: url), components.scheme == "https" || components.scheme == "http" else { return nil }
+        components.host = host
+        components.port = nil
+        components.scheme = "https"
+        return components.string
+    }
+
+    /// Ordered candidates: allowed originals, synthetic node addresses, relays only as last resort.
+    static func candidates(_ originals: [String], region: BTRNodeRegion) -> [String] {
+        var seen = Set<String>()
+        let unique = originals.filter { URL(string: $0)?.host != nil && seen.insert($0).inserted }
+        guard region != .original else { return unique }
+        let hosts = region == .overseas ? overseasHosts : mainlandHosts
+        let ordinary = unique.filter { !isRelay($0) }
+        let synthetic: [String]
+        if let donor = ordinary.first(where: { !isAkamai($0) }) {
+            synthetic = hosts.compactMap { swap(donor, to: $0) }
+        } else {
+            // Some overseas accounts only receive akamaized.net addresses; nodes accept those signatures too.
+            synthetic = hosts.flatMap { host in ordinary.compactMap { swap($0, to: host) } }
+        }
+        let allowed = region == .overseas
+            ? unique.filter { !mainlandHosts.contains(host($0)) && !isRelay($0) }
+            : unique.filter { mainlandHosts.contains(host($0)) }
+        let relays = ordinary.isEmpty ? unique : []
+        var result = [String]()
+        var out = Set<String>()
+        for url in allowed + synthetic + relays where out.insert(url).inserted { result.append(url) }
+        // Never return nothing: fall back to what Bilibili handed out.
+        return result.isEmpty ? unique : result
+    }
+}

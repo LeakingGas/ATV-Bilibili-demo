@@ -650,7 +650,8 @@ private extension BilibiliVideoResourceLoaderDelegate {
         for entry in videoInfo {
             let media = entry.info
             guard seen.insert(media).inserted else { continue }
-            let candidates = media.playableURLs
+            // diag12: BTR cdn-resolver node expansion (same signed address on several nodes).
+            let candidates = BTRCDN.candidates(media.playableURLs, region: Settings.btrNodeRegion)
             guard !candidates.isEmpty else { continue }
             let mode: MediaTransportMode = transportMode == .accelerated ? .accelerated : .proxy
             let downloader = MediaRangeDownloader(candidates: candidates, referer: referer, mode: mode, playback: btrPlayback, isAudio: infoIsAudio(media), traceLabel: "qn=\(media.id) codec=\(media.codecs) size=\(media.width ?? 0)x\(media.height ?? 0) bps=\(media.bandwidth)")
@@ -803,10 +804,10 @@ private extension BilibiliVideoResourceLoaderDelegate {
         case .accelerated: modeText = "accel"
         }
         // 不输出 URL 查询参数/签名/Cookie；Mbps 为估计聚合值，仅供参考
-        return String(format: "accel mode:%@ hosts:%d est %.1fMbps sub:%d fail:%d retry:%d ratio:%.2f%@",
-                      modeText, diag.activeHosts, diag.estimatedAggregateMbps,
+        return String(format: "accel mode:%@ nodes:%d/%d busy:%d est %.1fMbps sub:%d fail:%d retry:%d ratio:%.2f ahead:%d/%.1fMB%@",
+                      modeText, diag.candidateCount - diag.bannedCount, diag.candidateCount, diag.activeHosts, diag.estimatedAggregateMbps,
                       diag.activeSubrequests, diag.failures, diag.retries,
-                      diag.redundancyRatio,
+                      diag.redundancyRatio, diag.readAheadSlots, Double(diag.readAheadBytes) / 1_048_576,
                       diag.downgradedToDirect ? " downgraded" : "")
     }
 }
@@ -1097,7 +1098,7 @@ final class BTRTraceExport {
             BTRTrace.shared.freeze()
             let bytes = Data(BTRTrace.shared.export().utf8)
             return HttpResponse.raw(200,"OK",["Content-Type":"application/x-ndjson; charset=utf-8",
-                "Content-Disposition":"attachment; filename=btr-diag11.jsonl",
+                "Content-Disposition":"attachment; filename=btr-diag12.jsonl",
                 "Cache-Control":"no-store","Content-Length":String(bytes.count)]) { writer in
                 try writer.write(bytes)
             }
