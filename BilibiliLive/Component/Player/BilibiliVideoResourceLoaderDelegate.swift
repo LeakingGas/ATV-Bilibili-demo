@@ -417,14 +417,10 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
             // 保留最高画质的所有编码
             let highQualityVideos = videos.filter { $0.id == highestQuality }
 
-            // 保留中等画质作为后备（1080P 及以下，但不包括最高画质）
-            let fallbackVideos = videos.filter { $0.id < highestQuality && $0.id >= 80 }
-
-            // 保留低画质作为紧急后备（720P 及以下）
-            let emergencyVideos = videos.filter { $0.id < 80 && $0.id >= 64 }
-
-            // 合并：最高画质 + 中等画质 + 低画质
-            videos = highQualityVideos + fallbackVideos + emergencyVideos
+            // diag12: 只保留最高画质。经本地 BTR 代理时 AVPlayer 的自适应码率估计不可靠：
+            // diag9/diag10 实机日志显示起播即降到 2-4 Mbps 的后备流（indicatedBps 2.29M/4.09M），
+            // 用户每次都要手动切回最高画质。BTR 现已能提供 >50 Mbps，不再交给 AVPlayer 自动降级。
+            videos = highQualityVideos
         }
 
         // 按 bandwidth 降序排序（码率最高的优先，让 AVPlayer 优先选择）
