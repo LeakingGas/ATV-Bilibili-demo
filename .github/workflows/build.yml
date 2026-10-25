@@ -56,6 +56,16 @@ jobs:
             build/ATV-BTR-source.zip
             build/source-commit.txt
             build/SHA256.txt
+      - name: Surface failure details as annotations
+        if: failure()
+        run: |
+          for f in build/tests.log build/archive.log; do
+            [ -f "$f" ] || continue
+            grep -E "error:|FAILED|PASS:|fatal" "$f" | grep -v "^\s*$" | tail -9 | while IFS= read -r line; do
+              echo "::error title=$(basename $f)::${line:0:900}"
+            done
+            echo "::warning title=$(basename $f) tail::$(tail -c 900 "$f" | tr '\n' ' ')"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
