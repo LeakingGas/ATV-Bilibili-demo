@@ -107,3 +107,15 @@ Debug 始终显示 transport，包括 direct；BTR diag:5；失败回退保留�
 作用范围是本次改造的B站点播音视频链路；BTR本身仍需从CDN下载，SIDX元数据探测、字幕/API及独立直播模块不是这里所说的AVPlayer直连媒体降级。
 
 验证：Swift语法解析、无外部媒体重定向/直连播放列表回退的静态检查和ZIP检查。没有macOS本地编译，也没有真机结果。需Actions构建后验证普通播放、换画质、超时等待、索引失败、代理失败；网络故障期间不得出现transport:direct。标记BTR diag:7 / BTR ONLY。
+
+## diag8: rolling admission instead of a batch barrier
+
+The downloader previously waited for every piece in a 2 MiB window before scheduling any of the next window. It now refills after ordered delivery releases space. Admitted piece bytes, including completed out-of-order results, remain capped at 2 MiB per stream; existing byte-pipe backpressure and concurrency limits remain in force. BTR split/assignment/hedge implementations are unchanged, but pieces are planned for this HTTP range before scheduling rather than replanned after each completed window. Runtime auto-concurrency still gates network permits.
+
+Regression: `/window` holds the piece ending at byte 2162687 (64 KiB startup probe + first 2 MiB window) until a request starting at or beyond 2162688 arrives, with a three-second safety timeout. The native test checks that the next window started before the hold expired, exact final bytes, and zero active requests. This detects the old batch barrier even when final output bytes match.
+
+Local validation: Swift syntax parser and git whitespace checks pass. Python HTTP fixture smoke checks pass, including both blocked and released boundary outcomes. No local Swift compiler/Xcode is available: the new native regression and tvOS archive must run in Actions. This addresses a confirmed scheduling barrier, not a verified complete fix for device 4K stalls. Diagnostic marker is `BTR diag:8`; BTR-only mode remains enforced.
+
+## diag9 diagnostic baseline
+
+Supersedes the diag8 experiment: restored diag7 window scheduling and added opt-in flight recording only. See DIAGNOSTICS.zh-CN.md. Native trace tests are added, not locally executed; Xcode and device LAN export validation remain outstanding.

@@ -205,7 +205,10 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     }
 
     private func getVideoPlayList(info: PlaybackInfo) async throws -> String {
+        BTRTrace.shared.event("playlist_begin",["session":btrPlayback.id.uuidString,"quality":info.info.id,"codec":info.info.codecs])
+        let indexStarted = BTRTrace.now
         let sidxResult = await segmentInfoCache.sidx(from: info.info, preferredHost: preferredHost)
+        BTRTrace.shared.event("index_result",["session":btrPlayback.id.uuidString,"quality":info.info.id,"available":sidxResult != nil,"elapsedMs":BTRTrace.now-indexStarted])
         let inits = info.info.segment_base.initialization.components(separatedBy: "-")
         guard let moovIdxStr = inits.last,
               let moovIdx = Int(moovIdxStr),
@@ -650,7 +653,11 @@ private extension BilibiliVideoResourceLoaderDelegate {
             let candidates = media.playableURLs
             guard !candidates.isEmpty else { continue }
             let mode: MediaTransportMode = transportMode == .accelerated ? .accelerated : .proxy
-            let downloader = MediaRangeDownloader(candidates: candidates, referer: referer, mode: mode, playback: btrPlayback, isAudio: infoIsAudio(media))
+            let downloader = MediaRangeDownloader(candidates: candidates, referer: referer, mode: mode, playback: btrPlayback, isAudio: infoIsAudio(media), traceLabel: "qn=\(media.id) codec=\(media.codecs) size=\(media.width ?? 0)x\(media.height ?? 0) bps=\(media.bandwidth)")
+            BTRTrace.shared.event("track_registered",["track":downloader.traceID,"session":btrPlayback.id.uuidString,
+                "quality":media.id,"codec":media.codecs,"width":media.width ?? 0,"height":media.height ?? 0,
+                "bandwidth":media.bandwidth,"audio":infoIsAudio(media),
+                "hosts":candidates.compactMap { URL(string:$0)?.host }])
             proxyRegistry.register(media: media, candidates: candidates, referer: referer, downloader: downloader)
         }
     }
@@ -676,6 +683,9 @@ private extension BilibiliVideoResourceLoaderDelegate {
             return HttpResponse.badRequest(nil)
         }
         let rangeHeader = req.headers["range"]
+        // Only the player's byte-range syntax; no URL, headers or cookies are exported.
+        let safeRange = (rangeHeader ?? "missing").prefix(100)
+        BTRTrace.shared.event("proxy_request",["track":entry.downloader.traceID,"range":String(safeRange),"total":entry.totalLength ?? -1])
         let parsed = MediaRangeParsing.parse(header: rangeHeader, fileLength: entry.totalLength)
         switch parsed {
         case .missing:
@@ -709,6 +719,7 @@ private extension BilibiliVideoResourceLoaderDelegate {
     }
 
     private func strictProxyFailure(_ reason: String) -> HttpResponse {
+        BTRTrace.shared.event("proxy_rejected",["session":btrPlayback.id.uuidString,"reason":reason])
         updateAccelerationText("BTR ONLY error: " + reason)
         return HttpResponse.raw(503, "BTR transport unavailable", ["Content-Length": "0", "X-BTR-Error": reason], nil)
     }
@@ -722,6 +733,11 @@ private extension BilibiliVideoResourceLoaderDelegate {
         weak var weakSelf = self
         return HttpResponse.raw(206, "Partial Content", headers) { writer in
             let pipe = MediaBytePipe()
+            let requestID = pipe.traceID
+            BTRTrace.shared.event("proxy_begin",["request":requestID,"track":downloader.traceID,"start":range.start,"end":range.end,"total":entry.totalLength ?? -1])
+            var written = 0
+            var lastWriteTrace = -Double.infinity
+            var lastReadTrace = -Double.infinity
             let streamTask = Task {
                 await downloader.stream(range: range, to: pipe)
             }
@@ -731,14 +747,30 @@ private extension BilibiliVideoResourceLoaderDelegate {
                 while true {
                     let chunk: Data?
                     do {
+                        let readingAt = BTRTrace.now
+                        let reportRead = readingAt-lastReadTrace >= 1000
+                        if reportRead { BTRTrace.shared.event("proxy_read_begin",["request":requestID,"written":written]) }
                         chunk = try pipe.readSync(maxLength: 64 * 1024, timeout: 30)
+                        if reportRead || BTRTrace.now-readingAt >= 250 {
+                            lastReadTrace = BTRTrace.now
+                            BTRTrace.shared.event("proxy_read_end",["request":requestID,"bytes":chunk?.count ?? 0,"waitMs":BTRTrace.now-readingAt])
+                        }
                     } catch {
                         streamTask.cancel()
                         throw error
                     }
                     guard let chunk else { break }
                     do {
+                        let writingAt = BTRTrace.now
+                        if BTRTrace.now-lastWriteTrace >= 1000 {
+                            BTRTrace.shared.event("proxy_write_begin",["request":requestID,"written":written,"bytes":chunk.count])
+                        }
                         try writer.write(chunk)
+                        written += chunk.count
+                        if BTRTrace.now-lastWriteTrace >= 1000 || BTRTrace.now-writingAt >= 250 {
+                            lastWriteTrace = BTRTrace.now
+                            BTRTrace.shared.event("proxy_write_end",["request":requestID,"written":written,"writeMs":BTRTrace.now-writingAt])
+                        }
                     } catch {
                         // 读取方关闭/超时/写入失败：立即取消生产者（幂等），截断连接
                         streamTask.cancel()
@@ -747,9 +779,11 @@ private extension BilibiliVideoResourceLoaderDelegate {
                 }
             } catch {
                 streamTask.cancel()
+                BTRTrace.shared.event("proxy_failed",BTRTrace.errorFields(error).merging(["request":requestID,"written":written]) { _,new in new })
                 // 206 已发送：不能改写状态码，只能截断；播放器级恢复由 BVideoPlayPlugin 触发
                 throw error
             }
+            BTRTrace.shared.event("proxy_complete",["request":requestID,"written":written])
             // 成功交付后异步更新诊断与 total 缓存（不阻塞 writer）
             Task { [weakSelf, downloader, candidates, mediaID] in
                 if let total = await downloader.knownTotal() {
@@ -1044,6 +1078,63 @@ actor SidxDownloader {
                 return SidxResult(sidx: segment, url: url, indexBytes: res)
             }
             Logger.warn("sidx download failed in \(elapsedMs(since: start))ms on \(host), try next url")
+        }
+        return nil
+    }
+}
+
+
+// Separate opt-in LAN exporter. The media server remains loopback-only.
+// Retained across quality switches/player teardown so the failure trace survives.
+final class BTRTraceExport {
+    static let shared = BTRTraceExport()
+    private var server: HttpServer?
+    private(set) var address: String?
+    func start() throws -> String {
+        stop()
+        let server = HttpServer()
+        server.listenAddressIPv4 = "0.0.0.0"
+        let token = UUID().uuidString.replacingOccurrences(of:"-",with:"").prefix(12).lowercased()
+        let path = "/" + token + "/btr.jsonl"
+        server[path] = { _ in
+            BTRTrace.shared.freeze()
+            let bytes = Data(BTRTrace.shared.export().utf8)
+            return HttpResponse.raw(200,"OK",["Content-Type":"application/x-ndjson; charset=utf-8",
+                "Content-Disposition":"attachment; filename=btr-diag9.jsonl",
+                "Cache-Control":"no-store","Content-Length":String(bytes.count)]) { writer in
+                try writer.write(bytes)
+            }
+        }
+        do { try server.start(0,forceIPv4:true) }
+        catch { server.stop(); throw error }
+        let port: Int
+        do { port = Int(try server.port()) }
+        catch { server.stop(); throw error }
+        self.server = server
+        let address = "http://" + (Self.localIPv4() ?? "APPLE-TV-IP") + ":" + String(port) + path
+        self.address = address
+        BTRTrace.shared.start()
+        BTRTrace.shared.event("recording_started")
+        return address
+    }
+    func stop() {
+        BTRTrace.shared.freeze()
+        server?.stop(); server = nil; address = nil
+    }
+    private static func localIPv4() -> String? {
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0 else { return nil }
+        defer { freeifaddrs(list) }
+        var current = list
+        while let ptr = current {
+            defer { current = ptr.pointee.ifa_next }
+            let item = ptr.pointee
+            guard let addr = item.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET),
+                  String(cString:item.ifa_name).hasPrefix("en") else { continue }
+            var host = [CChar](repeating:0,count:Int(NI_MAXHOST))
+            if getnameinfo(addr,socklen_t(addr.pointee.sa_len),&host,socklen_t(host.count),nil,0,NI_NUMERICHOST) == 0 {
+                return String(cString:host)
+            }
         }
         return nil
     }

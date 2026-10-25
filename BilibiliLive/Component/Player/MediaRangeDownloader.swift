@@ -153,6 +153,7 @@ final class MediaBytePipe: @unchecked Sendable {
         case readTimeout
     }
 
+    let traceID = UUID().uuidString
     private let condition = NSCondition()
     private var buffer = Data()
     private let capacityBytes: Int
@@ -179,6 +180,9 @@ final class MediaBytePipe: @unchecked Sendable {
 
     private func writeChunk(_ chunk: Data, isCurrent: @Sendable () -> Bool) async throws {
         if try tryAppend(chunk) { return }
+        let traceStarted = BTRTrace.now
+        BTRTrace.shared.event("pipe_backpressure_begin", ["request":traceID])
+        defer { BTRTrace.shared.event("pipe_backpressure_end", ["request":traceID,"waitMs":BTRTrace.now-traceStarted]) }
         // 慢路径：等待空间（挂起，不阻塞线程），用轮询+短等待避免复杂延续队列
         while true {
             guard isCurrent() else { throw CancellationError() }
@@ -256,12 +260,14 @@ final class MediaBytePipe: @unchecked Sendable {
 // Copyright (c) 2026 Bilibili-thread-ripper contributors (MIT).
 // The public name is retained as the ATV loopback adapter's source-compatible facade.
 actor MediaRangeDownloader {
+    nonisolated let traceID = UUID().uuidString
     private let candidates: [String]
     private let referer: String
     private let userAgent: String
     private let mode: MediaTransportMode
     private let playback: BTRPlaybackSession
     private let isAudio: Bool
+    private let traceLabel: String
     private var timings = [BTRSegmentTiming]()
     func setTimings(_ timings: [BTRSegmentTiming]) { self.timings = timings }
     private let client = BTRHTTPClient()
@@ -283,11 +289,11 @@ actor MediaRangeDownloader {
     private let memoryCap: Int64 = 16 * 1024 * 1024
     private static var now: Double { ProcessInfo.processInfo.systemUptime }
 
-    init(candidates: [String], referer: String, userAgent: String = Keys.userAgent, mode: MediaTransportMode = .accelerated, playback: BTRPlaybackSession = BTRPlaybackSession(), isAudio: Bool = false) {
+    init(candidates: [String], referer: String, userAgent: String = Keys.userAgent, mode: MediaTransportMode = .accelerated, playback: BTRPlaybackSession = BTRPlaybackSession(), isAudio: Bool = false, traceLabel: String = "") {
         var seen = Set<String>()
         self.candidates = candidates.filter { URL(string: $0)?.host != nil && seen.insert($0).inserted }
         self.referer = referer; self.userAgent = userAgent; self.mode = mode
-        self.playback = playback; self.isAudio = isAudio
+        self.playback = playback; self.isAudio = isAudio; self.traceLabel = traceLabel
         playback.registerHosts(self.candidates.compactMap { URL(string: $0)?.host?.lowercased() })
     }
     deinit { client.invalidate() }
@@ -334,15 +340,26 @@ actor MediaRangeDownloader {
     }
 
     func stream(range: MediaByteRange, to pipe: MediaBytePipe) async {
+        await BTRTrace.$requestID.withValue(pipe.traceID) {
+            await streamRecorded(range: range, to: pipe)
+        }
+    }
+    private func streamRecorded(range: MediaByteRange, to pipe: MediaBytePipe) async {
+        BTRTrace.shared.event("stream_begin", ["track":traceID,"session":playback.id.uuidString,
+            "audio":isAudio,"start":range.start,"end":range.end,"media":traceLabel,"hosts":candidates.compactMap { URL(string:$0)?.host }])
+
         let generation = playback.generation
         let presentation = timings.first { $0.range.end >= range.start && $0.range.start <= range.end }?.start
         let deadline = BTRDeadline(session: playback, generation: generation, presentation: presentation)
+        let due = deadline.value
+        BTRTrace.shared.event("stream_deadline",["presentation":presentation ?? -1,"remainingMs":due.isFinite ? due-BTRPlaybackSession.now : -1])
         let rescue = RescueBudget(playback.limit)
         var admitted = false
         defer { if admitted { streams -= 1 } }
         do {
             guard !candidates.isEmpty, range.length <= memoryCap else { throw MediaRangeError.unsatisfiable(total: total) }
             // tvOS adaptation: two bounded streams per track. The byte pipe also backpressures.
+            let admissionStarted = BTRTrace.now
             while streams >= 2 {
                 guard deadline.valid else { throw CancellationError() }
                 try await Task.sleep(nanoseconds: 10_000_000)
@@ -350,6 +367,7 @@ actor MediaRangeDownloader {
             guard deadline.valid else { throw CancellationError() }
             try Task.checkCancellation()
             streams += 1; admitted = true
+            BTRTrace.shared.event("stream_admitted",["waitMs":BTRTrace.now-admissionStarted])
             var cursor = range.start
             // BTR startup media probe: promptly deliver a small verified head before the tail.
             if mode == .accelerated, speeds.isEmpty, range.length > 64 * 1024 {
@@ -362,6 +380,7 @@ actor MediaRangeDownloader {
                 guard deadline.valid else { throw CancellationError() }
                 let window = try MediaByteRange(start: cursor, end: min(range.end, cursor + 2 * 1024 * 1024 - 1))
                 let pieces = split(range: window)
+                BTRTrace.shared.event("window_begin",["start":window.start,"end":window.end,"pieces":pieces.count])
                 let urls = pool()
                 let measured = Dictionary(uniqueKeysWithValues: urls.map { ($0, speed($0)) })
                 let primaries = policy.assign(urls, count: pieces.count) { measured[$0] ?? 0 }
@@ -381,10 +400,12 @@ actor MediaRangeDownloader {
                     var next = 0
                     while let (index, bytes) = try await group.next() {
                         ordered[index] = bytes
+                        BTRTrace.shared.event("piece_ready",["start":pieces[index].start,"end":pieces[index].end,"waitingFor":pieces[next].start,"heldPieces":ordered.count])
                         while let chunk = ordered.removeValue(forKey: next) {
                             try await pipe.write(chunk, isCurrent: { deadline.valid })
                             delivered += Int64(chunk.count)
                             playback.ordered(chunk.count, generation: generation)
+                            BTRTrace.shared.event("ordered_delivery",["start":pieces[next].start,"end":pieces[next].end,"bytes":chunk.count])
                             next += 1
                         }
                     }
@@ -392,9 +413,11 @@ actor MediaRangeDownloader {
                 }
                 cursor = window.end + 1
             }
+            BTRTrace.shared.event("stream_complete")
             pipe.close()
         } catch {
             playback.recordError(error, isAudio: isAudio, generation: generation)
+            BTRTrace.shared.event("stream_failed",BTRTrace.errorFields(error))
             pipe.fail(error)
         }
     }
@@ -446,6 +469,7 @@ actor MediaRangeDownloader {
                 if Self.now - started > 25 { break }
                 try await Task.sleep(nanoseconds: UInt64(min(2, 0.5 * pow(2, Double(round - 1))) * 1e9))
             }
+            BTRTrace.shared.event("piece_round",["start":range.start,"end":range.end,"round":round,"prefixBytes":state.best().count])
             let offset = round % preferred.count
             let rotated = Array(preferred[offset...]) + Array(preferred[..<offset])
             let first = rotated[0]
@@ -492,11 +516,13 @@ actor MediaRangeDownloader {
                     // BTR firstFailure: immediate rescue instead of waiting out the hedge timer.
                     if pair.count > 1, !secondary {
                         secondary = true; retries += 1; playback.rescued()
+                        BTRTrace.shared.event("hedge_start",["start":range.start,"end":range.end,"host":URL(string:pair[1])?.host ?? "","afterFailures":failed])
                         group.addTask { await self.lane(range, state: state, url: pair[1], priority: priority + 20, deadline: deadline) }
                     }
                 case .timer:
                     if !secondary {
                         secondary = true; retries += 1; playback.rescued()
+                        BTRTrace.shared.event("hedge_start",["start":range.start,"end":range.end,"host":URL(string:pair[1])?.host ?? "","afterFailures":failed])
                         group.addTask { await self.lane(range, state: state, url: pair[1], priority: priority + 20, deadline: deadline) }
                     }
                 }
@@ -528,9 +554,15 @@ actor MediaRangeDownloader {
         do {
             try Task.checkCancellation()
             guard deadline.valid else { throw CancellationError() }
+            let verifyStarted = BTRTrace.now
+            BTRTrace.shared.event("verify_begin",["host":URL(string:url)?.host ?? "","start":range.start,"end":range.end])
             try await verify(url, deadline: deadline)
+            BTRTrace.shared.event("verify_end",["host":URL(string:url)?.host ?? "","elapsedMs":BTRTrace.now-verifyStarted])
             let host = URL(string: url)!.host!.lowercased()
+            let queuedAt = BTRTrace.now
+            BTRTrace.shared.event("queue_begin",["host":host,"start":range.start,"end":range.end])
             let permit = try await MediaDownloadBudget.shared.acquire(host: host, priority: priority, session: playback, deadline: deadline, queueClass: priority >= 200 ? 0 : priority >= 100 ? 1 : 2)
+            BTRTrace.shared.event("queue_end",["host":host,"start":range.start,"end":range.end,"waitMs":BTRTrace.now-queuedAt])
             do {
                 try Task.checkCancellation()
                 // BTR begin(): snapshot only after obtaining a slot, not at queue admission.
@@ -561,6 +593,7 @@ actor MediaRangeDownloader {
             }
         } catch {
             playback.recordError(error, isAudio: isAudio, generation: deadline.generation)
+            BTRTrace.shared.event("lane_failed",BTRTrace.errorFields(error).merging(["start":range.start,"end":range.end,"host":URL(string:url)?.host ?? ""]) { _,new in new })
             return .failure(error)
         }
     }

@@ -169,7 +169,7 @@ final class BTRPlaybackSession: @unchecked Sendable {
         let fresh = Self.now - sampledAt <= 1500
         let state = closed ? "closed" : !fresh ? "stale" : !intended ? "paused" : waiting ? "waiting" : "playing"
         let deadlineState = !closed && fresh && intended ? "mapped" : "off"
-        var lines = ["BTR diag:7 auto:\(auto.threads) reason:\(auto.reason) gen:\(epoch)",
+        var lines = ["BTR diag:9 trace auto:\(auto.threads) reason:\(auto.reason) gen:\(epoch)",
                      "slots:\(activeRequests)/\(auto.threads) queue:\(queuedRequests) rescue:\(rescues)",
                      String(format: "play:%@ ahead:%.1fs rate:%.2fx deadline:%@", state, bufferAhead, rate, deadlineState)]
         let now = Self.now
@@ -299,5 +299,64 @@ struct BTRHedgeObservation {
         if connectionBps <= 0 || rate < connectionBps * 0.6 { return true }
         if copyBps <= 0 { return true }
         return now + eta > deadline && rescue.claimStale()
+    }
+}
+
+
+// Opt-in, bounded flight recorder. Callers supply only numeric metadata, generated IDs,
+// and CDN hostnames. Never pass URL strings, headers, media bytes or error descriptions.
+final class BTRTrace: @unchecked Sendable {
+    static let shared = BTRTrace()
+    @TaskLocal static var requestID: String = ""
+    private let lock = NSLock()
+    private let capacity = 12000
+    private var rows = [String]()
+    private var cursor = 0
+    private var sequence = 0
+    private var active = false
+    private var started = 0.0
+    private var wallStart = ""
+    static var now: Double { ProcessInfo.processInfo.systemUptime * 1000 }
+    func start() {
+        lock.lock(); defer { lock.unlock() }
+        rows.removeAll(keepingCapacity: true); cursor = 0; sequence = 0
+        started = Self.now; wallStart = ISO8601DateFormatter().string(from: Date()); active = true
+    }
+    func freeze() { lock.lock(); active = false; lock.unlock() }
+    func event(_ name: String, _ fields: [String: Any] = [:]) {
+        lock.lock(); defer { lock.unlock() }
+        guard active else { return }
+        if Self.now - started > 600000 { active = false; return }
+        var row = fields
+        row["event"] = name; row["ms"] = Int(Self.now - started); row["seq"] = sequence
+        if row["request"] == nil, !Self.requestID.isEmpty { row["request"] = Self.requestID }
+        guard JSONSerialization.isValidJSONObject(row),
+              let data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]),
+              data.count <= 2048, let line = String(data: data, encoding: .utf8) else { return }
+        sequence += 1
+        if rows.count < capacity { rows.append(line) }
+        else { rows[cursor] = line; cursor = (cursor + 1) % capacity }
+    }
+    func export() -> String {
+        lock.lock(); defer { lock.unlock() }
+        let header: [String: Any] = ["format":"btr-trace-1", "build":"diag9-baseline7",
+            "startedUTC":wallStart, "recording":active, "events":rows.count,
+            "overwritten":max(0, sequence - rows.count), "maxSeconds":600]
+        let data = try! JSONSerialization.data(withJSONObject:header,options:[.sortedKeys])
+        let ordered = Array(rows[cursor...]) + Array(rows[..<cursor])
+        return String(data:data,encoding:.utf8)! + "\n" + ordered.joined(separator:"\n") + "\n"
+    }
+    static func errorFields(_ error: Error) -> [String: Any] {
+        if error is CancellationError { return ["error":"cancelled"] }
+        if let pipe = error as? MediaBytePipe.PipeError {
+            switch pipe {
+            case .failed(let underlying): return errorFields(underlying)
+            case .readTimeout: return ["error":"pipe-read-timeout"]
+            case .closed: return ["error":"pipe-closed"]
+            }
+        }
+        let e = error as NSError
+        // Do not include userInfo, which can contain signed URLs.
+        return ["errorDomain":e.domain,"errorCode":e.code]
     }
 }

@@ -98,6 +98,34 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         print("PASS: auto-concurrency source parity, playback deadline and rescue policy")
         let base = "http://127.0.0.1:\(CommandLine.arguments[2])"
         let range = try MediaByteRange(start: 0, end: 524287)
+        // Recorder must preserve parent/attempt IDs and never export signed URL queries.
+        BTRTrace.shared.start()
+        let traced = MediaRangeDownloader(candidates:[base+"/good?token=TRACE_SECRET"],referer:base)
+        let traceRange = try MediaByteRange(start:0,end:32767)
+        let traceBytes = try await traced.fetch(range:traceRange)
+        try require(traceBytes == expected(0,32768), "tracing preserves response bytes")
+        BTRTrace.shared.freeze()
+        let exported = BTRTrace.shared.export()
+        let traceRows = try exported.split(separator:"\n").map {
+            try JSONSerialization.jsonObject(with:Data($0.utf8)) as! [String:Any]
+        }
+        let streamRow = traceRows.first { ($0["event"] as? String) == "stream_begin" }
+        let httpRow = traceRows.first { ($0["event"] as? String) == "http_begin" }
+        try require(streamRow?["request"] as? String != nil, "trace stream ID")
+        try require(streamRow?["request"] as? String == httpRow?["request"] as? String, "trace parent propagation")
+        try require(httpRow?["attempt"] as? String != nil, "trace attempt ID")
+        try require(!exported.contains("TRACE_SECRET") && !exported.contains("token="), "trace URL query redaction")
+        BTRTrace.shared.event("after_freeze")
+        try require(BTRTrace.shared.export() == exported, "frozen trace is stable")
+        BTRTrace.shared.start()
+        for index in 0..<12003 { BTRTrace.shared.event("bounded",["index":index]) }
+        BTRTrace.shared.freeze()
+        let bounded = BTRTrace.shared.export().split(separator:"\n")
+        try require(bounded.count == 12001, "trace bounded record count")
+        let oldest = try JSONSerialization.jsonObject(with:Data(bounded[1].utf8)) as! [String:Any]
+        try require(oldest["index"] as? Int == 3, "trace ring chronological order")
+        BTRTrace.shared.start(); BTRTrace.shared.freeze()
+        print("PASS: diagnostic trace IDs, URL privacy, freeze and bounded ring")
         let resume = MediaRangeDownloader(candidates: [base+"/resume"], referer: base, mode: .proxy)
         let resumed: Data
         do { resumed = try await resume.fetch(range: range) }

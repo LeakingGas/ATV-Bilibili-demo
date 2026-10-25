@@ -221,6 +221,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
                 self.sampleBTR(player: player, jumped: true)
             }
     }
+    private var lastTraceSample = -Double.infinity
     private func sampleBTR(player: AVPlayer, jumped: Bool = false) {
         guard let item = player.currentItem, let session = playerDelegate?.btrPlayback else { return }
         let position = player.currentTime().seconds
@@ -239,6 +240,26 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             intended: player.timeControlStatus != .paused,
             waiting: player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
             ahead: max(0, end - position), jumped: jumped)
+        if jumped || BTRTrace.now-lastTraceSample >= 1000 {
+            lastTraceSample = BTRTrace.now
+            let access = item.accessLog()?.events.last
+            var fields: [String:Any] = ["session":session.id.uuidString,"position":position,
+                "ahead":max(0,end-position),"tcs":player.timeControlStatus.rawValue,
+                "itemStatus":item.status.rawValue,"jumped":jumped,"rate":player.rate,
+                "empty":item.isPlaybackBufferEmpty,"keepUp":item.isPlaybackLikelyToKeepUp,
+                "quality":currentQualityId ?? -1,"threads":session.limit,
+                "waitingReason":player.reasonForWaitingToPlay?.rawValue ?? ""]
+            if let access {
+                fields["observedBps"] = access.observedBitrate.isFinite ? access.observedBitrate : -1
+                fields["indicatedBps"] = access.indicatedBitrate.isFinite ? access.indicatedBitrate : -1
+                fields["stalls"] = access.numberOfStalls
+            }
+            if let error = item.error { fields.merge(BTRTrace.errorFields(error)) { _,new in new } }
+            if let error = item.errorLog()?.events.last {
+                fields["avErrorCode"] = error.errorStatusCode
+            }
+            BTRTrace.shared.event("player_sample",fields)
+        }
     }
 
     private func startNetworkLogging() {
@@ -532,6 +553,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         let code = error.map { String($0.code) } ?? "none"
         let underlying = error?.userInfo[NSUnderlyingErrorKey] as? NSError
         let underlyingCode = underlying.map { String($0.code) } ?? "none"
+        BTRTrace.shared.event("player_failure",["reason":reason,"code":code,"underlyingCode":underlyingCode])
         btrFailureSnapshot = "BTR ONLY: \(reason); direct disabled\nplayer:\(code) underlying:\(underlyingCode)"
         // Waiting downloads may still recover; keep the current BTR item alive.
     }
@@ -545,6 +567,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
 
         // 保存当前播放位置
         currentPlaybackTime = currentTime
+        BTRTrace.shared.event("quality_switch",["from":currentQualityId ?? -1,"to":qualityId,"streamIndex":streamIndex ?? -1])
         currentQualityId = qualityId
 
         // 重新加载视频，使用新的画质

@@ -12,6 +12,10 @@ final class BTRProgress: @unchecked Sendable {
 // Delegate chunks avoid per-byte actor hops and make validated partial data resumable.
 final class BTRHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private final class Transfer: @unchecked Sendable {
+        let traceID = UUID().uuidString
+        let parent = BTRTrace.requestID
+        let started = BTRTrace.now
+        var lastProgress = -Double.infinity
         let range: MediaByteRange
         let progress: BTRProgress
         let knownTotal: Int64?
@@ -55,6 +59,10 @@ final class BTRHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Sendable
         session = URLSession(configuration: config, delegate: self, delegateQueue: queue)
     }
     func invalidate() { session.invalidateAndCancel() }
+    private func trace(_ state: Transfer, _ event: String, _ fields: [String: Any] = [:]) {
+        BTRTrace.shared.event(event, fields.merging(["attempt":state.traceID,"request":state.parent,
+            "start":state.range.start,"end":state.range.end]) { _,new in new })
+    }
     private func lookup(_ task: URLSessionTask) -> Transfer? {
         lock.lock(); defer { lock.unlock() }; return transfers[task.taskIdentifier]
     }
@@ -68,6 +76,7 @@ final class BTRHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Sendable
             self.queue.addOperation {
                 guard let state = self.lookup(task) else { return }
                 if let generation, state.idleGeneration != generation { return }
+                self.trace(state,"http_timeout",["timer":generation == nil ? "total" : "idle-or-headers","bytes":state.progress.snapshot().count,"elapsedMs":BTRTrace.now-state.started])
                 state.error = URLError(.timedOut)
                 task.cancel()
             }
@@ -81,6 +90,7 @@ final class BTRHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Sendable
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
                 let state = Transfer(range, progress, knownTotal)
+                trace(state,"http_begin",["host":request.url?.host ?? ""])
                 state.completion = continuation
                 state.isCurrent = isCurrent; state.onProgress = onProgress
                 let task = session.dataTask(with: request)
@@ -109,6 +119,7 @@ final class BTRHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Sendable
         guard let state = lookup(dataTask), let http = response as? HTTPURLResponse else {
             completionHandler(.cancel); return
         }
+        trace(state,"http_headers",["status":http.statusCode,"elapsedMs":BTRTrace.now-state.started])
         state.idleTimer?.cancel()
         state.idleGeneration += 1
         if http.statusCode != 206 { state.error = MediaRangeError.upstream(status: http.statusCode) }
@@ -120,7 +131,8 @@ final class BTRHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Sendable
             state.total = parsed.total
             state.validated = true
         } else { state.error = MediaRangeError.mismatch }
-        if state.error != nil { completionHandler(.cancel); return }
+        if state.error != nil { trace(state,"http_rejected"); completionHandler(.cancel); return }
+        trace(state,"http_validated",["total":state.total ?? -1])
         state.idleTimer = timer(4, task: dataTask, generation: state.idleGeneration)
         completionHandler(.allow)
     }
@@ -131,7 +143,12 @@ final class BTRHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Sendable
         if Int64(state.progress.snapshot().count + data.count) > state.range.length {
             state.error = MediaRangeError.mismatch; dataTask.cancel(); return
         }
+        let first = state.progress.snapshot().isEmpty
         state.progress.append(data)
+        if first || BTRTrace.now-state.lastProgress >= 1000 {
+            state.lastProgress = BTRTrace.now
+            trace(state,first ? "http_first_byte" : "http_progress",["bytes":state.progress.snapshot().count,"elapsedMs":BTRTrace.now-state.started])
+        }
         state.onProgress()
         state.idleTimer = timer(4, task: dataTask, generation: state.idleGeneration)
     }
@@ -139,6 +156,10 @@ final class BTRHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Sendable
         lock.lock(); let state = transfers.removeValue(forKey: task.taskIdentifier); lock.unlock()
         guard let state else { return }
         state.idleTimer?.cancel(); state.totalTimer?.cancel(); state.epochTimer?.cancel()
+        var result: [String:Any] = ["bytes":state.progress.snapshot().count,"elapsedMs":BTRTrace.now-state.started]
+        if let failure = state.error ?? error { result.merge(BTRTrace.errorFields(failure)) { _,new in new } }
+        result["completeBody"] = state.validated && Int64(state.progress.snapshot().count) == state.range.length
+        trace(state,"http_end",result)
         if let failure = state.error ?? error { state.completion?.resume(throwing: failure) }
         else if !state.validated || Int64(state.progress.snapshot().count) != state.range.length {
             state.completion?.resume(throwing: MediaRangeError.truncated)
