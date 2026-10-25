@@ -276,6 +276,7 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         let latency = MediaRangeDownloader(candidates:[base+"/latency"],referer:base)
         let whole = try MediaByteRange(start:0,end:4*1024*1024-1)
         let latencyPipe = MediaBytePipe()
+        BTRTrace.shared.start()
         let pipelineStarted = ProcessInfo.processInfo.systemUptime
         let latencyProducer = Task { await latency.stream(range:whole,to:latencyPipe) }
         let latencyCount = try await drain(latencyPipe, from:0)
@@ -283,7 +284,15 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         let pipelineElapsed = ProcessInfo.processInfo.systemUptime - pipelineStarted
         try require(latencyCount == 4*1024*1024, "pipelined stream length")
         // Old windowed engine: probe + 2 windows, each paying 0.4 s + hedges. Pipeline: ~2 latencies.
-        try require(pipelineElapsed < 1.15, "pipeline overlaps first-byte latency (\(pipelineElapsed)s)")
+        BTRTrace.shared.freeze()
+        let timeline = BTRTrace.shared.export().split(separator:"\n").compactMap { line -> String? in
+            guard let row = try? JSONSerialization.jsonObject(with:Data(line.utf8)) as? [String:Any],
+                  let event = row["event"] as? String,
+                  ["http_begin","http_headers","http_end","piece_scheduled","queue_begin","queue_end","ordered_delivery","stream_admitted"].contains(event) else { return nil }
+            return "\(row["ms"] ?? "")ms \(event) \(row["start"] ?? "")"
+        }.joined(separator:" | ")
+        print("PIPELINE TIMELINE: " + timeline)
+        try require(pipelineElapsed < 1.15, "pipeline overlaps first-byte latency (\(pipelineElapsed)s) " + timeline)
         await latency.cancelReadAhead()
         print(String(format:"PASS: 4 MiB with 0.4 s first-byte latency streamed in %.2fs", pipelineElapsed))
         // diag12: the bytes after a player range are prefetched and reused by the next request.
