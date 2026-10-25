@@ -13,6 +13,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not match: self.send_error(400); return
         start,end=map(int,match.groups())
         with LOCK: LOG.append({'path':self.path,'start':start,'end':end})
+        print(f'REQUEST {self.path} bytes={start}-{end}', flush=True)
         if self.path == '/wait': time.sleep(10)
         if self.path == '/refused': self.send_error(403); return
         total=len(DATA)
@@ -23,8 +24,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == '/corrupt': body=bytes([v ^ 255 for v in body])
         try:
             if self.path == '/resume' and start == 0 and end >= 131071:
-                self.wfile.write(body[:65536]); self.wfile.flush()
-                self.connection.shutdown(socket.SHUT_RDWR); self.connection.close(); return
+                # Pace a verified prefix so the delegate can observe progress before EOF.
+                # Still truncate EVERY start=0 attempt: a whole-range retry cannot pass.
+                for offset in range(0, 65536, 16384):
+                    self.wfile.write(body[offset:offset+16384]); self.wfile.flush()
+                    time.sleep(0.05)
+                time.sleep(0.25)
+                self.close_connection = True
+                return
             if self.path == '/slow' and end-start+1 > 32768:
                 self.wfile.write(body[:65536]); self.wfile.flush(); time.sleep(2)
                 self.wfile.write(body[65536:]); return

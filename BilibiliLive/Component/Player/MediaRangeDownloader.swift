@@ -132,6 +132,7 @@ struct MediaRangeDiagnostics: Sendable {
     var retries: Int
     var deliveredBytes: Int64
     var extraBytes: Int64
+    var attemptTrace: String = ""
     var downgradedToDirect: Bool
 
     var redundancyRatio: Double {
@@ -277,6 +278,7 @@ actor MediaRangeDownloader {
     private var wireBytes: Int64 = 0
     private var failures = 0
     private var retries = 0
+    private var recentAttempts = [String]()
     private var downgraded = false
     private let memoryCap: Int64 = 16 * 1024 * 1024
     private static var now: Double { ProcessInfo.processInfo.systemUptime }
@@ -299,7 +301,7 @@ actor MediaRangeDownloader {
         MediaRangeDiagnostics(transportMode: mode, activeHosts: active.count,
             estimatedAggregateMbps: candidates.reduce(0) { $0 + speed($1) } * 8 / 1_000_000,
             activeSubrequests: active.values.reduce(0, +), failures: failures, retries: retries,
-            deliveredBytes: delivered, extraBytes: max(0, wireBytes - delivered), downgradedToDirect: downgraded)
+            deliveredBytes: delivered, extraBytes: max(0, wireBytes - delivered), attemptTrace: recentAttempts.joined(separator: " | "), downgradedToDirect: downgraded)
     }
     private func speed(_ url: String) -> Double {
         guard let sample = speeds[url], Self.now - sample.at < 90 else { return 0 }
@@ -567,8 +569,11 @@ actor MediaRangeDownloader {
         let host = permit.host
         active[host, default: 0] += 1
         let started = Self.now
+        var outcome = "ok"
         defer {
             let bytes = progress.snapshot().count
+            recentAttempts.append("range=\(range.start)-\(range.end) got=\(bytes) result=\(outcome)")
+            if recentAttempts.count > 12 { recentAttempts.removeFirst(recentAttempts.count - 12) }
             wireBytes += Int64(bytes)
             active[host] = (active[host] ?? 1) > 1 ? active[host]! - 1 : nil
             sample(url, bytes: bytes, elapsed: Self.now - started)
@@ -590,7 +595,13 @@ actor MediaRangeDownloader {
             policy.record(bytes: progress.snapshot().count, elapsed: Self.now - started)
             return length
         } catch {
-            if Task.isCancelled || !requestDeadline.valid { throw CancellationError() }
+            if Task.isCancelled || !requestDeadline.valid {
+                outcome = "cancelled"
+                throw CancellationError()
+            }
+            if let network = error as? URLError { outcome = "network:\(network.code.rawValue)" }
+            else if let media = error as? MediaRangeError { outcome = String(describing: media) }
+            else { outcome = "transport-error" }
             let status: Int?
             if let mediaError = error as? MediaRangeError, case let .upstream(value) = mediaError { status = value } else { status = nil }
             playback.failure(status: status, noBytes: (error as? URLError)?.code == .timedOut && progress.snapshot().isEmpty, generation: requestDeadline.generation)

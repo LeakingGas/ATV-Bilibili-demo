@@ -73,3 +73,14 @@
 Debug 始终显示 transport，包括 direct；BTR diag:5；失败回退保留数值错误码、底层数值错误码、回退前会话快照及下载器摘要。没有输出 NSError 描述或 userInfo 中的 URL。快照是失败时历史值，不是直连实时值。截图保留该段可用于下一步定位。
 
 验收：普通连续播放、恢复历史位置、前后seek、切换清晰度；检查不因普通时间通知突然取消全部下载。若回退，拍下 BTR failure -> direct 下的错误快照。新改动仍需新 Actions 构建以及真机验证。
+
+
+## diag5 构建失败排查：/resume -1005
+
+用户提供日志：原生测试在 /resume 出现 NSURLErrorNetworkConnectionLost，最终未捕获顶层错误触发退出133。该URL为本机故障注入服务，并非实际CDN。日志没有逐次接收字节数，不能断言前缀未保存还是断连前未交付。
+
+本次保持生产续传策略与严格断言，调整fixture：64KiB按16KiB分批发送后短暂等待，再以短于Content-Length的EOF结束响应；每次从0起点仍截断，不能靠整块重试绕过测试。仍断言下一请求从65536开始，完整内容逐字节一致。该场景验证已交付前缀后的EOF恢复，不等同于验证所有TCP reset时序。
+
+下载器新增最多12条不含URL的请求记录（Range起止、实际接收长度、结果码）；测试失败时打印该记录，stdout不缓存，顶层捕获错误并退出1。未跳过失败测试。
+
+本机HTTP fixture smoke通过：正确Range、错误头、64KiB截断、尾部恢复；Swift语法解析通过。尚未在macOS运行本次Swift修订，不能声称已修复真实网络卡顿或本次CI根因。新运行如仍失败，请提供 RESUME ATTEMPTS 和 BTR TEST FAILED 行、test-server.log。

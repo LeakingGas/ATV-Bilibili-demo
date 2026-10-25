@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 // Only the app's default User-Agent is stubbed. Production sources are compiled directly.
 enum Keys { static let userAgent = "BTR-native-tests" }
 func require(_ condition: Bool, _ message: String) throws {
@@ -6,7 +7,15 @@ func require(_ condition: Bool, _ message: String) throws {
 }
 func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count)).map { UInt8($0 % 256) }) }
 @main struct Tests {
-    static func main() async throws {
+    static func main() async {
+        setbuf(stdout, nil)
+        do { try await run() }
+        catch {
+            fputs("BTR TEST FAILED: \(String(reflecting: error))\n", stderr)
+            exit(1)
+        }
+    }
+    static func run() async throws {
         let json = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))) as! [String: Any]
         for test in json["tests"] as! [[String: Any]] {
             var policy = BTRPolicy()
@@ -90,7 +99,15 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         let base = "http://127.0.0.1:\(CommandLine.arguments[2])"
         let range = try MediaByteRange(start: 0, end: 524287)
         let resume = MediaRangeDownloader(candidates: [base+"/resume"], referer: base, mode: .proxy)
-        let resumed = try await resume.fetch(range: range)
+        let resumed: Data
+        do { resumed = try await resume.fetch(range: range) }
+        catch {
+            let trace = await resume.diagnostics()
+            print("RESUME ATTEMPTS: " + trace.attemptTrace)
+            throw error
+        }
+        let resumeTrace = await resume.diagnostics()
+        print("RESUME ATTEMPTS: " + resumeTrace.attemptTrace)
         try require(resumed == expected(0,524288), "truncated prefix resume bytes")
         let (logData,_) = try await URLSession.shared.data(from: URL(string: base+"/stats")!)
         let log = try JSONSerialization.jsonObject(with: logData) as! [[String: Any]]
