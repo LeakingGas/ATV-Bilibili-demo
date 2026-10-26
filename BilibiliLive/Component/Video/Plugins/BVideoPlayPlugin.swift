@@ -170,6 +170,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
 
     /// B 站视频地址带签名和过期时间，离开较久后旧地址会被 CDN 拒绝（之前回来一直黑屏的偶发原因之一），
     /// 所以重载前先重新请求播放地址；刚从后台回来网络可能还没就绪，失败时稍等重试。
+    @MainActor
     private func refreshPlayURL() async {
         let aid = playData.aid, cid = playData.cid
         for attempt in 0..<3 {
@@ -189,6 +190,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         }
     }
 
+    @MainActor
     private func reloadInPlace(at position: Double, resume: Bool) async {
         await refreshPlayURL()
         for attempt in 0..<3 {
@@ -198,6 +200,9 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         onLoadFailure?("回到 App 后重新加载失败，请返回后重新打开视频")
     }
 
+    // 必须在主线程：seek 的 await 之后会继续操作播放器，AVKit 随之刷新界面。
+    // 之前这里没标主线程，seek 回来在后台线程调 play/pause，AVKit 在后台改布局 → 闪退（诊断日志实锤）。
+    @MainActor
     private func reloadOnce(at position: Double, resume: Bool) async -> Bool {
         do {
             let generation = beginLoadGeneration()
