@@ -10,6 +10,8 @@ import Foundation
 
 class Logger {
     private static let fileLogger = DDFileLogger()
+    /// 最新的在前。
+    static var logFilePaths: [String] { fileLogger.logFileManager.sortedLogFilePaths }
     static func setup() {
         DDLog.add(DDOSLogger.sharedInstance)
         let dataFormatter = DateFormatter()

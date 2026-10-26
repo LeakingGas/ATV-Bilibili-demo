@@ -241,8 +241,10 @@ class VideoPlayerViewController: CommonPlayerViewController {
         viewModel.loadResult.receive(on: DispatchQueue.main).sink { [weak self] result in
             switch result {
             case let .failure(err):
+                Diag.mark("VPLAYER load failure: " + String(err.replacingOccurrences(of: "https?://\\S+", with: "<url>", options: .regularExpression).prefix(200)))
                 self?.handleLoadFailure(message: err)
             case let .success(plugins):
+                Diag.mark("VPLAYER \(Diag.id(self)) load success plugins=\(plugins.count)")
                 self?.neighborPreloadTask?.cancel()
                 self?.removeAllPlugins()
                 plugins.forEach { self?.addPlugin(plugin: $0) }
@@ -397,8 +399,10 @@ class VideoPlayerViewController: CommonPlayerViewController {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         guard view.window != nil, presentedViewController == nil, !exitRequested else { return .resume }
+        Diag.mark("VPLAYER \(Diag.id(self)) resume prompt pos=\(prompt.position)")
         return await withCheckedContinuation { continuation in
             let promptVC = ResumePromptViewController(prompt: prompt) { choice in
+                Diag.mark("VPLAYER resume choice \(choice)")
                 continuation.resume(returning: choice)
             }
             present(promptVC, animated: true)

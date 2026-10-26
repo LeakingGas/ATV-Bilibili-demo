@@ -209,6 +209,10 @@ class SettingsViewController: UIViewController {
                 {
                     Settings.btrNodeRegion = $0
                 }
+                Navigation(title: "闪退诊断日志", desp: "导出") { [weak self] in
+                    guard let self else { return }
+                    Diag.presentExport(from: self)
+                }
                 Navigation(title: "BTR 诊断日志", desp: "记录 / 导出") { [weak self] in
                     self?.showBTRTraceMenu()
                 }

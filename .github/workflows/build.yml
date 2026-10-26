@@ -35,7 +35,11 @@ jobs:
             -archivePath "$PWD/build/BTR.xcarchive" \
             -resultBundlePath "$PWD/build/Archive.xcresult" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY='' DEVELOPMENT_TEAM='' SKIP_SWIFTFORMAT=YES archive 2>&1 | tee build/archive.log
+            CODE_SIGN_IDENTITY='' DEVELOPMENT_TEAM='' SKIP_SWIFTFORMAT=YES \
+            STRIP_INSTALLED_PRODUCT=NO BTR_GIT_SHA="$GITHUB_SHA" archive 2>&1 | tee build/archive.log
+          # 保留符号表：App 内的闪退诊断能直接写出函数名。
+          bin="$PWD/build/BTR.xcarchive/Products/Applications/BilibiliLive.app/BilibiliLive"
+          echo "::notice title=symbols::$(nm "$bin" 2>/dev/null | grep -c ' t \| T ' || true) function symbols kept in app binary"
       - name: Package unsigned IPA and matching source
         run: |
           set -euo pipefail

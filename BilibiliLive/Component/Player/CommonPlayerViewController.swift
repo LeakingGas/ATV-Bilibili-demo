@@ -24,6 +24,7 @@ class CommonPlayerViewController: UIViewController {
     private(set) var exitRequested = false
 
     func exitPlayer(animated: Bool = true) {
+        Diag.mark("PLAYER \(Diag.id(self)) exitPlayer presented=\(presentedViewController.map { String(describing: type(of: $0)) } ?? "none")")
         exitRequested = true
         // 上面还盖着弹窗时，直接对自己 dismiss 只会关掉弹窗；从呈现者关闭整条链。
         if presentedViewController != nil, let presenter = presentingViewController {
@@ -36,11 +37,13 @@ class CommonPlayerViewController: UIViewController {
     var allowsPictureInPicturePlayback = true
 
     deinit {
+        Diag.mark("PLAYER \(Diag.id(self)) deinit")
         cleanUpPlayerOnExit(force: true)
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        Diag.mark("PLAYER \(Diag.id(self)) viewDidLoad \(type(of: self))")
         addChild(playerVC)
         view.addSubview(playerVC.view)
         playerVC.didMove(toParent: self)
@@ -51,6 +54,7 @@ class CommonPlayerViewController: UIViewController {
 
         let playerObservation = playerVC.observe(\.player, options: [.old, .new]) { [weak self] vc, obs in
             Logger.debug("player changed: \(String(describing: obs.oldValue)) -> \(String(describing: obs.newValue))")
+            Diag.mark("PLAYER \(Diag.id(self)) avplayer \(Diag.id(obs.oldValue ?? nil)) -> \(Diag.id(obs.newValue ?? nil)) plugins=\(self?.activePlugins.count ?? -1)")
             if let oldPlayer = obs.oldValue, let oldPlayer {
                 self?.activePlugins.forEach { $0.playerDidCleanUp(player: oldPlayer) }
             }
@@ -60,8 +64,14 @@ class CommonPlayerViewController: UIViewController {
         activePlugins.forEach { $0.playerDidLoad(playerVC: playerVC) }
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        Diag.mark("PLAYER \(Diag.id(self)) viewDidAppear")
+    }
+
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        Diag.mark("PLAYER \(Diag.id(self)) viewDidDisappear dismissing=\(isBeingDismissed) exit=\(exitRequested)")
         activePlugins.forEach { $0.playerDidDismiss(playerVC: playerVC) }
         cleanUpPlayerOnExit()
     }
@@ -93,6 +103,7 @@ class CommonPlayerViewController: UIViewController {
 
     func removeAllPlugins() {
         guard !activePlugins.isEmpty else { return }
+        Diag.mark("PLAYER \(Diag.id(self)) removeAllPlugins n=\(activePlugins.count) avplayer=\(Diag.id(playerVC.player))")
         activePlugins.forEach { $0.playerWillCleanUp(playerVC: playerVC) }
         if let player = playerVC.player {
             Logger.debug("removeAllPlugins: clean up player: \(player)")
@@ -165,6 +176,7 @@ class CommonPlayerViewController: UIViewController {
         let isPictureInPictureRunning = PipRecorder.shared.playingPipViewController.contains { $0.playerVC == playerVC }
         let shouldCleanUp = force || ((isBeingDismissed || exitRequested || isMovingFromParent || navigationController?.isBeingDismissed == true) && !isPictureInPictureRunning)
         guard shouldCleanUp else { return }
+        Diag.mark("PLAYER \(Diag.id(self)) cleanUpOnExit force=\(force) pip=\(isPictureInPictureRunning)")
 
         cleanUpObserver()
 
@@ -225,6 +237,7 @@ extension CommonPlayerViewController {
         statusObserver = playerItem.observe(\.status, options: [.new, .old]) {
             [weak self] item, _ in
             guard let self, let player = playerVC.player else { return }
+            Diag.mark("PLAYER \(Diag.id(self)) item \(Diag.id(item)) status=\(item.status.rawValue) avplayer=\(Diag.id(player)) owner=\(Diag.id(item.asset))")
             switch item.status {
             case .readyToPlay:
                 isEnd = false
@@ -262,6 +275,7 @@ extension CommonPlayerViewController {
 
 extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
     @objc func playerViewControllerShouldDismiss(_ playerViewController: AVPlayerViewController) -> Bool {
+        Diag.mark("PLAYER \(Diag.id(self)) shouldDismiss (back)")
         if let presentedViewController = UIViewController.topMostViewController() as? CommonPlayerViewController,
            presentedViewController.playerVC == playerViewController
         {
@@ -276,11 +290,13 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
     }
 
     func playerViewControllerWillStartPictureInPicture(_ playerViewController: AVPlayerViewController) {
+        Diag.mark("PLAYER \(Diag.id(self)) PiP will start")
         isRestoringFromPip = false
         PipRecorder.shared.playingPipViewController.append(self)
     }
 
     func playerViewControllerDidStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
+        Diag.mark("PLAYER \(Diag.id(self)) PiP did stop restoring=\(isRestoringFromPip)")
         PipRecorder.shared.playingPipViewController.removeAll { $0.playerVC == playerViewController }
         if !isRestoringFromPip {
             // 用户点 ✕ 关闭 PiP，清理资源
@@ -294,6 +310,7 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
     {
         isRestoringFromPip = true
         let presentedViewController = UIViewController.topMostViewController()
+        Diag.mark("PLAYER \(Diag.id(self)) PiP restore top=\(type(of: presentedViewController))")
         guard let containerPlayer = PipRecorder.shared.playingPipViewController.first(where: { $0.playerVC == playerViewController }) else {
             completionHandler(false)
             return

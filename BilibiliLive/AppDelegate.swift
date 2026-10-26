@@ -20,6 +20,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // The local playback proxy writes to sockets AVPlayer may have closed (e.g. after the app
         // was suspended); never let a broken pipe terminate the app.
         signal(SIGPIPE, SIG_IGN)
+        // 闪退诊断：越早越好，在其它任何初始化之前。
+        Diag.setup()
         Logger.setup()
         ImageCache.default.diskStorage.config.sizeLimit = 500 * 1024 * 1024
         AVInfoPanelCollectionViewThumbnailCellHook.start()
@@ -27,6 +29,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         BiliBiliUpnpDMR.shared.start()
         URLSession.shared.configuration.headers.add(.userAgent("BiLiBiLi AppleTV Client/1.0.0 (github/yichengchen/ATV-Bilibili-live-demo)"))
         WebRequest.requestIndex()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            Diag.presentAbnormalNoticeIfNeeded()
+        }
         return true
     }
 

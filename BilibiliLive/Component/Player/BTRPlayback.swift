@@ -323,7 +323,15 @@ final class BTRTrace: @unchecked Sendable {
         started = Self.now; wallStart = ISO8601DateFormatter().string(from: Date()); active = true
     }
     func freeze() { lock.lock(); active = false; lock.unlock() }
+    /// 这些事件同时写进常驻的闪退诊断流水（不依赖 BTR 记录是否开启）。
+    private static let persistent: Set<String> = ["foreground_reload", "foreground_reload_failed", "foreground_playurl",
+        "player_failure", "seek_requested", "quality_switch", "track_registered", "startup_mark", "stream_failed",
+        "proxy_failed", "proxy_rejected", "host_banned", "prewarm_begin", "playlist_start_offset", "player_kickstart"]
     func event(_ name: String, _ fields: [String: Any] = [:]) {
+        if Self.persistent.contains(name) {
+            let compact = fields.filter { $0.key != "hosts" }.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+            Diag.mark("BTR " + name + " " + compact)
+        }
         lock.lock(); defer { lock.unlock() }
         guard active else { return }
         if Self.now - started > 600000 { active = false; return }

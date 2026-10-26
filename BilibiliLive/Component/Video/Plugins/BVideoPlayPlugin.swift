@@ -122,6 +122,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private var backgroundPosition: Double?
 
     private func handleEnterBackground() {
+        Diag.mark("BPLAY \(Diag.id(self)) enterBackground avplayer=\(Diag.id(playerVC?.player)) item=\(Diag.id(playerVC?.player?.currentItem)) mode=\(transportMode) pip=\(CommonPlayerViewController.PipRecorder.shared.playingPipViewController.count)")
         guard let player = playerVC?.player else { return }
         backgroundedAt = Date()
         wasPlayingWhenBackgrounded = player.rate > 0 || player.timeControlStatus != .paused
@@ -144,6 +145,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
                 player.pause()
                 player.replaceCurrentItem(with: nil)
                 playerDelegate?.btrPlayback.invalidate()
+                Diag.mark("BPLAY \(Diag.id(self)) background teardown done pos=\(Int(position))")
             }
         }
         // 预热好的下一集也绑着失效的代理，一并丢弃。
@@ -151,6 +153,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     }
 
     private func handleEnterForeground() {
+        Diag.mark("BPLAY \(Diag.id(self)) enterForeground saved=\(backgroundPosition.map { String(Int($0)) } ?? "nil") avplayer=\(Diag.id(playerVC?.player)) vc=\(Diag.id(playerVC))")
         guard let since = backgroundedAt, transportMode == .accelerated, let player = playerVC?.player else { return }
         backgroundedAt = nil
         let saved = backgroundPosition
@@ -176,9 +179,11 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
                     ? try await WebRequest.requestPcgPlayUrl(aid: aid, cid: cid)
                     : try await WebRequest.requestPlayUrl(aid: aid, cid: cid)
                 playData.videoPlayURLInfo = fresh
+                Diag.mark("BPLAY \(Diag.id(self)) refreshPlayURL ok attempt=\(attempt)")
                 BTRTrace.shared.event("foreground_playurl",["attempt":attempt,"ok":true])
                 return
             } catch {
+                Diag.mark("BPLAY \(Diag.id(self)) refreshPlayURL failed attempt=\(attempt) \((error as NSError).domain)#\((error as NSError).code)")
                 BTRTrace.shared.event("foreground_playurl",["attempt":attempt,"ok":false])
             }
         }
@@ -196,6 +201,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private func reloadOnce(at position: Double, resume: Bool) async -> Bool {
         do {
             let generation = beginLoadGeneration()
+            Diag.mark("BPLAY \(Diag.id(self)) reload begin gen=\(generation) pos=\(Int(position)) vc=\(Diag.id(playerVC))")
             try await playmedia(urlInfo: playData.videoPlayURLInfo,
                                 playerInfo: playData.playerInfo,
                                 generation: generation,
@@ -206,17 +212,20 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             _ = await newPlayer.seek(to: CMTime(seconds: position, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
             guard loadGeneration == generation, playerVC?.player === newPlayer else { return true }
             if resume { newPlayer.play() } else { newPlayer.pause() }
+            Diag.mark("BPLAY \(Diag.id(self)) reload done gen=\(generation) avplayer=\(Diag.id(newPlayer))")
             return true
         } catch is CancellationError {
             return true
         } catch {
             Logger.warn("[player] foreground reload failed: \(error)")
+            Diag.mark("BPLAY \(Diag.id(self)) reload failed \((error as NSError).domain)#\((error as NSError).code)")
             BTRTrace.shared.event("foreground_reload_failed",BTRTrace.errorFields(error))
             return false
         }
     }
 
     deinit {
+        Diag.mark("BPLAY \(Diag.id(self)) deinit")
         lifecycleObservers.forEach { NotificationCenter.default.removeObserver($0) }
         btrTimer?.invalidate()
         if let btrJumpObserver { NotificationCenter.default.removeObserver(btrJumpObserver) }
@@ -258,6 +267,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func playerDidLoad(playerVC: AVPlayerViewController) {
+        Diag.mark("BPLAY \(Diag.id(self)) playerDidLoad aid=\(playData.aid) cid=\(playData.cid) start=\(playData.playerStartPos ?? -1)")
         self.playerVC = playerVC
         playerVC.player = nil
         startLoad(urlInfo: playData.videoPlayURLInfo, playerInfo: playData.playerInfo)
@@ -276,6 +286,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func playerDidCleanUp(player: AVPlayer) {
+        Diag.mark("BPLAY \(Diag.id(self)) cleanUp avplayer=\(Diag.id(player)) owner=\(btrOwner === player)")
         if btrOwner === player {
             stopBTRMonitoring()
             btrOwnedSession?.invalidate()
@@ -555,6 +566,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func playerWillCleanUp(playerVC: AVPlayerViewController) {
+        Diag.mark("BPLAY \(Diag.id(self)) willCleanUp")
         invalidatePendingLoad(tearingDown: true)
     }
 
@@ -587,6 +599,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
                       self.playerVC != nil
                 else { return }
                 Logger.warn("[player] Failed to prepare media: \(error)")
+                Diag.mark("BPLAY \(Diag.id(self)) prepare failed \((error as NSError).domain)#\((error as NSError).code)")
                 self.onLoadFailure?(error.localizedDescription)
             }
         }
@@ -799,6 +812,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         // Bind the incoming session only after that callback, before publishing it.
         btrOwner = player
         btrOwnedSession = playerDelegate?.btrPlayback
+        Diag.mark("BPLAY \(Diag.id(self)) install avplayer=\(Diag.id(player)) gen=\(generation) delegate=\(Diag.id(playerDelegate))")
         playerVC.player = player
         startBTRMonitoring(player: player)
     }

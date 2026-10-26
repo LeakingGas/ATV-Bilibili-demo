@@ -85,6 +85,7 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     /// sidx 探测会把它排到候选队首，覆盖默认 URL 顺序
     private var preferredHost: String?
     deinit {
+        Diag.mark("PROXY \(Diag.id(self)) deinit port=\(httpPort)")
         btrPlayback.invalidate()
         cancelPendingIndexLoads()
         httpServer.stop()
@@ -489,6 +490,7 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
                 try httpServer.start(0, forceIPv4: true)
                 bindHttpServer()
                 httpPort = (try? httpServer.port()) ?? 0
+                Diag.mark("PROXY \(Diag.id(self)) server started port=\(httpPort)")
                 // 注册当前会话的媒体流及其 CDN 候选（播放列表生成时用本地 URL）。
                 if httpPort > 0 {
                     registerProxyMedia(aid: aid)
@@ -497,6 +499,7 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
             } catch {
                 // 监听器启动失败则拒绝加载媒体
                 Logger.warn("BTR proxy startup failed; direct disabled")
+                Diag.mark("PROXY \(Diag.id(self)) server start FAILED \((error as NSError).domain)#\((error as NSError).code)")
                 proxyAvailable = false
             }
         }
@@ -1137,7 +1140,16 @@ final class BTRTraceExport {
     static let shared = BTRTraceExport()
     private var server: HttpServer?
     private(set) var address: String?
-    func start() throws -> String {
+    private(set) var diagAddress: String?
+
+    /// 只开下载服务导出闪退诊断报告（不清空、不开始 BTR 记录）。
+    func startDiagnostics() throws -> String {
+        if let diagAddress { return diagAddress }
+        _ = try start(recordBTR: false)
+        return diagAddress ?? ""
+    }
+
+    func start(recordBTR: Bool = true) throws -> String {
         stop()
         let server = HttpServer()
         server.listenAddressIPv4 = "0.0.0.0"
@@ -1152,21 +1164,34 @@ final class BTRTraceExport {
                 try writer.write(bytes)
             }
         }
+        let diagPath = "/" + token + "/diag.txt"
+        server[diagPath] = { _ in
+            let bytes = Data(Diag.exportText().utf8)
+            return HttpResponse.raw(200,"OK",["Content-Type":"text/plain; charset=utf-8",
+                "Content-Disposition":"attachment; filename=bili-diag.txt",
+                "Cache-Control":"no-store","Content-Length":String(bytes.count)]) { writer in
+                try writer.write(bytes)
+            }
+        }
         do { try server.start(0,forceIPv4:true) }
         catch { server.stop(); throw error }
         let port: Int
         do { port = Int(try server.port()) }
         catch { server.stop(); throw error }
         self.server = server
-        let address = "http://" + (Self.localIPv4() ?? "APPLE-TV-IP") + ":" + String(port) + path
+        let base = "http://" + (Self.localIPv4() ?? "APPLE-TV-IP") + ":" + String(port)
+        let address = base + path
         self.address = address
-        BTRTrace.shared.start()
-        BTRTrace.shared.event("recording_started")
+        diagAddress = base + diagPath
+        if recordBTR {
+            BTRTrace.shared.start()
+            BTRTrace.shared.event("recording_started")
+        }
         return address
     }
     func stop() {
         BTRTrace.shared.freeze()
-        server?.stop(); server = nil; address = nil
+        server?.stop(); server = nil; address = nil; diagAddress = nil
     }
     private static func localIPv4() -> String? {
         var list: UnsafeMutablePointer<ifaddrs>?
