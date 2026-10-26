@@ -327,7 +327,7 @@ extension FeedCollectionViewController: UICollectionViewDelegate {
 
     func collectionView(_ collectionView: UICollectionView, shouldUpdateFocusIn context: UICollectionViewFocusUpdateContext) -> Bool {
         // 正在外圈转圈时，系统把这段滑动当成普通方向滑动产生的焦点移动要忽略，只接受转圈带来的移动。
-        if ClickpadRotationTracker.shared.isRotating, rotationTarget == nil { return false }
+        if ClickpadRotationTracker.shared.suppressesFocusEngine, rotationTarget == nil { return false }
         return true
     }
 
@@ -364,6 +364,15 @@ final class ClickpadRotationTracker {
     static let shared = ClickpadRotationTracker()
 
     private(set) var isRotating = false
+    private var lastSampleAt = 0.0
+
+    /// 是否应屏蔽系统自身的焦点移动：只在手指确实正沿外圈转动、且坐标在持续更新时为真。
+    /// 带新鲜度检查——之前状态偶尔卡在「转圈中」，导致左右键失灵，要按好几下才恢复。
+    var suppressesFocusEngine: Bool {
+        guard touching, startedOnRing, ProcessInfo.processInfo.systemUptime - lastSampleAt < 0.3 else { return false }
+        return isRotating || abs(accumulated) > 0.15
+    }
+
     private let feeds = NSHashTable<FeedCollectionViewController>.weakObjects()
     private var lastAngle: Double?
     private var accumulated = 0.0
@@ -373,7 +382,7 @@ final class ClickpadRotationTracker {
     private weak var observedWindow: UIWindow?
     private let ringRadius = 0.55
     private let startThreshold = 0.45
-    private let stepAngle = 0.95
+    private let stepAngle = 1.1
 
     private init() {
         NotificationCenter.default.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] _ in
@@ -421,6 +430,7 @@ final class ClickpadRotationTracker {
     }
 
     private func update(x: Double, y: Double) {
+        lastSampleAt = ProcessInfo.processInfo.systemUptime
         let radius = hypot(x, y)
         if radius < 0.001 { reset(); return }
         // 没有触摸观察者时（极少见）退化为：有坐标即视为按住。

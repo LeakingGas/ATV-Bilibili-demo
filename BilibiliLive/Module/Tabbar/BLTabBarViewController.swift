@@ -71,18 +71,27 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
         view.addGestureRecognizer(menuTap)
     }
 
+    /// 刚启动、列表还没加载出来时没有任何获得焦点的元素，返回键不经过本页面，直接退出 App。
+    /// 把返回键手势挂到窗口上，没有焦点时也能先弹出侧边栏。
+    private func moveMenuGestureToWindowIfNeeded() {
+        guard let window = view.window, menuTap.view !== window else { return }
+        menuTap.view?.removeGestureRecognizer(menuTap)
+        window.addGestureRecognizer(menuTap)
+    }
+
     @objc private func handleMenuTap() {
         setSidebar(visible: true)
     }
 
     private var canShowSidebarOnMenu: Bool {
-        guard !sidebarVisible, presentedViewController == nil else { return false }
+        guard !sidebarVisible, presentedViewController == nil, view.window != nil else { return false }
         if let nav = selectedViewController as? UINavigationController, nav.viewControllers.count > 1 { return false }
         return true
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        moveMenuGestureToWindowIfNeeded()
         // 关掉系统自带的返回键手势（把焦点移到 tab 栏），避免抢在我们前面。
         for gesture in (view.gestureRecognizers ?? []) + (tabBar.gestureRecognizers ?? []) where gesture !== menuTap {
             if gesture.allowedPressTypes.contains(NSNumber(value: UIPress.PressType.menu.rawValue)) { gesture.isEnabled = false }
