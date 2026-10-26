@@ -329,6 +329,19 @@ extension WebRequest {
                                               "web_location": 1430650])
     }
 
+    /// 网页首页推荐的无 wbi 签名旧路径（参数与新接口相同）。
+    static func requestTopFeedRecommendLegacy(pageIndex: Int, pageSize: Int = 12) async throws -> WebTopFeedRecommendResponse {
+        let safePageIndex = max(pageIndex, 1)
+        let safePageSize = min(max(pageSize, 1), 30)
+        return try await request(url: "https://api.bilibili.com/x/web-interface/index/top/feed/rcmd",
+                                 parameters: ["fresh_type": 4,
+                                              "ps": safePageSize,
+                                              "fresh_idx": safePageIndex,
+                                              "fresh_idx_1h": safePageIndex,
+                                              "brush": safePageIndex,
+                                              "fetch_row": 1 + (safePageIndex - 1) * safePageSize])
+    }
+
     static func requestPlayerInfo(aid: Int, cid: Int) async throws -> PlayerInfo {
         try await request(url: EndPoint.playerInfo, parameters: ["aid": aid, "cid": cid])
     }

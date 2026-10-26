@@ -113,6 +113,17 @@ class SettingsViewController: UIViewController {
 
     private func setupData() {
         createSnapshot {
+            SectionModel(title: "账号") {
+                Navigation(title: "账号切换", desp: AccountManager.shared.activeAccount?.profile.username ?? "") { [weak self] in
+                    let controller = AccountSwitcherViewController()
+                    controller.modalPresentationStyle = .overFullScreen
+                    self?.present(controller, animated: true)
+                }
+                Navigation(title: "登出", desp: "") { [weak self] in
+                    self?.confirmLogout()
+                }
+            }
+
             SectionModel(title: "通用") {
                 Toggle(title: "启用投屏", setting: Settings.enableDLNA, onChange: Settings.enableDLNA.toggle()) {
                     _ in
@@ -153,6 +164,13 @@ class SettingsViewController: UIViewController {
             }
 
             SectionModel(title: "推荐") {
+                Actions(title: "推荐来源", message: RecommendSource.allCases.map { "\($0.title)：\($0.detail)" }.joined(separator: "\n"),
+                        current: Settings.recommendSource.title,
+                        options: RecommendSource.allCases,
+                        optionString: RecommendSource.allCases.map { $0.title })
+                {
+                    Settings.recommendSource = $0
+                }
                 Toggle(title: "使用沉浸式浏览模式",
                        setting: Settings.recommendFeedFlowEnabled,
                        onChange: Settings.recommendFeedFlowEnabled.toggle())
@@ -348,6 +366,23 @@ extension SettingsViewController {
             alert.addAction(cancelAction)
             self?.present(alert, animated: true)
         }
+    }
+
+    private func confirmLogout() {
+        let alert = UIAlertController(title: "确定登出？", message: nil, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "确定", style: .default) { _ in
+            WebRequest.logout {
+                ApiRequest.logout { hasRemainingAccount in
+                    if hasRemainingAccount {
+                        AccountManager.shared.refreshActiveAccountProfile()
+                    } else {
+                        AppDelegate.shared.showLogin()
+                    }
+                }
+            }
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
     }
 
     func Navigation(title: String,

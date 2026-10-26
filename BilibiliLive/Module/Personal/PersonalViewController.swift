@@ -121,11 +121,6 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
 
         let setting = CellModel(title: "设置", contentVC: SettingsViewController())
         cellModels.append(setting)
-        cellModels.append(CellModel(title: "账号切换", autoSelect: false, action: { [weak self] in
-            let controller = AccountSwitcherViewController()
-            controller.modalPresentationStyle = .overFullScreen
-            self?.present(controller, animated: true)
-        }))
 
         for page in Settings.personalPages {
             if let model = makeCellModel(for: page) {
@@ -133,11 +128,6 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
             }
         }
 
-        let logout = CellModel(title: "登出", autoSelect: false) {
-            [weak self] in
-            self?.actionLogout()
-        }
-        cellModels.append(logout)
         preloadContent()
     }
 

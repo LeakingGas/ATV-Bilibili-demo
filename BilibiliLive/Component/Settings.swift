@@ -119,6 +119,10 @@ enum Settings {
     @UserDefaultCodable("Settings.featuredDurationLimit", defaultValue: .minutes10)
     static var featuredDurationLimit: FeaturedDurationLimit
 
+    /// 推荐页内容来源（普通网格模式）。
+    @UserDefaultCodable("Settings.recommendSource", defaultValue: .app)
+    static var recommendSource: RecommendSource
+
     @UserDefault("Settings.recommendFeedFlowEnabled", defaultValue: false)
     static var recommendFeedFlowEnabled: Bool
 
@@ -386,6 +390,32 @@ extension MediaQualityEnum {
             return 144
         case .quality_hdr_dolby:
             return 976
+        }
+    }
+}
+
+/// 推荐来源：B 站不同端的首页推荐接口，候选池与排序策略各不相同。
+enum RecommendSource: String, Codable, CaseIterable {
+    case app
+    case web
+    case webLegacy
+    case mixed
+
+    var title: String {
+        switch self {
+        case .app: return "App 推荐"
+        case .web: return "网页版推荐"
+        case .webLegacy: return "网页版推荐（无签名旧接口）"
+        case .mixed: return "混合（App + 网页交替）"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .app: return "手机 / 平板 App 首页推荐（x/v2/feed/index）"
+        case .web: return "bilibili.com 首页推荐（wbi/index/top/feed/rcmd）"
+        case .webLegacy: return "网页首页推荐旧路径（index/top/feed/rcmd），可能随时失效"
+        case .mixed: return "App 与网页推荐交替排列并去重"
         }
     }
 }
