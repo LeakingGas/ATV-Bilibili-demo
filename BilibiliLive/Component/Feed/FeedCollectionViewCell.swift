@@ -90,7 +90,9 @@ class FeedCollectionViewCell: BLMotionCollectionViewCell {
         titleLabel.fadeLength = 60
         upLabel.setContentHuggingPriority(.required, for: .vertical)
         upLabel.setContentCompressionResistancePriority(.required, for: .vertical)
-        upLabel.textColor = UIColor(named: "titleColor")
+        // Apple TV 风格层级：标题近白、次要信息半透明白。
+        titleLabel.textColor = UIColor.white.withAlphaComponent(0.94)
+        upLabel.textColor = UIColor.white.withAlphaComponent(0.55)
         upLabel.adjustsFontSizeToFitWidth = true
         upLabel.minimumScaleFactor = 0.1
     }
@@ -190,9 +192,9 @@ extension FeedDisplayStyle {
     var titleFont: UIFont {
         switch self {
         case .large:
-            return UIFont.preferredFont(forTextStyle: .headline)
+            return UIFont.systemFont(ofSize: 32, weight: .semibold)
         case .normal:
-            return UIFont.systemFont(ofSize: 30, weight: .semibold)
+            return UIFont.systemFont(ofSize: 29, weight: .semibold)
         case .sideBar:
             return UIFont.systemFont(ofSize: 26, weight: .semibold)
         }
@@ -201,11 +203,11 @@ extension FeedDisplayStyle {
     var upFont: UIFont {
         switch self {
         case .large:
-            return UIFont.preferredFont(forTextStyle: .footnote)
+            return UIFont.systemFont(ofSize: 24, weight: .regular)
         case .normal:
-            return UIFont.systemFont(ofSize: 24)
+            return UIFont.systemFont(ofSize: 23, weight: .regular)
         case .sideBar:
-            return UIFont.systemFont(ofSize: 20, weight: .semibold)
+            return UIFont.systemFont(ofSize: 21, weight: .regular)
         }
     }
 }

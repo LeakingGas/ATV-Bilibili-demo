@@ -55,6 +55,8 @@ class BLOverlayView: UIView {
         let label = UILabel()
         label.textColor = .white
         label.font = .systemFont(ofSize: 20, weight: .semibold)
+        label.shadowColor = UIColor.black.withAlphaComponent(0.35)
+        label.shadowOffset = CGSize(width: 0, height: 1)
         label.textAlignment = .center
         return label
     }()
