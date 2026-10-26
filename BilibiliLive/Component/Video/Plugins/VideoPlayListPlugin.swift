@@ -12,7 +12,6 @@ class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
     private weak var playerVC: AVPlayerViewController?
     var onPlayEnd: (() -> Void)?
     var onPlayNextWithInfo: ((PlayInfo) -> Void)?
-    var onShowCurrentDetail: ((PlayInfo) -> Void)?
 
     let sequenceProvider: VideoSequenceProvider?
 
@@ -57,16 +56,7 @@ class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
             action.state = (action.state == .off) ? .on : .off
             Settings.loopPlay = action.state == .on
         }
-        var actions = [UIMenuElement](arrayLiteral: loopAction)
-        let currentInfo = sequenceProvider.map { provider in
-            MainActor.assumeIsolated { provider.current() }
-        } ?? nil
-        if let currentInfo, let onShowCurrentDetail {
-            let detailAction = UIAction(title: "查看详情", image: UIImage(systemName: "info.circle")) { _ in
-                onShowCurrentDetail(currentInfo)
-            }
-            actions.append(detailAction)
-        }
+        let actions = [UIMenuElement](arrayLiteral: loopAction)
 
         if let setting = current.compactMap({ $0 as? UIMenu })
             .first(where: { $0.identifier == UIMenu.Identifier(rawValue: "setting") })

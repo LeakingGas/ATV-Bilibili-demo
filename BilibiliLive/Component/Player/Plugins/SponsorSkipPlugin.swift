@@ -13,6 +13,7 @@ class SponsorSkipPlugin: NSObject, CommonPlayerPlugin {
     private let duration: Double
     private var observers = [Any]()
     private weak var playerVC: AVPlayerViewController?
+    private weak var observedPlayer: AVPlayer?
 
     private var set = false
 
@@ -39,6 +40,9 @@ class SponsorSkipPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func sendClipToPlayer(player: AVPlayer) {
+        // 只挂在一个播放器上：换播放器（切画质、回前台重载）时先从原来的播放器上摘掉。
+        removeObservers()
+        observedPlayer = player
         for clip in clipInfos {
             let start: CMTime
             let end: CMTime
@@ -105,9 +109,14 @@ class SponsorSkipPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func playerDidCleanUp(player: AVPlayer) {
-        for observer in observers {
-            player.removeTimeObserver(observer)
+        removeObservers()
+    }
+
+    private func removeObservers() {
+        if let owner = observedPlayer {
+            observers.forEach { owner.removeTimeObserver($0) }
         }
         observers.removeAll()
+        observedPlayer = nil
     }
 }

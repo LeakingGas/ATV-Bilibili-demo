@@ -20,23 +20,14 @@ class CommonPlayerViewController: UIViewController {
     private var isRestoringFromPip = false
     /// 新 AVPlayerItem ready 后是否自动 play。换 CDN host 等场景可临时关掉，由调用方按用户暂停状态决定是否续播。
     var autoPlayWhenReady = true
-    /// 设置后，退出播放时从这个控制器一次性关闭（连同中间的详情页），
-    /// 只有最上层的播放器做退出动画，不会先露出详情页。
-    weak var exitRootViewController: UIViewController?
-
-    /// 已请求退出（用于整条链一起关闭时，本控制器的 isBeingDismissed 可能不为真）。
+    /// 已请求退出（播放器上面还盖着弹窗时，本控制器的 isBeingDismissed 可能不为真）。
     private(set) var exitRequested = false
 
     func exitPlayer(animated: Bool = true) {
         exitRequested = true
-        if let root = exitRootViewController, root.presentedViewController != nil {
-            // 中间的详情页在退出动画期间会被系统临时放回画面，先把它隐藏，避免闪一下。
-            var middle = root.presentedViewController
-            while let controller = middle, controller !== self {
-                controller.view.isHidden = true
-                middle = controller.presentedViewController
-            }
-            root.dismiss(animated: animated)
+        // 上面还盖着弹窗时，直接对自己 dismiss 只会关掉弹窗；从呈现者关闭整条链。
+        if presentedViewController != nil, let presenter = presentingViewController {
+            presenter.dismiss(animated: animated)
         } else {
             dismiss(animated: animated)
         }

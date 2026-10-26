@@ -151,21 +151,6 @@ class SettingsViewController: UIViewController {
                 {
                     Settings.displayStyle = $0
                 }
-
-                Toggle(title: "不显示详情页直接进入视频",
-                       setting: Settings.direatlyEnterVideo,
-                       onChange: Settings.direatlyEnterVideo.toggle())
-                Toggle(title: "退出播放直接回到列表（跳过详情页）",
-                       setting: Settings.exitPlayerToList,
-                       onChange: Settings.exitPlayerToList.toggle())
-
-                Actions(title: "视频详情相关推荐加载模式", message: "4k以上需要大会员",
-                        current: Settings.showRelatedVideoInCurrentVC ? "页面刷新" : "新页面中打开",
-                        options: [true, false],
-                        optionString: ["页面刷新", "新页面中打开"])
-                {
-                    Settings.showRelatedVideoInCurrentVC = $0
-                }
             }
 
             SectionModel(title: "推荐") {
@@ -234,6 +219,7 @@ class SettingsViewController: UIViewController {
 
             SectionModel(title: "进度控制") {
                 Toggle(title: "从上次退出的位置继续播放", setting: Settings.continuePlay, onChange: Settings.continuePlay.toggle())
+                Toggle(title: "进入视频时询问继续或从头播放", setting: Settings.resumePrompt, onChange: Settings.resumePrompt.toggle())
                 Toggle(title: "自动跳过片头片尾", setting: Settings.autoSkip, onChange: Settings.autoSkip.toggle())
                 Toggle(title: "连续播放", setting: Settings.continouslyPlay, onChange: Settings.continouslyPlay.toggle())
                 Actions(title: "空降助手广告屏蔽", message: "",

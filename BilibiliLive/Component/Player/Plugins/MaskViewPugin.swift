@@ -24,6 +24,8 @@ class MaskViewPugin: NSObject, CommonPlayerPlugin {
             setUpOutput(player: player)
         }
 
+        if let observer, let owner = observedPlayer { owner.removeTimeObserver(observer) }
+        observedPlayer = player
         let timePerFrame = CMTime(value: 1, timescale: CMTimeScale(maskProvider.preferFPS()))
         observer = player.addPeriodicTimeObserver(forInterval: timePerFrame, queue: .main) {
             [weak self] time in
@@ -35,11 +37,14 @@ class MaskViewPugin: NSObject, CommonPlayerPlugin {
         }
     }
 
+    private weak var observedPlayer: AVPlayer?
+
     func playerDidCleanUp(player: AVPlayer) {
-        if let observer {
-            player.removeTimeObserver(observer)
+        if let observer, let owner = observedPlayer {
+            owner.removeTimeObserver(observer)
         }
         observer = nil
+        observedPlayer = nil
     }
 
     private func setUpOutput(player: AVPlayer) {

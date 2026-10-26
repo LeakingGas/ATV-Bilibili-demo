@@ -26,13 +26,30 @@ struct PlayerDetailData {
     }
 }
 
+/// 进入视频时「继续播放 / 从头播放」询问所需的信息。
+struct ResumePrompt {
+    let title: String
+    let cover: URL?
+    let position: Int
+    let duration: Int
+}
+
+enum ResumeChoice {
+    case resume
+    case restart
+    case cancel
+}
+
 @MainActor
 class VideoPlayerViewModel {
     let loadResult = PassthroughSubject<Result<[CommonPlayerPlugin], String>, Never>()
     var onExit: (() -> Void)?
     var onPlayInfoChanged: ((PlayInfo) -> Void)?
-    var onShowDetail: ((PlayInfo) -> Void)?
     var sequenceProvider: VideoSequenceProvider?
+    /// 有观看记录时询问继续还是从头；返回 nil 表示不询问（直接续播）。
+    var resumeChooser: ((ResumePrompt) async -> ResumeChoice)?
+    private var hasHandledResumeChoice = false
+    private var hasBuiltSequence = false
 
     private var playInfo: PlayInfo
     private let playMode: VideoPlayerMode
@@ -94,8 +111,38 @@ class VideoPlayerViewModel {
             }
         }
         do {
-            let (resolvedPlayInfo, data) = try await loadVideoInfo(for: requestedPlayInfo)
+            let (resolvedPlayInfo, loadedData, bangumi) = try await loadVideoInfo(for: requestedPlayInfo)
+            var data = loadedData
             guard !Task.isCancelled, loadGeneration == generation else { return }
+
+            if playMode == .regular, !hasBuiltSequence {
+                hasBuiltSequence = true
+                if sequenceProvider == nil {
+                    sequenceProvider = Self.makeSequence(playInfo: resolvedPlayInfo, detail: data.detail, bangumi: bangumi)
+                }
+            }
+
+            if playMode == .regular, !hasHandledResumeChoice {
+                hasHandledResumeChoice = true
+                if startTimeOverride == nil, Settings.resumePrompt,
+                   let position = data.playerStartPos, position >= 10,
+                   let resumeChooser
+                {
+                    let prompt = ResumePrompt(title: data.detail?.title ?? resolvedPlayInfo.title ?? "",
+                                              cover: data.detail?.pic ?? resolvedPlayInfo.coverURL,
+                                              position: position,
+                                              duration: data.videoPlayURLInfo.dash.duration)
+                    let choice = await resumeChooser(prompt)
+                    guard !Task.isCancelled, loadGeneration == generation else { return }
+                    switch choice {
+                    case .resume: break
+                    case .restart: data.playerStartPos = nil
+                    case .cancel:
+                        onExit?()
+                        return
+                    }
+                }
+            }
 
             let danmuProvider = VideoDanmuProvider(enableDanmuFilter: Settings.enableDanmuFilter,
                                                    enableDanmuRemoveDup: Settings.enableDanmuRemoveDup)
@@ -119,12 +166,69 @@ class VideoPlayerViewModel {
         }
     }
 
-    private func loadVideoInfo(for playInfo: PlayInfo) async throws -> (PlayInfo, PlayerDetailData) {
-        let resolvedPlayInfo = try await PlayInfoResolver.resolve(playInfo)
+    private func loadVideoInfo(for playInfo: PlayInfo) async throws -> (PlayInfo, PlayerDetailData, BangumiInfo?) {
+        let (resolvedPlayInfo, bangumi) = try await PlayInfoResolver.resolveWithBangumi(playInfo)
         try Task.checkCancellation()
-        let data = try await fetchVideoData(for: resolvedPlayInfo)
-        try Task.checkCancellation()
-        return (resolvedPlayInfo, data)
+        do {
+            let data = try await fetchVideoData(for: resolvedPlayInfo)
+            try Task.checkCancellation()
+            return (resolvedPlayInfo, data, bangumi)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // 部分番剧/影视只给了 aid（例如搜索、评论里的链接），普通接口拿不到地址时按番剧重新解析。
+            guard !resolvedPlayInfo.isBangumi,
+                  let detail = try? await WebRequest.requestDetailVideo(aid: resolvedPlayInfo.aid),
+                  let redirect = detail.View.redirect_url?.lastPathComponent, redirect.hasPrefix("ep"),
+                  let epid = Int(redirect.dropFirst(2)), epid > 0
+            else { throw error }
+            try Task.checkCancellation()
+            var bangumiInfo = resolvedPlayInfo
+            bangumiInfo.epid = epid
+            let (resolved, info) = try await PlayInfoResolver.resolveWithBangumi(bangumiInfo)
+            try Task.checkCancellation()
+            let data = try await fetchVideoData(for: resolved)
+            try Task.checkCancellation()
+            return (resolved, data, info)
+        }
+    }
+
+    /// 分P、合集、番剧剧集组成的播放列表（原来由详情页提供）。
+    private static func makeSequence(playInfo: PlayInfo, detail: VideoDetail?, bangumi: BangumiInfo?) -> VideoSequenceProvider? {
+        var seq = [PlayInfo]()
+        if let bangumi {
+            let episodes = bangumi.episodes.isEmpty ? (bangumi.section?.first?.episodes ?? []) : bangumi.episodes
+            seq = episodes.map { episode in
+                let title = [episode.title, episode.long_title].filter { !$0.isEmpty }.joined(separator: " ")
+                return PlayInfo(aid: episode.aid, cid: episode.cid, epid: episode.id, seasonId: bangumi.season_id,
+                                subType: bangumi.type, title: title, coverURL: episode.cover)
+            }
+        } else if let detail {
+            let pages = detail.View.pages ?? []
+            if pages.count > 1 {
+                seq = pages.map { PlayInfo(aid: detail.View.aid, cid: $0.cid, title: $0.part, coverURL: detail.pic) }
+            } else if let season = detail.View.ugc_season {
+                let section = season.sections.first { $0.episodes.contains { $0.aid == detail.View.aid } } ?? season.sections.first
+                let episodes = (section?.episodes ?? []).sorted { $0.arc.ctime < $1.arc.ctime }
+                seq = episodes.map { PlayInfo(aid: $0.aid, cid: $0.cid, title: $0.title, coverURL: $0.arc.pic) }
+            }
+        }
+        guard seq.count > 1 else { return nil }
+        let index = seq.firstIndex { $0.cid == playInfo.cid }
+            ?? seq.firstIndex { $0.aid == playInfo.aid && !playInfo.isBangumi }
+            ?? seq.firstIndex { ($0.epid ?? 0) > 0 && $0.epid == playInfo.epid }
+        guard let index else { return nil }
+        return VideoSequenceProvider(seq: seq, currentIndex: index)
+    }
+
+    /// 在下滑面板的「选集」里选了某一集。
+    func playSequenceItem(_ info: PlayInfo) {
+        guard let sequenceProvider,
+              let index = sequenceProvider.playSeq.firstIndex(where: { $0.sequenceKey == info.sequenceKey }),
+              info.sequenceKey != currentPlayInfo.sequenceKey
+        else { return }
+        sequenceProvider.setCurrentIndex(index)
+        updatePlayInfo(sequenceProvider.playSeq[index])
     }
 
     private func fetchVideoDetail(aid: Int, existing: VideoDetail?) async -> VideoDetail? {
@@ -322,19 +426,19 @@ class VideoPlayerViewModel {
             guard let self else { return }
             updatePlayInfo(info)
         }
-        playlist.onShowCurrentDetail = { [weak self] info in
-            self?.onShowDetail?(info)
-        }
 
         // SpeedChangerPlugin creates the shared settings menu that later plugins extend.
         var plugins: [CommonPlayerPlugin] = [playSpeed, playplugin, danmu, upnp, debug, playlist]
 
-        if !data.isBangumi, let detail = data.detail {
+        if let detail = data.detail {
             let infoTabs = VideoPlayerInfoTabsPlugin(detail: detail,
                                                      currentPlayInfo: playInfo,
                                                      sequenceProvider: sequenceProvider)
             infoTabs.onSelectDiscovery = { [weak self] info in
                 self?.playTemporaryOverride(info)
+            }
+            infoTabs.onSelectEpisode = { [weak self] info in
+                self?.playSequenceItem(info)
             }
             plugins.append(infoTabs)
         }

@@ -44,8 +44,7 @@ class BangumiListViewController: StandardVideoCollectionViewController<FollowBan
     }
 
     override func goDetail(with record: FollowBangumiListData.Bangumi) {
-        let detailVC = VideoDetailViewController.create(seasonId: record.season_id)
-        detailVC.present(from: self)
+        VideoLauncher.play(seasonId: record.season_id, from: self)
     }
 }
 

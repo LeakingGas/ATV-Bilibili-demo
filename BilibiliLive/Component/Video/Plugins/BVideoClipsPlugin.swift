@@ -21,7 +21,19 @@ class BVideoClipsPlugin: NSObject, CommonPlayerPlugin {
         self.playerVC = playerVC
     }
 
+    private weak var observedPlayer: AVPlayer?
+
+    private func removeObservers() {
+        if let owner = observedPlayer {
+            observers.forEach { owner.removeTimeObserver($0) }
+        }
+        observers.removeAll()
+        observedPlayer = nil
+    }
+
     func playerWillStart(player: AVPlayer) {
+        removeObservers()
+        observedPlayer = player
         for clip in clipInfos {
             let start = CMTime(seconds: clip.start, preferredTimescale: 1)
             let end = CMTime(seconds: clip.end, preferredTimescale: 1)
@@ -49,9 +61,6 @@ class BVideoClipsPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func playerDidCleanUp(player: AVPlayer) {
-        for observer in observers {
-            player.removeTimeObserver(observer)
-        }
-        observers.removeAll()
+        removeObservers()
     }
 }

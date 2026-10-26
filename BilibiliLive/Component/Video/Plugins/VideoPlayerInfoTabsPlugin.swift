@@ -2,7 +2,7 @@
 //  VideoPlayerInfoTabsPlugin.swift
 //  BilibiliLive
 //
-//  播放界面下滑面板（单页）：简介 → UP主视频 → 相关推荐 → 评论。
+//  播放界面下滑面板（单页）：简介 → 选集 → UP主视频 → 相关推荐 → 评论。
 //  点赞 / 投币 / 收藏放在底部控制栏（与画质、字幕同一行），任一按钮上长按确定 = 一键三连。
 //
 
@@ -13,6 +13,7 @@ import UIKit
 
 final class VideoPlayerInfoTabsPlugin: NSObject, CommonPlayerPlugin {
     var onSelectDiscovery: ((PlayInfo) -> Void)?
+    var onSelectEpisode: ((PlayInfo) -> Void)?
 
     private let currentPlayInfo: PlayInfo
     private let sequenceProvider: VideoSequenceProvider?
@@ -43,6 +44,23 @@ final class VideoPlayerInfoTabsPlugin: NSObject, CommonPlayerPlugin {
             } ?? self.currentPlayInfo.sequenceKey
             guard currentSequenceKey != playInfo.sequenceKey else { return }
             self.onSelectDiscovery?(playInfo)
+        }
+        feedInfoViewController.onSelectEpisode = { [weak self] playInfo in
+            self?.onSelectEpisode?(playInfo)
+        }
+        if let sequenceProvider {
+            let (items, current) = MainActor.assumeIsolated { (sequenceProvider.playSeq, sequenceProvider.current()) }
+            let currentKey = current?.sequenceKey ?? currentPlayInfo.sequenceKey
+            let entries = items.enumerated().map { index, info in
+                let label = info.title?.isEmpty == false ? info.title! : "第 \(index + 1) 集"
+                let isCurrent = info.sequenceKey == currentKey
+                return VideoPlayerDiscoveryInfoViewController.Entry(playInfo: info,
+                                                                    displayData: VideoPlayerDiscoveryInfoViewController.DiscoveryDisplayData(title: isCurrent ? "▶ 正在播放 · \(label)" : label,
+                                                                                                                                             ownerName: "",
+                                                                                                                                             pic: info.coverURL ?? detail?.pic))
+            }
+            let currentIndex = items.firstIndex { $0.sequenceKey == currentKey }
+            feedInfoViewController.update(episodes: entries, current: currentIndex)
         }
         feedInfoViewController.update(related: relatedCandidates.prefix(20).map(Self.makeViewEntry(from:)))
         interactions.onStateChange = { [weak self] in self?.refreshInteractionItems() }
@@ -445,7 +463,7 @@ final class VideoInteractionAnimationView: UIVisualEffectView {
 // MARK: - 下滑面板：简介 / UP主视频 / 相关推荐 / 评论
 
 final class VideoPlayerFeedInfoViewController: UIViewController {
-    private enum Section: Hashable { case intro, uploader, related, comments }
+    private enum Section: Hashable { case intro, episodes, uploader, related, comments }
     private enum Item: Hashable {
         case intro
         case video(Section, VideoPlayerDiscoveryInfoViewController.Entry)
@@ -455,8 +473,11 @@ final class VideoPlayerFeedInfoViewController: UIViewController {
     }
 
     var onSelect: ((PlayInfo) -> Void)?
+    var onSelectEpisode: ((PlayInfo) -> Void)?
 
     private let aid: Int
+    private var episodes = [VideoPlayerDiscoveryInfoViewController.Entry]()
+    private var currentEpisode: Int?
     private let detail: VideoDetail?
     private var introExpanded = false
     private var uploaderVideos = [VideoPlayerDiscoveryInfoViewController.Entry]()
@@ -494,7 +515,8 @@ final class VideoPlayerFeedInfoViewController: UIViewController {
         self.aid = aid
         self.detail = detail
         super.init(nibName: nil, bundle: nil)
-        title = "详情"
+        // 只有一个面板，不需要标签：下滑直接就是内容。
+        title = nil
     }
 
     @available(*, unavailable)
@@ -519,7 +541,7 @@ final class VideoPlayerFeedInfoViewController: UIViewController {
             let layoutSection = NSCollectionLayoutSection(group: group)
             layoutSection.contentInsets = NSDirectionalEdgeInsets(top: 20, leading: 48, bottom: 16, trailing: 48)
             return layoutSection
-        case .uploader, .related:
+        case .episodes, .uploader, .related:
             let item = NSCollectionLayoutItem(layoutSize: .init(widthDimension: .fractionalWidth(1), heightDimension: .fractionalHeight(1)))
             let group = NSCollectionLayoutGroup.horizontal(layoutSize: .init(widthDimension: .absolute(320), heightDimension: .absolute(248)), subitems: [item])
             let layoutSection = NSCollectionLayoutSection(group: group)
@@ -559,6 +581,12 @@ final class VideoPlayerFeedInfoViewController: UIViewController {
         loadNextPage()
     }
 
+    func update(episodes: [VideoPlayerDiscoveryInfoViewController.Entry], current: Int?) {
+        self.episodes = episodes
+        currentEpisode = current
+        if isViewLoaded { applySnapshot(animated: false) }
+    }
+
     func update(uploader: [VideoPlayerDiscoveryInfoViewController.Entry]) {
         uploaderVideos = uploader
         if isViewLoaded { applySnapshot(animated: false) }
@@ -572,6 +600,7 @@ final class VideoPlayerFeedInfoViewController: UIViewController {
     private func headerTitle(_ section: Section) -> String {
         switch section {
         case .intro: return ""
+        case .episodes: return "选集 · 共 \(episodes.count) 集"
         case .uploader: return "UP主 · \(detail?.View.owner.name ?? "") 的更多视频"
         case .related: return "相关推荐"
         case .comments: return "评论"
@@ -642,6 +671,10 @@ final class VideoPlayerFeedInfoViewController: UIViewController {
         if detail != nil {
             snapshot.appendSections([.intro])
             snapshot.appendItems([.intro], toSection: .intro)
+        }
+        if episodes.count > 1 {
+            snapshot.appendSections([.episodes])
+            snapshot.appendItems(episodes.map { .video(.episodes, $0) }, toSection: .episodes)
         }
         if !uploaderVideos.isEmpty {
             snapshot.appendSections([.uploader])
@@ -717,8 +750,8 @@ extension VideoPlayerFeedInfoViewController: UICollectionViewDelegate {
             var snapshot = dataSource.snapshot()
             snapshot.reconfigureItems([.intro])
             dataSource.apply(snapshot, animatingDifferences: true)
-        case let .video(_, entry):
-            onSelect?(entry.playInfo)
+        case let .video(section, entry):
+            if section == .episodes { onSelectEpisode?(entry.playInfo) } else { onSelect?(entry.playInfo) }
         case let .comment(root, child):
             if child == nil { toggle(root: root) }
             else { expanded.remove(root); applySnapshot(animated: true) }

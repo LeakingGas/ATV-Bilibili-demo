@@ -118,11 +118,34 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private var lifecycleObservers = [NSObjectProtocol]()
     private var backgroundedAt: Date?
     private var wasPlayingWhenBackgrounded = false
+    /// 进后台时已经把播放项卸掉，回来必须重建（不论离开多久）。
+    private var backgroundPosition: Double?
 
     private func handleEnterBackground() {
         guard let player = playerVC?.player else { return }
         backgroundedAt = Date()
         wasPlayingWhenBackgrounded = player.rate > 0 || player.timeControlStatus != .paused
+        // 画中画还在播时不能动它。
+        if transportMode == .accelerated,
+           CommonPlayerViewController.PipRecorder.shared.playingPipViewController.isEmpty,
+           player.currentItem != nil
+        {
+            let position = player.currentTime().seconds
+            if position.isFinite {
+                // 挂起前主动断开播放器到本地代理的连接，回来后用新地址、新代理整体重建。
+                // 否则 App 恢复时播放器、代理线程和失效的连接同时收拾残局，偶尔会闪退。
+                backgroundPosition = position
+                if reportWatchHistory, position > 0 {
+                    WebRequest.reportWatchHistory(aid: playData.aid, cid: playData.cid, currentTime: Int(position), epid: playData.epid, seasonId: playData.seasonId, subType: playData.subType)
+                }
+                loadTask?.cancel()
+                loadGeneration += 1
+                stopBTRMonitoring()
+                player.pause()
+                player.replaceCurrentItem(with: nil)
+                playerDelegate?.btrPlayback.invalidate()
+            }
+        }
         // 预热好的下一集也绑着失效的代理，一并丢弃。
         Task { [mediaWarmupManager] in await mediaWarmupManager?.cancelAll() }
     }
@@ -130,8 +153,10 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private func handleEnterForeground() {
         guard let since = backgroundedAt, transportMode == .accelerated, let player = playerVC?.player else { return }
         backgroundedAt = nil
-        guard Date().timeIntervalSince(since) > 2 else { return }
-        let position = player.currentTime().seconds
+        let saved = backgroundPosition
+        backgroundPosition = nil
+        guard saved != nil || Date().timeIntervalSince(since) > 2 else { return }
+        let position = saved ?? player.currentTime().seconds
         guard position.isFinite else { return }
         let resume = wasPlayingWhenBackgrounded
         BTRTrace.shared.event("foreground_reload",["position":position,"resume":resume])

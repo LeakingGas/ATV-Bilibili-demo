@@ -68,8 +68,7 @@ class StandardVideoCollectionViewController<T: PlayableData>: UIViewController, 
     }
 
     func goDetail(with record: T) {
-        let detailVC = VideoDetailViewController.create(aid: record.aid, cid: record.cid)
-        detailVC.present(from: self)
+        VideoLauncher.play(aid: record.aid, cid: record.cid, from: self)
     }
 
     func reloadData() {

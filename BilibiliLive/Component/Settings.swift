@@ -30,12 +30,9 @@ enum Settings {
     @UserDefaultCodable("Settings.displayStyle", defaultValue: .normal)
     static var displayStyle: FeedDisplayStyle
 
-    @UserDefault("Settings.direatlyEnterVideo", defaultValue: false)
-    static var direatlyEnterVideo: Bool
-
-    /// 从详情页播放后，退出播放直接回到进入详情页之前的页面。
-    @UserDefault("Settings.exitPlayerToList", defaultValue: true)
-    static var exitPlayerToList: Bool
+    /// 进入有观看记录的视频时，询问「继续播放 / 从头播放」。关闭后直接续播。
+    @UserDefault("Settings.resumePrompt", defaultValue: true)
+    static var resumePrompt: Bool
 
     @UserDefaultCodable("Settings.mediaQuality", defaultValue: .quality_1080p)
     static var mediaQuality: MediaQualityEnum
@@ -100,9 +97,6 @@ enum Settings {
 
     @UserDefault("Settings.play.autoSkip", defaultValue: true)
     static var autoSkip: Bool
-
-    @UserDefault("Settings.showRelatedVideoInCurrentVC", defaultValue: true)
-    static var showRelatedVideoInCurrentVC: Bool
 
     @UserDefault("Settings.requestHotWithoutCookie", defaultValue: false)
     static var requestHotWithoutCookie: Bool

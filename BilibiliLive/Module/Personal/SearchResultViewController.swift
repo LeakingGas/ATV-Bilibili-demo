@@ -207,11 +207,9 @@ extension SearchResultViewController: UICollectionViewDelegate {
         guard let data = dataSource.itemIdentifier(for: indexPath) else { return }
         switch data {
         case let .video(data):
-            let detailVC = VideoDetailViewController.create(aid: data.aid, cid: 0)
-            detailVC.present(from: self)
+            VideoLauncher.play(aid: data.aid, from: self)
         case let .bangumi(data):
-            let detailVC = VideoDetailViewController.create(seasonId: data.season_id)
-            detailVC.present(from: self)
+            VideoLauncher.play(seasonId: data.season_id, from: self)
         case let .user(data):
             let upSpaceVC = UpSpaceViewController()
             upSpaceVC.mid = data.mid

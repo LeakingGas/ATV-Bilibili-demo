@@ -175,8 +175,10 @@ class VideoPlayerViewController: CommonPlayerViewController {
     var onPlaybackStarted: (() -> Void)?
     var onPlayInfoChanged: ((PlayInfo) -> Void)?
     var onDismissWithPlayInfo: ((PlayInfo) -> Void)?
-    /// 播放器被关闭（返回键退出）后调用，用于连同详情页一起返回。
+    /// 播放器被关闭（返回键退出）后调用。
     var onDidExit: (() -> Void)?
+    /// 有观看记录时是否询问「继续播放 / 从头播放」（投屏等场景不询问）。
+    var askResume = true
 
     private let playMode: VideoPlayerMode
     private let playContextCache: PlayContextCache?
@@ -230,8 +232,11 @@ class VideoPlayerViewController: CommonPlayerViewController {
         viewModel.onPlayInfoChanged = { [weak self] info in
             self?.handlePlayInfoChanged(info)
         }
-        viewModel.onShowDetail = { [weak self] info in
-            self?.showDetail(for: info)
+        if playMode == .regular, askResume {
+            viewModel.resumeChooser = { [weak self] prompt in
+                guard let self else { return .cancel }
+                return await self.presentResumePrompt(prompt)
+            }
         }
         viewModel.loadResult.receive(on: DispatchQueue.main).sink { [weak self] result in
             switch result {
@@ -294,11 +299,6 @@ class VideoPlayerViewController: CommonPlayerViewController {
         if let onDidExit {
             self.onDidExit = nil
             DispatchQueue.main.async { onDidExit() }
-        }
-        // 播放器偶尔会被系统自己的流程关闭（没经过 exitPlayer），这时中间的详情页会露出来。
-        // 仍然回到进入详情页之前的页面。
-        if !exitRequested, let root = exitRootViewController, root.presentedViewController != nil {
-            DispatchQueue.main.async { root.dismiss(animated: true) }
         }
     }
 
@@ -389,15 +389,20 @@ class VideoPlayerViewController: CommonPlayerViewController {
         present(alert, animated: true)
     }
 
-    private func showDetail(for info: PlayInfo) {
-        guard playMode != .preview else { return }
-        let detailVC: VideoDetailViewController
-        if let seasonId = info.seasonId, seasonId > 0 {
-            detailVC = VideoDetailViewController.create(seasonId: seasonId)
-        } else {
-            detailVC = VideoDetailViewController.create(aid: info.aid, cid: info.cid, epid: info.epid)
+    /// 进入视频时询问继续播放还是从头播放。等播放器完全出现后再弹出，避免和进场动画冲突。
+    private func presentResumePrompt(_ prompt: ResumePrompt) async -> ResumeChoice {
+        for _ in 0..<40 {
+            if exitRequested { return .cancel }
+            if view.window != nil, !isBeingPresented, presentedViewController == nil, transitionCoordinator == nil { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
-        detailVC.present(from: self, direatlyEnterVideo: false)
+        guard view.window != nil, presentedViewController == nil, !exitRequested else { return .resume }
+        return await withCheckedContinuation { continuation in
+            let promptVC = ResumePromptViewController(prompt: prompt) { choice in
+                continuation.resume(returning: choice)
+            }
+            present(promptVC, animated: true)
+        }
     }
 
     @objc private func handleDoubleUpTap() {

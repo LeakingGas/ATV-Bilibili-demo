@@ -354,19 +354,14 @@ extension BiliBiliUpnpDMR {
         let cid = json["cid"].intValue
         let epid = json["epid"].intValue
 
-        let player: VideoDetailViewController
-        if epid > 0 {
-            player = VideoDetailViewController.create(epid: epid)
-        } else {
-            player = VideoDetailViewController.create(aid: aid, cid: cid)
-        }
-        let topMost = UIViewController.topMostViewController()
+        // 投屏直接开播，不弹「继续 / 从头」询问（进度由手机端控制）。
+        let info = epid > 0 ? PlayInfo(aid: 0, cid: 0, epid: epid) : PlayInfo(aid: aid, cid: cid)
         if let _ = AppDelegate.shared.window!.rootViewController?.presentedViewController {
             AppDelegate.shared.window!.rootViewController?.dismiss(animated: false) {
-                player.present(from: UIViewController.topMostViewController(), direatlyEnterVideo: true)
+                VideoLauncher.play(info, askResume: false)
             }
         } else {
-            player.present(from: topMost, direatlyEnterVideo: true)
+            VideoLauncher.play(info, askResume: false)
         }
     }
 }

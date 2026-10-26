@@ -78,6 +78,7 @@ extension DanmuViewPlugin: CommonPlayerPlugin {
         if let timeObserver, let currentPlayer {
             currentPlayer.removeTimeObserver(timeObserver)
         }
+        timeObserver = nil
 
         // 保存新的 player 引用
         currentPlayer = player
@@ -94,10 +95,11 @@ extension DanmuViewPlugin: CommonPlayerPlugin {
     }
 
     func playerDidCleanUp(player: AVPlayer) {
-        if let timeObserver {
-            player.removeTimeObserver(timeObserver)
-            self.timeObserver = nil
+        // 观察者只能从添加它的那个播放器上移除，否则 AVFoundation 直接抛异常闪退。
+        if let timeObserver, let owner = currentPlayer {
+            owner.removeTimeObserver(timeObserver)
         }
+        timeObserver = nil
         currentPlayer = nil
     }
 

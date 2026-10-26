@@ -104,8 +104,7 @@ class RankingSeasonContentViewController: StandardVideoCollectionViewController<
     }
 
     override func goDetail(with record: Season) {
-        let detailVC = VideoDetailViewController.create(seasonId: record.season_id)
-        detailVC.present(from: self)
+        VideoLauncher.play(seasonId: record.season_id, from: self)
     }
 }
 

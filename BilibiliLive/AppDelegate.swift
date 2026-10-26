@@ -17,6 +17,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        // The local playback proxy writes to sockets AVPlayer may have closed (e.g. after the app
+        // was suspended); never let a broken pipe terminate the app.
+        signal(SIGPIPE, SIG_IGN)
         Logger.setup()
         ImageCache.default.diskStorage.config.sizeLimit = 500 * 1024 * 1024
         AVInfoPanelCollectionViewThumbnailCellHook.start()
