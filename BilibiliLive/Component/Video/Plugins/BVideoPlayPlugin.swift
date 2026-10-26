@@ -100,9 +100,66 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         self.isMuted = isMuted
         self.mediaWarmupManager = mediaWarmupManager
         currentQualityId = playData.videoPlayURLInfo.quality
+        super.init()
+        lifecycleObservers = [
+            NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.handleEnterBackground()
+            },
+            NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.handleEnterForeground()
+            },
+        ]
+    }
+
+    // MARK: - 回到 App 后续播
+
+    // 回到主屏幕后系统会挂起 App，本地 BTR 代理的监听连接随之失效；回来时播放器还连着
+    // 失效的代理，一直转圈。回到前台时用新的代理在原位置重新加载（与切画质同一流程）。
+    private var lifecycleObservers = [NSObjectProtocol]()
+    private var backgroundedAt: Date?
+    private var wasPlayingWhenBackgrounded = false
+
+    private func handleEnterBackground() {
+        guard let player = playerVC?.player else { return }
+        backgroundedAt = Date()
+        wasPlayingWhenBackgrounded = player.rate > 0 || player.timeControlStatus != .paused
+        // 预热好的下一集也绑着失效的代理，一并丢弃。
+        Task { [mediaWarmupManager] in await mediaWarmupManager?.cancelAll() }
+    }
+
+    private func handleEnterForeground() {
+        guard let since = backgroundedAt, transportMode == .accelerated, let player = playerVC?.player else { return }
+        backgroundedAt = nil
+        guard Date().timeIntervalSince(since) > 2 else { return }
+        let position = player.currentTime().seconds
+        guard position.isFinite else { return }
+        let resume = wasPlayingWhenBackgrounded
+        BTRTrace.shared.event("foreground_reload",["position":position,"resume":resume])
+        Task { @MainActor [weak self] in
+            await self?.reloadInPlace(at: position, resume: resume)
+        }
+    }
+
+    private func reloadInPlace(at position: Double, resume: Bool) async {
+        do {
+            let generation = beginLoadGeneration()
+            try await playmedia(urlInfo: playData.videoPlayURLInfo,
+                                playerInfo: playData.playerInfo,
+                                generation: generation,
+                                maxQuality: lastMaxQuality,
+                                streamIndex: lastStreamIndex,
+                                isQualitySwitch: true)
+            guard loadGeneration == generation, !Task.isCancelled, let newPlayer = playerVC?.player else { return }
+            _ = await newPlayer.seek(to: CMTime(seconds: position, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            guard loadGeneration == generation, playerVC?.player === newPlayer else { return }
+            if resume { newPlayer.play() } else { newPlayer.pause() }
+        } catch {
+            Logger.warn("[player] foreground reload failed: \(error)")
+        }
     }
 
     deinit {
+        lifecycleObservers.forEach { NotificationCenter.default.removeObserver($0) }
         btrTimer?.invalidate()
         if let btrJumpObserver { NotificationCenter.default.removeObserver(btrJumpObserver) }
         playerDelegate?.btrPlayback.invalidate()

@@ -80,14 +80,6 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
         view.addGestureRecognizer(menuTap)
     }
 
-    /// 刚启动、列表还没加载出来时没有任何获得焦点的元素，返回键不经过本页面，直接退出 App。
-    /// 把返回键手势挂到窗口上，没有焦点时也能先弹出侧边栏。
-    private func moveMenuGestureToWindowIfNeeded() {
-        guard let window = view.window, menuTap.view !== window else { return }
-        menuTap.view?.removeGestureRecognizer(menuTap)
-        window.addGestureRecognizer(menuTap)
-    }
-
     @objc private func handleMenuTap() {
         if let handler = selectedViewController as? BLMenuPressHandling, handler.handleMenuPress() { return }
         setSidebar(visible: true)
@@ -108,7 +100,6 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        moveMenuGestureToWindowIfNeeded()
         // 关掉系统自带的返回键手势（把焦点移到 tab 栏），避免抢在我们前面。
         for gesture in (view.gestureRecognizers ?? []) + (tabBar.gestureRecognizers ?? []) where gesture !== menuTap {
             if gesture.allowedPressTypes.contains(NSNumber(value: UIPress.PressType.menu.rawValue)) { gesture.isEnabled = false }
@@ -475,8 +466,10 @@ extension BLTabBarViewController: UIGestureRecognizerDelegate {
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        // 其他返回键手势等我们失败后才生效（侧边栏已打开时我们不开始，系统照常退回主屏幕）。
-        gestureRecognizer === menuTap && otherGestureRecognizer.allowedPressTypes.contains(NSNumber(value: UIPress.PressType.menu.rawValue))
+        // 只约束主界面内部的返回键手势；播放器等弹出页面的手势绝不能等我们（否则它们的返回失效，
+        // 系统直接退回桌面）。
+        guard gestureRecognizer === menuTap, let otherView = otherGestureRecognizer.view, otherView.isDescendant(of: view) else { return false }
+        return otherGestureRecognizer.allowedPressTypes.contains(NSNumber(value: UIPress.PressType.menu.rawValue))
     }
 }
 
