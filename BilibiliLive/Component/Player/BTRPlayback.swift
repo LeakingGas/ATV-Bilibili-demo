@@ -327,10 +327,12 @@ final class BTRTrace: @unchecked Sendable {
     private static let persistent: Set<String> = ["foreground_reload", "foreground_reload_failed", "foreground_playurl",
         "player_failure", "seek_requested", "quality_switch", "track_registered", "startup_mark", "stream_failed",
         "proxy_failed", "proxy_rejected", "host_banned", "prewarm_begin", "playlist_start_offset", "player_kickstart"]
+    /// 由 App 的闪退诊断模块注入（测试里不存在）。
+    static var persistentSink: ((String) -> Void)?
     func event(_ name: String, _ fields: [String: Any] = [:]) {
-        if Self.persistent.contains(name) {
+        if Self.persistent.contains(name), let sink = Self.persistentSink {
             let compact = fields.filter { $0.key != "hosts" }.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
-            Diag.mark("BTR " + name + " " + compact)
+            sink("BTR " + name + " " + compact)
         }
         lock.lock(); defer { lock.unlock() }
         guard active else { return }

@@ -173,6 +173,7 @@ enum Diag {
         eventsFD = open(file("events.log").path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0o644)
 
         installCrashHandlers()
+        BTRTrace.persistentSink = { mark($0) }
         observeLifecycle()
         startMainThreadWatchdog()
         mark("LAUNCH build=\(buildDescription) tvOS=\(UIDevice.current.systemVersion)")
