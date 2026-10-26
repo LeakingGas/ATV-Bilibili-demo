@@ -180,15 +180,10 @@ enum Diag {
     }
 
     private static func installCrashHandlers() {
-        // 主线程栈溢出时也要有地方运行信号处理。
-        let stackSize = 128 * 1024
-        var altStack = stack_t(ss_sp: UnsafeMutableRawPointer.allocate(byteCount: stackSize, alignment: 16), ss_size: stackSize, ss_flags: 0)
-        sigaltstack(&altStack, nil)
-
         for sig in [SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGTRAP, SIGFPE, SIGSYS] {
             var action = sigaction()
             action.__sigaction_u.__sa_sigaction = diagSignalHandler
-            action.sa_flags = SA_SIGINFO | SA_ONSTACK
+            action.sa_flags = SA_SIGINFO
             sigemptyset(&action.sa_mask)
             sigaction(sig, &action, nil)
         }
