@@ -18,6 +18,8 @@ class CommonPlayerViewController: UIViewController {
     private var playbackStalledObserver: Any?
     private var isEnd = false
     private var isRestoringFromPip = false
+    /// 底部控制栏（标题、胶囊按钮、进度条）当前是否显示。
+    private var transportBarVisible = false
     /// 新 AVPlayerItem ready 后是否自动 play。换 CDN host 等场景可临时关掉，由调用方按用户暂停状态决定是否续播。
     var autoPlayWhenReady = true
     /// 已请求退出（播放器上面还盖着弹窗时，本控制器的 isBeingDismissed 可能不为真）。
@@ -274,8 +276,27 @@ extension CommonPlayerViewController {
 }
 
 extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
+    func playerViewController(_ playerViewController: AVPlayerViewController,
+                              willTransitionToVisibilityOfTransportBar visible: Bool,
+                              with coordinator: AVPlayerViewControllerAnimationCoordinator)
+    {
+        transportBarVisible = visible
+    }
+
     @objc func playerViewControllerShouldDismiss(_ playerViewController: AVPlayerViewController) -> Bool {
-        Diag.mark("PLAYER \(Diag.id(self)) shouldDismiss (back)")
+        Diag.mark("PLAYER \(Diag.id(self)) shouldDismiss (back) transportBar=\(transportBarVisible)")
+        // 系统的问题：在控制栏上点过胶囊按钮（或打开过菜单）后，返回键把焦点送回进度条，
+        // 下一次返回就直接要求关闭播放器，跳过了「先收起控制栏」这一步。
+        // 控制栏还显示着时，这次返回只收起控制栏，回到全屏画面。
+        if transportBarVisible, playerViewController.showsPlaybackControls {
+            transportBarVisible = false
+            playerViewController.showsPlaybackControls = false
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.exitRequested else { return }
+                playerViewController.showsPlaybackControls = self.showsPlaybackControls
+            }
+            return false
+        }
         if let presentedViewController = UIViewController.topMostViewController() as? CommonPlayerViewController,
            presentedViewController.playerVC == playerViewController
         {
