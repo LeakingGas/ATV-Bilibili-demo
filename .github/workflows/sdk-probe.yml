@@ -10,7 +10,5 @@ jobs:
       - run: |
           SDK=$(xcrun --sdk appletvos --show-sdk-path)
           H=$SDK/System/Library/Frameworks/UIKit.framework/Headers
-          for f in UITabBarController.h UITab.h UITabGroup.h UITabBarControllerSidebar.h; do
-            [ -f "$H/$f" ] || { echo "::warning title=$f::missing"; continue; }
-            grep -nE "API_AVAILABLE|API_UNAVAILABLE|@property|^- \(|typedef|Sidebar|sidebar|mode" "$H/$f" | grep -iE "sidebar|mode|tvos|tabs|selectedTab" | head -40 | while IFS= read -r l; do echo "::warning title=$f::${l:0:400}"; done
-          done
+          ls $H | grep -i tab | tr '\n' ' ' | xargs -I{} echo "::warning title=files::{}"
+          grep -rnh -i "sidebar" $H/UITabBarController*.h $H/UITab*.h 2>/dev/null | grep -v "^\s*//" | grep -vi "UNAVAILABLE(tvos" | head -45 | while IFS= read -r l; do echo "::warning title=sb::${l:0:300}"; done
