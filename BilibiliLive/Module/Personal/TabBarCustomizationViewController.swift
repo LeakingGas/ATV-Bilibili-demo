@@ -13,9 +13,11 @@ class TabBarCustomizationViewController: UIViewController {
     private var editingPage: TabBarPage?
     private var pendingFocusIndexPath: IndexPath?
     private var focusedIndexPath: IndexPath?
+    private var preferredIndexPath: IndexPath?
 
-    private var tabbarPlacements = [Settings.TabBarPagePlacement]()
-    private var minePlacements = [Settings.TabBarPagePlacement]()
+    /// 按 sectionOrder 排列：导航栏 / 我的页面 / 隐藏。
+    private static let sectionOrder: [Settings.TabBarPageSection] = [.tabBar, .personal, .hidden]
+    private var lists: [[Settings.TabBarPagePlacement]] = [[], [], []]
 
     private var originalPlacements = [Settings.TabBarPagePlacement]()
 
@@ -137,55 +139,43 @@ class TabBarCustomizationViewController: UIViewController {
 
     // MARK: - Move
 
+    private func showAlert(_ title: String) {
+        let alert = UIAlertController(title: title, message: nil, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "知道了", style: .cancel))
+        present(alert, animated: true)
+    }
+
     private func moveEditingItem(from: IndexPath, to: IndexPath) -> Bool {
         guard var editItem = placement(at: from) else { return false }
 
-        let tabBarCount = tabbarPlacements.count
-
+        let tabBarCount = lists[0].count
         let fromSection = pageSection(for: from)
         let toSection = pageSection(for: to)
 
         if toSection == fromSection {
             // 同一层
-            switch fromSection {
-            case .tabBar:
-                tabbarPlacements.swapAt(from.item, to.item)
-            case .personal:
-                minePlacements.swapAt(from.item, to.item)
-            }
+            lists[from.section].swapAt(from.item, to.item)
             return true
         }
 
         // 不同层
-        editItem.section = toSection
-        switch toSection {
-        case .tabBar:
-            if tabBarCount >= 8 {
-                let alert = UIAlertController(title: "导航栏最多保留 8 个页面", message: nil, preferredStyle: .alert)
-                alert.addAction(UIAlertAction(title: "知道了", style: .cancel))
-                present(alert, animated: true)
-                return false
-            }
-            minePlacements.remove(at: from.item)
-            tabbarPlacements.insert(editItem, at: to.item)
-            print(minePlacements)
-            print(tabbarPlacements)
-        case .personal:
+        if toSection == .tabBar, tabBarCount >= 8 {
+            showAlert("导航栏最多保留 8 个页面")
+            return false
+        }
+        if fromSection == .tabBar {
             if editItem.page.isFixedInTabBar {
-                let alert = UIAlertController(title: "该项目只允许在导航栏展示", message: nil, preferredStyle: .alert)
-                alert.addAction(UIAlertAction(title: "知道了", style: .cancel))
-                present(alert, animated: true)
+                showAlert("该项目只允许在导航栏展示")
                 return false
             }
             if tabBarCount <= 3 {
-                let alert = UIAlertController(title: "导航栏至少保留 3 个页面", message: nil, preferredStyle: .alert)
-                alert.addAction(UIAlertAction(title: "知道了", style: .cancel))
-                present(alert, animated: true)
+                showAlert("导航栏至少保留 3 个页面")
                 return false
             }
-            tabbarPlacements.remove(at: from.item)
-            minePlacements.insert(editItem, at: to.item)
         }
+        editItem.section = toSection
+        lists[from.section].remove(at: from.item)
+        lists[to.section].insert(editItem, at: min(to.item, lists[to.section].count))
         return true
     }
 
@@ -230,12 +220,12 @@ class TabBarCustomizationViewController: UIViewController {
 
     private func updateHintLabel() {
         hintLabel.text = editingPage != nil
-            ? "排序中：左右移动排序，上下跨区移动；按确认键或播放键完成"
-            : "选中项目后按播放键开始排序"
+            ? "排序中：左右移动排序，上下跨区移动（移到「隐藏」即不显示）；按确认键或播放键完成"
+            : "选中项目后按确认键或播放键开始移动；移到「隐藏」区域的页面将不再显示"
     }
 
     private func commitIfNeeded() {
-        let newPlacement = tabbarPlacements + minePlacements
+        let newPlacement = lists.flatMap { $0 }
         if newPlacement != originalPlacements {
             Settings.setPlacements(newPlacement)
             originalPlacements = newPlacement
@@ -244,9 +234,8 @@ class TabBarCustomizationViewController: UIViewController {
 
     private func reloadPlacementsFromSettings() {
         let placements = Settings.currentPlacements
-        tabbarPlacements = placements.filter { $0.section == .tabBar }
-        minePlacements = placements.filter { $0.section == .personal }
-        originalPlacements = tabbarPlacements + minePlacements
+        lists = Self.sectionOrder.map { section in placements.filter { $0.section == section } }
+        originalPlacements = lists.flatMap { $0 }
         collectionView.reloadData()
     }
 
@@ -256,8 +245,7 @@ class TabBarCustomizationViewController: UIViewController {
             stopEditing()
         }
         let placements = Settings.defaultPlacements
-        tabbarPlacements = placements.filter { $0.section == .tabBar }
-        minePlacements = placements.filter { $0.section == .personal }
+        lists = Self.sectionOrder.map { section in placements.filter { $0.section == section } }
         updateHintLabel()
         collectionView.reloadData()
         commitIfNeeded()
@@ -266,16 +254,12 @@ class TabBarCustomizationViewController: UIViewController {
     // MARK: - Data helpers
 
     private func pageSection(for indexpath: IndexPath) -> Settings.TabBarPageSection {
-        return indexpath.section == 0 ? .tabBar : .personal
+        Self.sectionOrder[indexpath.section]
     }
 
     private func placement(at indexPath: IndexPath) -> Settings.TabBarPagePlacement? {
-        switch pageSection(for: indexPath) {
-        case .tabBar:
-            return tabbarPlacements[indexPath.item]
-        case .personal:
-            return minePlacements[indexPath.item]
-        }
+        let list = lists[indexPath.section]
+        return list.indices.contains(indexPath.item) ? list[indexPath.item] : nil
     }
 }
 
@@ -283,18 +267,12 @@ class TabBarCustomizationViewController: UIViewController {
 
 extension TabBarCustomizationViewController: UICollectionViewDataSource {
     func numberOfSections(in collectionView: UICollectionView) -> Int {
-        2
+        Self.sectionOrder.count
     }
 
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        let modelSection: Settings.TabBarPageSection = section == 0 ? .tabBar : .personal
-
-        switch modelSection {
-        case .tabBar:
-            return tabbarPlacements.count
-        case .personal:
-            return minePlacements.count
-        }
+        // 空分区放一个占位格，保证焦点能移进去（例如第一次隐藏某个页面）。
+        max(1, lists[section].count)
     }
 
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
@@ -303,6 +281,8 @@ extension TabBarCustomizationViewController: UICollectionViewDataSource {
             let page = placement.page
             cell.configure(title: page.title,
                            isBeingEdited: page == editingPage)
+        } else {
+            cell.configure(title: "（空）", isBeingEdited: false)
         }
         return cell
     }
@@ -317,8 +297,7 @@ extension TabBarCustomizationViewController: UICollectionViewDataSource {
         let view = collectionView.dequeueReusableSupplementaryView(ofKind: kind,
                                                                    withReuseIdentifier: TabBarSectionHeaderView.reuseID,
                                                                    for: indexPath) as! TabBarSectionHeaderView
-        let section: Settings.TabBarPageSection = indexPath.section == 0 ? .tabBar : .personal
-        view.label.text = section.title
+        view.label.text = Self.sectionOrder[indexPath.section].title
         return view
     }
 }
@@ -343,6 +322,19 @@ extension TabBarCustomizationViewController: UICollectionViewDelegate {
             if moveEditingItem(from: from, to: to) == false {
                 return false
             }
+            if from.section != to.section {
+                // 跨区（可能涉及空分区占位格）：整体刷新并把焦点放到新位置。
+                let target = IndexPath(item: min(to.item, max(0, lists[to.section].count - 1)), section: to.section)
+                preferredIndexPath = target
+                collectionView.reloadData()
+                collectionView.layoutIfNeeded()
+                pendingFocusIndexPath = nil
+                DispatchQueue.main.async {
+                    collectionView.setNeedsFocusUpdate()
+                    collectionView.updateFocusIfNeeded()
+                }
+                return false
+            }
             collectionView.performBatchUpdates {
                 collectionView.moveItem(at: from, to: to)
 
@@ -351,6 +343,11 @@ extension TabBarCustomizationViewController: UICollectionViewDelegate {
             }
         }
         return false
+    }
+
+    func indexPathForPreferredFocusedView(in collectionView: UICollectionView) -> IndexPath? {
+        defer { preferredIndexPath = nil }
+        return preferredIndexPath
     }
 
     func collectionView(_ collectionView: UICollectionView,

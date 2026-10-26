@@ -109,6 +109,9 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         networkLogTimer?.invalidate()
     }
 
+    /// 当前实际播放的视频流（供画质菜单标记当前项）。
+    var currentMedia: VideoPlayURLInfo.DashInfo.DashMediaInfo? { playerDelegate?.primaryMedia }
+
     /// 供 DebugPlugin 浮层显示的网络诊断信息
     var networkDebugInfo: String {
         var lines = [String]()

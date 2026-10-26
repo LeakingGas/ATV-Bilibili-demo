@@ -346,6 +346,7 @@ class VideoPlayerViewModel {
             }
         }
 
+        qualitySelector.currentMediaProvider = { [weak playplugin] in playplugin?.currentMedia }
         plugins.append(qualitySelector)
 
         if let clips = data.clips {

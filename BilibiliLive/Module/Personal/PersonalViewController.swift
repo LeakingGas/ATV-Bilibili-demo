@@ -57,17 +57,37 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
         return label
     }()
 
+    /// 顶部胶囊选项栏（毛玻璃）。焦点移到哪一项，下方就显示哪一项的内容。
+    private let pillBackground: UIVisualEffectView = {
+        let view = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
+        view.clipsToBounds = true
+        view.layer.cornerCurve = .continuous
+        view.layer.borderWidth = 1
+        view.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
+        return view
+    }()
+
+    private var pillWidthConstraint: Constraint?
+
     private let leftCollectionView: UICollectionView = {
-        let layout = UICollectionViewFlowLayout()
-        layout.minimumLineSpacing = 16
-        layout.minimumInteritemSpacing = 4
-        layout.itemSize = CGSize(width: 460, height: 60)
-        layout.sectionInset = UIEdgeInsets(top: 0, left: 20, bottom: 0, right: 0)
+        let size = NSCollectionLayoutSize(widthDimension: .estimated(150), heightDimension: .absolute(64))
+        let group = NSCollectionLayoutGroup.horizontal(layoutSize: size, subitems: [NSCollectionLayoutItem(layoutSize: size)])
+        let section = NSCollectionLayoutSection(group: group)
+        section.interGroupSpacing = 8
+        section.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
+        let configuration = UICollectionViewCompositionalLayoutConfiguration()
+        configuration.scrollDirection = .horizontal
+        let layout = UICollectionViewCompositionalLayout(section: section, configuration: configuration)
         let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = .clear
+        collectionView.clipsToBounds = false
+        collectionView.showsHorizontalScrollIndicator = false
+        collectionView.remembersLastFocusedIndexPath = true
         return collectionView
     }()
+
+    private var selectedIndex = 0
 
     weak var currentViewController: UIViewController?
 
@@ -77,10 +97,9 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
         setupUI()
         setupData()
         leftCollectionView.reloadData()
-        avatarImageView.layer.cornerRadius = 50
-        leftCollectionView.register(BLSettingLineCollectionViewCell.self, forCellWithReuseIdentifier: "cell")
-        leftCollectionView.selectItem(at: IndexPath(row: 0, section: 0), animated: false, scrollPosition: .top)
-        collectionView(leftCollectionView, didSelectItemAt: IndexPath(row: 0, section: 0))
+        avatarImageView.layer.cornerRadius = 32
+        leftCollectionView.register(BLPillCell.self, forCellWithReuseIdentifier: "cell")
+        show(index: 0)
         NotificationCenter.default.addObserver(self,
                                                selector: #selector(handleAccountUpdate),
                                                name: AccountManager.didUpdateNotification,
@@ -173,9 +192,7 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
     @objc private func handleTabBarPagesDidChange() {
         setupData()
         leftCollectionView.reloadData()
-        let firstIndexPath = IndexPath(item: 0, section: 0)
-        leftCollectionView.selectItem(at: firstIndexPath, animated: false, scrollPosition: .top)
-        collectionView(leftCollectionView, didSelectItemAt: firstIndexPath)
+        show(index: 0)
     }
 
     private func updateAccountInfo() {
@@ -193,59 +210,79 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
     }
 
     private func setupUI() {
-        view.addSubview(leftContainerView)
+        view.addSubview(profileContainerView)
+        view.addSubview(pillBackground)
+        pillBackground.contentView.addSubview(leftCollectionView)
         view.addSubview(contentView)
-
-        leftContainerView.addSubview(profileContainerView)
-        leftContainerView.addSubview(leftCollectionView)
-
         profileContainerView.addSubview(avatarImageView)
         profileContainerView.addSubview(usernameLabel)
 
         leftCollectionView.delegate = self
         leftCollectionView.dataSource = self
 
-        leftContainerView.snp.makeConstraints { make in
-            make.leading.equalToSuperview()
-            make.top.equalTo(view.safeAreaLayoutGuide.snp.top)
-            make.bottom.equalToSuperview()
-            make.width.equalTo(500)
-        }
-
-        contentView.snp.makeConstraints { make in
-            make.leading.equalTo(leftContainerView.snp.trailing).offset(8)
-            make.top.equalTo(view.safeAreaLayoutGuide.snp.top)
-            make.trailing.bottom.equalToSuperview()
-        }
-
+        // 左上角：头像 + 用户名
         profileContainerView.snp.makeConstraints { make in
-            make.leading.top.trailing.equalToSuperview()
-            make.height.equalTo(100)
+            make.leading.equalToSuperview().offset(80)
+            make.top.equalTo(view.safeAreaLayoutGuide.snp.top).offset(4)
+            make.height.equalTo(64)
         }
-
         avatarImageView.snp.makeConstraints { make in
-            make.leading.equalToSuperview().offset(20)
-            make.top.bottom.equalToSuperview()
+            make.leading.top.bottom.equalToSuperview()
             make.width.equalTo(avatarImageView.snp.height)
         }
-
+        usernameLabel.font = .systemFont(ofSize: 30, weight: .semibold)
         usernameLabel.snp.makeConstraints { make in
-            make.leading.equalTo(avatarImageView.snp.trailing).offset(20)
-            make.trailing.equalToSuperview().offset(-20)
-            make.centerY.equalTo(avatarImageView.snp.centerY)
+            make.leading.equalTo(avatarImageView.snp.trailing).offset(16)
+            make.trailing.equalToSuperview()
+            make.centerY.equalToSuperview()
+            make.width.lessThanOrEqualTo(260)
         }
 
-        leftCollectionView.snp.makeConstraints { make in
+        // 顶部居中：胶囊选项栏
+        pillBackground.snp.makeConstraints { make in
+            make.centerX.equalToSuperview()
+            make.centerY.equalTo(profileContainerView)
+            make.height.equalTo(84)
+            make.leading.greaterThanOrEqualTo(profileContainerView.snp.trailing).offset(40)
+            make.trailing.lessThanOrEqualToSuperview().inset(80)
+            pillWidthConstraint = make.width.equalTo(900).priority(.high).constraint
+        }
+        pillBackground.layer.cornerRadius = 42
+        leftCollectionView.snp.makeConstraints { $0.edges.equalToSuperview() }
+
+        // 下方：所选项的内容
+        contentView.snp.makeConstraints { make in
+            make.top.equalTo(pillBackground.snp.bottom).offset(24)
             make.leading.trailing.bottom.equalToSuperview()
-            make.top.equalTo(profileContainerView.snp.bottom).offset(40)
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        let width = leftCollectionView.collectionViewLayout.collectionViewContentSize.width
+        if width > 0 { pillWidthConstraint?.update(offset: width) }
+    }
+
+    private func show(index: Int) {
+        guard cellModels.indices.contains(index) else { return }
+        let model = cellModels[index]
+        if let vc = model.contentVC {
+            selectedIndex = index
+            setViewController(vc: vc)
+            leftCollectionView.visibleCells.forEach { cell in
+                if let pill = cell as? BLPillCell, let path = leftCollectionView.indexPath(for: cell) {
+                    pill.isCurrent = path.item == selectedIndex
+                }
+            }
         }
     }
 }
 
 extension PersonalViewController: UICollectionViewDataSource {
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "cell", for: indexPath) as! BLSettingLineCollectionViewCell
+        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "cell", for: indexPath) as! BLPillCell
         cell.titleLabel.text = cellModels[indexPath.item].title
+        cell.isCurrent = indexPath.item == selectedIndex
         return cell
     }
 
@@ -257,30 +294,64 @@ extension PersonalViewController: UICollectionViewDataSource {
 extension PersonalViewController: UICollectionViewDelegate {
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         let model = cellModels[indexPath.item]
-        if let vc = model.contentVC {
-            setViewController(vc: vc)
+        if model.contentVC != nil {
+            show(index: indexPath.item)
         }
         model.action?()
     }
 
     func collectionView(_ collectionView: UICollectionView, didUpdateFocusIn context: UICollectionViewFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
-        if Settings.sideMenuAutoSelectChange == false {
-            return
+        // 焦点移到哪个选项，下方就显示哪个选项（「账号切换」「登出」等操作项需按确定）。
+        guard let next = context.nextFocusedIndexPath, cellModels.indices.contains(next.item) else { return }
+        let model = cellModels[next.item]
+        guard model.autoSelect != false, model.contentVC != nil, next.item != selectedIndex else { return }
+        show(index: next.item)
+    }
+}
+
+/// 胶囊选项：焦点白底黑字，当前项淡白底。
+final class BLPillCell: UICollectionViewCell {
+    let titleLabel = UILabel()
+    private let background = UIView()
+
+    var isCurrent = false {
+        didSet { updateAppearance() }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        background.layer.cornerRadius = 32
+        background.layer.cornerCurve = .continuous
+        contentView.addSubview(background)
+        background.snp.makeConstraints { $0.edges.equalToSuperview() }
+        titleLabel.font = .systemFont(ofSize: 30, weight: .semibold)
+        titleLabel.textAlignment = .center
+        background.addSubview(titleLabel)
+        titleLabel.snp.makeConstraints { make in
+            make.leading.trailing.equalToSuperview().inset(30)
+            make.centerY.equalToSuperview()
         }
-        // 检查新的焦点是否是UICollectionViewCell
-        guard let nextFocusedIndexPath = context.nextFocusedIndexPath else {
-            return
-        }
-        let model = cellModels[nextFocusedIndexPath.item]
-        if model.autoSelect == false {
-            // 不自动选中
-            return
-        }
-        collectionView.selectItem(at: nextFocusedIndexPath, animated: true, scrollPosition: .centeredHorizontally)
-        if let vc = model.contentVC {
-            setViewController(vc: vc)
-        }
-        model.action?()
+        updateAppearance()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+        super.didUpdateFocus(in: context, with: coordinator)
+        coordinator.addCoordinatedAnimations { self.updateAppearance() }
+    }
+
+    private func updateAppearance() {
+        background.backgroundColor = isFocused ? .white : isCurrent ? UIColor.white.withAlphaComponent(0.18) : .clear
+        titleLabel.textColor = isFocused ? .black : UIColor.white.withAlphaComponent(isCurrent ? 1 : 0.75)
+        transform = isFocused ? CGAffineTransform(scaleX: 1.06, y: 1.06) : .identity
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = isFocused ? 0.3 : 0
+        layer.shadowRadius = 14
+        layer.shadowOffset = CGSize(width: 0, height: 8)
     }
 }
 

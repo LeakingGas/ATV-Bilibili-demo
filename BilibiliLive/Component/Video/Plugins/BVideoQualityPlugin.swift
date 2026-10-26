@@ -13,6 +13,16 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
     private var currentStreamIndex: Int? // 当前选中的流索引
     private var isQualityLocked: Bool = false // 是否手动锁定了画质
     private var onQualityChange: ((Int, Int?) -> Void)? // (qualityId, streamIndex)
+    /// 当前实际播放的流（由播放插件提供）；用于在菜单里勾选当前画质。
+    var currentMediaProvider: (() -> VideoPlayURLInfo.DashInfo.DashMediaInfo?)?
+
+    /// 当前实际播放的流在 dash.video 中的索引。
+    private var playingStreamIndex: Int? {
+        if let media = currentMediaProvider?(), let index = playData.videoPlayURLInfo.dash.video.firstIndex(of: media) {
+            return index
+        }
+        return isQualityLocked ? currentStreamIndex : nil
+    }
 
     struct QualityOption {
         let id: Int
@@ -35,6 +45,28 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
     func playerDidLoad(playerVC: AVPlayerViewController) {
         self.playerVC = playerVC
     }
+
+    // 流确定后（以及每次切换画质后）刷新菜单，标记当前画质。
+    func playerWillStart(player: AVPlayer) {
+        refreshMenu()
+    }
+
+    func playerDidStart(player: AVPlayer) {
+        refreshMenu()
+    }
+
+    private func refreshMenu() {
+        guard let playerVC, let fresh = addMenuItems(current: &placeholderMenus).first as? UIMenu else { return }
+        var replaced = false
+        let items = playerVC.transportBarCustomMenuItems.map { element -> UIMenuElement in
+            guard let menu = element as? UIMenu, menu.identifier == fresh.identifier else { return element }
+            replaced = true
+            return fresh
+        }
+        if replaced { playerVC.transportBarCustomMenuItems = items }
+    }
+
+    private var placeholderMenus = [UIMenuElement]()
 
     private func extractAvailableQualities() {
         let supportFormats = playData.videoPlayURLInfo.support_formats
@@ -95,6 +127,7 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
         let sortedQualityIds = groupedQualities.keys.sorted(by: >)
 
         // 为每个画质创建子菜单
+        let playing = playingStreamIndex
         let qualitySubmenus = sortedQualityIds.map { qualityId -> UIMenu in
             let streams = groupedQualities[qualityId]!
 
@@ -113,8 +146,8 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
 
             // 为该画质下的每个流创建菜单项
             let streamActions = streams.map { quality -> UIAction in
-                // 检查是否是当前选中的流
-                let isCurrentStream = quality.streamIndex == currentStreamIndex && isQualityLocked
+                // 检查是否是当前实际播放的流
+                let isCurrentStream = quality.streamIndex != nil && quality.streamIndex == playing
 
                 // 提取编码和码率信息（如 "AVC, 27.2 Mbps"）
                 let streamInfo: String
@@ -143,24 +176,32 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
                 menuTitle = baseName
             }
 
+            let containsCurrent = streams.contains { $0.streamIndex != nil && $0.streamIndex == playing }
             return UIMenu(
-                title: menuTitle,
+                title: containsCurrent ? "✓ " + menuTitle : menuTitle,
                 options: streams.count == 1 ? [] : [.displayInline],
                 children: streamActions
             )
         }
 
+        // 菜单顶部显示当前实际播放的画质。
+        var children: [UIMenuElement] = qualitySubmenus
+        if let playing, let current = availableQualities.first(where: { $0.streamIndex == playing }) {
+            children.insert(UIAction(title: "当前：" + current.name, attributes: [.disabled]) { _ in }, at: 0)
+        }
         let qualityMenu = UIMenu(
             title: "画质",
             image: qualityImage,
             identifier: UIMenu.Identifier(rawValue: "quality"),
-            children: qualitySubmenus
+            children: children
         )
 
         return [qualityMenu]
     }
 
     private func switchQuality(to quality: QualityOption) {
+        // 选的就是正在播放的流：什么都不做（之前会重新加载一遍，看起来像切了画质）。
+        if let playing = playingStreamIndex, quality.streamIndex == playing { return }
         // 更新状态：标记为手动锁定
         isQualityLocked = true
         currentQualityId = quality.id

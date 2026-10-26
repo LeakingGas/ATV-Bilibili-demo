@@ -11,6 +11,7 @@ extension Settings {
     enum TabBarPageSection: String, Codable, CaseIterable {
         case tabBar
         case personal
+        case hidden
 
         var title: String {
             switch self {
@@ -18,6 +19,8 @@ extension Settings {
                 return "导航栏"
             case .personal:
                 return "我的页面"
+            case .hidden:
+                return "隐藏（不显示）"
             }
         }
     }

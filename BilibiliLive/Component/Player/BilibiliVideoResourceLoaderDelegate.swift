@@ -40,6 +40,8 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     /// diag13: 历史进度。生成媒体播放列表时写入 EXT-X-START，让 AVPlayer 直接从该位置
     /// 请求首段，而不是先下 0 秒处的首段、ready 后再 seek。仅首次进入时设置。
     var startOffset: Double?
+    /// 当前实际播放的视频流（默认模式下为允许的最高画质）。
+    var primaryMedia: VideoPlayURLInfo.DashInfo.DashMediaInfo? { videoInfo.first?.info }
     /// 当前首选视频流的简短描述（debug 浮层显示）。
     var primaryVideoDescription: String {
         guard let media = videoInfo.first?.info else { return "" }

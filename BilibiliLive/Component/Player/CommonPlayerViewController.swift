@@ -111,7 +111,28 @@ class CommonPlayerViewController: UIViewController {
             let newMenus = activePlugin.addMenuItems(current: &menus)
             menus.append(contentsOf: newMenus)
         }
+        // 底部控制栏最左侧固定顺序：点赞、画质、设置、弹幕，其余保持原顺序。
+        menus = menus.enumerated().sorted { lhs, rhs in
+            let a = Self.menuRank(lhs.element), b = Self.menuRank(rhs.element)
+            return a == b ? lhs.offset < rhs.offset : a < b
+        }.map(\.element)
         playerVC.transportBarCustomMenuItems = menus
+    }
+
+    private static func menuRank(_ element: UIMenuElement) -> Int {
+        if let action = element as? UIAction {
+            if action.identifier.rawValue == "btr.interaction.like" { return 0 }
+            if action.title == "Show Danmu" { return 3 }
+        }
+        if let menu = element as? UIMenu {
+            switch menu.identifier.rawValue {
+            case "quality": return 1
+            case "setting": return 2
+            default: break
+            }
+            if menu.title == "弹幕设置" { return 4 }
+        }
+        return 10
     }
 
     func stopPlayback() {

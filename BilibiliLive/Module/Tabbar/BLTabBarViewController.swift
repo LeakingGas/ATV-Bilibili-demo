@@ -23,6 +23,26 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
     private let rightFocusGuide = UIFocusGuide()
     private var sidebarVisible = false
     private var menuPressConsumed = false
+    private var previewWork: DispatchWorkItem?
+    private var isPreviewing = false
+
+    private func preview(index: Int) {
+        guard sidebarVisible, index != selectedIndex, let controllers = viewControllers, controllers.indices.contains(index) else { return }
+        isPreviewing = true
+        selectedIndex = index
+        if let selected = selectedViewController { rightFocusGuide.preferredFocusEnvironments = [selected] }
+        view.bringSubviewToFront(dimView)
+        view.bringSubviewToFront(sidebar)
+        // 切换页面时系统可能把焦点交给新页面；侧边栏仍打开时把焦点留在侧边栏。
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isPreviewing = false
+            if self.sidebarVisible, let focused = UIScreen.main.focusedView, !focused.isDescendant(of: self.sidebar) {
+                self.setNeedsFocusUpdate()
+                self.updateFocusIfNeeded()
+            }
+        }
+    }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
@@ -66,6 +86,14 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
             }
             self.setSidebar(visible: false)
         }
+        // 焦点移到哪一项，背后就切换到哪个页面（稍作防抖，快速滑过不逐个加载）。
+        sidebar.onFocus = { [weak self] index in
+            guard let self, self.sidebarVisible else { return }
+            self.previewWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.preview(index: index) }
+            self.previewWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+        }
         sidebar.alpha = 0
         sidebar.transform = CGAffineTransform(translationX: -560, y: 0)
         sidebar.isHidden = true
@@ -82,6 +110,7 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
 
     private func setSidebar(visible: Bool) {
         guard sidebarVisible != visible else { return }
+        if !visible { previewWork?.cancel() }
         sidebarVisible = visible
         if visible {
             sidebar.update(account: AccountManager.shared.activeAccount?.profile)
@@ -108,7 +137,7 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
         super.didUpdateFocus(in: context, with: coordinator)
         // 焦点离开侧边栏（按右方向键回到内容）即收起。
-        if sidebarVisible, let next = context.nextFocusedView, !next.isDescendant(of: sidebar) {
+        if sidebarVisible, !isPreviewing, let next = context.nextFocusedView, !next.isDescendant(of: sidebar) {
             setSidebar(visible: false)
         }
     }
@@ -180,6 +209,7 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
 
 final class BLSidebarView: UIView {
     var onSelect: ((Int) -> Void)?
+    var onFocus: ((Int) -> Void)?
 
     private let blur = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let avatarView = UIImageView()
@@ -248,6 +278,7 @@ final class BLSidebarView: UIView {
         rows = items.enumerated().map { index, item in
             let row = BLSidebarRow(title: item.title, symbol: item.symbol)
             row.addAction(UIAction { [weak self] _ in self?.onSelect?(index) }, for: .primaryActionTriggered)
+            row.onFocus = { [weak self] in self?.onFocus?(index) }
             stack.addArrangedSubview(row)
             return row
         }
@@ -272,6 +303,8 @@ final class BLSidebarRow: UIControl {
     var isCurrent = false {
         didSet { updateAppearance() }
     }
+
+    var onFocus: (() -> Void)?
 
     init(title: String, symbol: String) {
         super.init(frame: .zero)
@@ -318,6 +351,7 @@ final class BLSidebarRow: UIControl {
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
         super.didUpdateFocus(in: context, with: coordinator)
         coordinator.addCoordinatedAnimations { self.updateAppearance() }
+        if context.nextFocusedView === self { onFocus?() }
     }
 
     private func updateAppearance() {
