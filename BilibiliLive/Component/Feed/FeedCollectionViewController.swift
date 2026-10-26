@@ -5,6 +5,7 @@
 //  Created by yicheng on 2021/4/5.
 //
 
+import GameController
 import SnapKit
 import TVUIKit
 import UIKit
@@ -163,6 +164,35 @@ class FeedCollectionViewController: UIViewController {
         }
         collectionView.dataSource = dataSource
         collectionView.delegate = self
+        ClickpadRotationTracker.shared.register(self)
+    }
+
+    // MARK: - 触控板外圈转圈：顺时针 = 下一个视频，逆时针 = 上一个（按阅读顺序跨行）
+
+    private var rotationTarget: IndexPath?
+
+    override var preferredFocusEnvironments: [UIFocusEnvironment] {
+        if let rotationTarget, let cell = collectionView.cellForItem(at: rotationTarget) { return [cell] }
+        return super.preferredFocusEnvironments
+    }
+
+    /// 焦点在本列表内时处理一步转圈，返回是否已处理。
+    func handleRotationStep(_ step: Int) -> Bool {
+        guard isViewLoaded, let focused = UIScreen.main.focusedView, focused.isDescendant(of: collectionView),
+              let current = lastFocusedIndexPath else { return false }
+        let count = collectionView.numberOfItems(inSection: current.section)
+        let next = current.item + step
+        guard next >= 0, next < count else { return true }
+        let target = IndexPath(item: next, section: current.section)
+        if collectionView.cellForItem(at: target) == nil {
+            collectionView.scrollToItem(at: target, at: .centeredVertically, animated: false)
+            collectionView.layoutIfNeeded()
+        }
+        rotationTarget = target
+        setNeedsFocusUpdate()
+        updateFocusIfNeeded()
+        rotationTarget = nil
+        return true
     }
 
     // MARK: - Private
@@ -176,9 +206,6 @@ class FeedCollectionViewController: UIViewController {
 
     private func makeGridLayoutSection() -> NSCollectionLayoutSection {
         var style = Settings.displayStyle
-        if parent?.parent is PersonalViewController {
-            style = .sideBar
-        }
         if let styleOverride {
             style = styleOverride
         }
@@ -279,6 +306,12 @@ extension FeedCollectionViewController: UICollectionViewDelegate {
         if let next = context.nextFocusedIndexPath { lastFocusedIndexPath = next }
     }
 
+    func collectionView(_ collectionView: UICollectionView, shouldUpdateFocusIn context: UICollectionViewFocusUpdateContext) -> Bool {
+        // 正在外圈转圈时，系统把这段滑动当成普通方向滑动产生的焦点移动要忽略，只接受转圈带来的移动。
+        if ClickpadRotationTracker.shared.isRotating, rotationTarget == nil { return false }
+        return true
+    }
+
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
         guard _displayData.count > 0 else { return }
         guard indexPath.row == _displayData.count - 1, !isLoading, !finished else {
@@ -301,5 +334,76 @@ extension FeedDisplayStyle {
         case .normal: return 4
         case .large, .sideBar: return 3
         }
+    }
+}
+
+/// Siri Remote 触控板外圈转圈识别（GameController 绝对坐标）。
+/// 手指从外圈开始、沿外圈转动时，每转约 34° 发出一步：顺时针 +1，逆时针 -1。
+/// 从中间开始的普通滑动不受影响。
+final class ClickpadRotationTracker {
+    static let shared = ClickpadRotationTracker()
+
+    private(set) var isRotating = false
+    private let feeds = NSHashTable<FeedCollectionViewController>.weakObjects()
+    private var lastAngle: Double?
+    private var accumulated = 0.0
+    private var touching = false
+    private var startedOnRing = false
+    private let ringRadius = 0.55
+    private let stepAngle = 0.6
+
+    private init() {
+        NotificationCenter.default.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] _ in
+            self?.attachControllers()
+        }
+        attachControllers()
+    }
+
+    func register(_ feed: FeedCollectionViewController) {
+        feeds.add(feed)
+    }
+
+    private func attachControllers() {
+        for controller in GCController.controllers() {
+            guard let pad = controller.microGamepad else { continue }
+            pad.reportsAbsoluteDpadValues = true
+            pad.dpad.valueChangedHandler = { [weak self] _, x, y in
+                DispatchQueue.main.async { self?.update(x: Double(x), y: Double(y)) }
+            }
+        }
+    }
+
+    private func update(x: Double, y: Double) {
+        let radius = hypot(x, y)
+        if radius < 0.001 {
+            // 手指离开
+            touching = false; startedOnRing = false; isRotating = false
+            lastAngle = nil; accumulated = 0
+            return
+        }
+        if !touching {
+            touching = true
+            startedOnRing = radius >= ringRadius
+        }
+        guard startedOnRing, radius >= ringRadius * 0.85 else {
+            // 划过中间：当作普通滑动
+            startedOnRing = false; isRotating = false; lastAngle = nil; accumulated = 0
+            return
+        }
+        let angle = atan2(y, x)
+        defer { lastAngle = angle }
+        guard let last = lastAngle else { return }
+        var delta = angle - last
+        if delta > .pi { delta -= 2 * .pi } else if delta < -.pi { delta += 2 * .pi }
+        accumulated += delta
+        if abs(accumulated) > 0.35 { isRotating = true }
+        guard isRotating else { return }
+        // y 轴向上为正：顺时针时角度减小。
+        while accumulated <= -stepAngle { accumulated += stepAngle; step(+1) }
+        while accumulated >= stepAngle { accumulated -= stepAngle; step(-1) }
+    }
+
+    private func step(_ value: Int) {
+        for feed in feeds.allObjects where feed.handleRotationStep(value) { return }
     }
 }

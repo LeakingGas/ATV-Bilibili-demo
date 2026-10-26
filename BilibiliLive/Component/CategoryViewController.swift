@@ -4,8 +4,13 @@
 //
 //  Created by yicheng on 2023/2/26.
 //
+//  左侧分类 + 右侧内容（排行 / 直播 / 收藏等共用）。
+//  焦点移到哪个分类，右侧立即显示它的内容（各分类后台预加载），按右键进入内容。
+//  分类栏与主菜单侧边栏同一风格：毛玻璃圆角面板、白底黑字焦点、淡白当前项。
+//
 
 import Foundation
+import SnapKit
 import UIKit
 
 class CategoryViewController: UIViewController, BLTabBarContentVCProtocol {
@@ -19,6 +24,8 @@ class CategoryViewController: UIViewController, BLTabBarContentVCProtocol {
     var categories = [CategoryDisplayModel]()
     let contentView = UIView()
     weak var currentViewController: UIViewController?
+    private var selectedIndex = 0
+    private let panel = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -32,14 +39,31 @@ class CategoryViewController: UIViewController, BLTabBarContentVCProtocol {
         if typeCollectionView != nil {
             return
         }
-        typeCollectionView = UICollectionView(frame: .zero, collectionViewLayout: BLSettingLineCollectionViewCell.makeLayout())
-        typeCollectionView.register(BLSettingLineCollectionViewCell.self, forCellWithReuseIdentifier: "cell")
-        view.addSubview(typeCollectionView)
-        typeCollectionView.snp.makeConstraints { make in
-            make.leading.bottom.equalToSuperview()
-            make.top.equalTo(view.safeAreaLayoutGuide.snp.top)
-            make.width.equalTo(500)
+        let size = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .absolute(72))
+        let group = NSCollectionLayoutGroup.vertical(layoutSize: size, subitems: [NSCollectionLayoutItem(layoutSize: size)])
+        let section = NSCollectionLayoutSection(group: group)
+        section.interGroupSpacing = 8
+        section.contentInsets = NSDirectionalEdgeInsets(top: 24, leading: 20, bottom: 24, trailing: 20)
+        typeCollectionView = UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewCompositionalLayout(section: section))
+        typeCollectionView.backgroundColor = .clear
+        typeCollectionView.clipsToBounds = false
+        typeCollectionView.remembersLastFocusedIndexPath = true
+        typeCollectionView.register(BLCategoryRowCell.self, forCellWithReuseIdentifier: "cell")
+
+        panel.layer.cornerRadius = 40
+        panel.layer.cornerCurve = .continuous
+        panel.clipsToBounds = true
+        panel.layer.borderWidth = 1
+        panel.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
+        view.addSubview(panel)
+        panel.snp.makeConstraints { make in
+            make.leading.equalToSuperview().offset(48)
+            make.top.equalTo(view.safeAreaLayoutGuide.snp.top).offset(8)
+            make.bottom.equalToSuperview().inset(48)
+            make.width.equalTo(400)
         }
+        panel.contentView.addSubview(typeCollectionView)
+        typeCollectionView.snp.makeConstraints { $0.edges.equalToSuperview() }
         typeCollectionView.dataSource = self
         typeCollectionView.delegate = self
 
@@ -47,10 +71,34 @@ class CategoryViewController: UIViewController, BLTabBarContentVCProtocol {
         contentView.snp.makeConstraints { make in
             make.bottom.right.equalToSuperview()
             make.top.equalTo(view.safeAreaLayoutGuide.snp.top)
-            make.left.equalTo(typeCollectionView.snp.right)
+            make.left.equalTo(panel.snp.right).offset(24)
         }
-        typeCollectionView.selectItem(at: IndexPath(item: 0, section: 0), animated: false, scrollPosition: .top)
-        collectionView(typeCollectionView, didSelectItemAt: IndexPath(item: 0, section: 0))
+        show(index: 0)
+        preloadCategories()
+    }
+
+    /// 后台依次加载各分类页面和数据，焦点切过去时内容已就绪。
+    private func preloadCategories() {
+        for (offset, model) in categories.enumerated() where offset != selectedIndex {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4 + Double(offset) * 0.12) { [weak self, weak vc = model.contentVC] in
+                guard let self, let vc, !vc.isViewLoaded else { return }
+                vc.loadViewIfNeeded()
+                vc.view.frame = self.contentView.bounds.isEmpty ? self.view.bounds : self.contentView.bounds
+                vc.view.layoutIfNeeded()
+            }
+        }
+    }
+
+    private func show(index: Int) {
+        guard categories.indices.contains(index) else { return }
+        selectedIndex = index
+        let vc = categories[index].contentVC
+        if currentViewController !== vc { setViewController(vc: vc) }
+        for cell in typeCollectionView.visibleCells {
+            if let row = cell as? BLCategoryRowCell, let path = typeCollectionView.indexPath(for: cell) {
+                row.isCurrent = path.item == selectedIndex
+            }
+        }
     }
 
     func setViewController(vc: UIViewController) {
@@ -75,30 +123,72 @@ extension CategoryViewController: UICollectionViewDataSource {
     }
 
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "cell", for: indexPath) as! BLSettingLineCollectionViewCell
+        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "cell", for: indexPath) as! BLCategoryRowCell
         cell.titleLabel.text = categories[indexPath.item].title
+        cell.isCurrent = indexPath.item == selectedIndex
         return cell
     }
 }
 
 extension CategoryViewController: UICollectionViewDelegate {
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        setViewController(vc: categories[indexPath.item].contentVC)
+        show(index: indexPath.item)
     }
 
     func collectionView(_ collectionView: UICollectionView, didUpdateFocusIn context: UICollectionViewFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
-        if Settings.sideMenuAutoSelectChange == false {
-            return
+        guard let next = context.nextFocusedIndexPath, categories.indices.contains(next.item),
+              categories[next.item].autoSelect != false else { return }
+        show(index: next.item)
+    }
+
+    func indexPathForPreferredFocusedView(in collectionView: UICollectionView) -> IndexPath? {
+        IndexPath(item: selectedIndex, section: 0)
+    }
+}
+
+/// 与主菜单侧边栏一致的分类行：焦点白底黑字，当前项淡白底。
+final class BLCategoryRowCell: UICollectionViewCell {
+    let titleLabel = UILabel()
+    private let background = UIView()
+
+    var isCurrent = false {
+        didSet { updateAppearance() }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        background.layer.cornerRadius = 28
+        background.layer.cornerCurve = .continuous
+        contentView.addSubview(background)
+        background.snp.makeConstraints { $0.edges.equalToSuperview() }
+        titleLabel.font = .systemFont(ofSize: 30, weight: .medium)
+        titleLabel.adjustsFontSizeToFitWidth = true
+        titleLabel.minimumScaleFactor = 0.75
+        background.addSubview(titleLabel)
+        titleLabel.snp.makeConstraints { make in
+            make.leading.trailing.equalToSuperview().inset(28)
+            make.centerY.equalToSuperview()
         }
-        guard let nextFocusedIndexPath = context.nextFocusedIndexPath else {
-            return
-        }
-        let categoryModel = categories[nextFocusedIndexPath.item]
-        if categoryModel.autoSelect == false {
-            // 不自动选中
-            return
-        }
-        collectionView.selectItem(at: nextFocusedIndexPath, animated: true, scrollPosition: .centeredHorizontally)
-        setViewController(vc: categoryModel.contentVC)
+        updateAppearance()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+        super.didUpdateFocus(in: context, with: coordinator)
+        coordinator.addCoordinatedAnimations { self.updateAppearance() }
+    }
+
+    private func updateAppearance() {
+        background.backgroundColor = isFocused ? .white : isCurrent ? UIColor.white.withAlphaComponent(0.16) : .clear
+        titleLabel.textColor = isFocused ? .black : isCurrent ? .white : UIColor.white.withAlphaComponent(0.72)
+        transform = isFocused ? CGAffineTransform(scaleX: 1.04, y: 1.04) : .identity
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = isFocused ? 0.25 : 0
+        layer.shadowRadius = 14
+        layer.shadowOffset = CGSize(width: 0, height: 8)
     }
 }

@@ -135,7 +135,6 @@ class SettingsViewController: UIViewController {
                 {
                     Settings.displayStyle = $0
                 }
-                Toggle(title: "侧边栏菜单自动切换", setting: Settings.sideMenuAutoSelectChange, onChange: Settings.sideMenuAutoSelectChange.toggle())
 
                 Toggle(title: "不显示详情页直接进入视频",
                        setting: Settings.direatlyEnterVideo,
