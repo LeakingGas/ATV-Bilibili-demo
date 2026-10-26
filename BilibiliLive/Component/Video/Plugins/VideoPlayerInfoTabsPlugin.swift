@@ -515,8 +515,8 @@ final class VideoPlayerFeedInfoViewController: UIViewController {
         self.aid = aid
         self.detail = detail
         super.init(nibName: nil, bundle: nil)
-        // 只有一个面板，不需要标签：下滑直接就是内容。
-        title = nil
+        // AVKit 总会给面板显示一个标签胶囊（标题为空时显示成 application），无法去掉，直接写清楚内容。
+        title = "推荐和评论"
     }
 
     @available(*, unavailable)

@@ -18,8 +18,16 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
 
     /// 当前实际播放的流在 dash.video 中的索引。
     private var playingStreamIndex: Int? {
-        if let media = currentMediaProvider?(), let index = playData.videoPlayURLInfo.dash.video.firstIndex(of: media) {
-            return index
+        if let media = currentMediaProvider?() {
+            let streams = playData.videoPlayURLInfo.dash.video
+            if let index = streams.firstIndex(of: media) { return index }
+            // 回前台 / 地址过期后会重新请求播放地址，新流的 URL 签名不同，整体比较对不上；
+            // 按画质、编码、码率、分辨率认同一条流。
+            if let index = streams.firstIndex(where: {
+                $0.id == media.id && $0.codecs == media.codecs && $0.bandwidth == media.bandwidth
+                    && $0.width == media.width && $0.height == media.height
+            }) { return index }
+            if let index = streams.firstIndex(where: { $0.id == media.id && $0.codecs == media.codecs }) { return index }
         }
         return isQualityLocked ? currentStreamIndex : nil
     }
