@@ -33,6 +33,10 @@ enum Settings {
     @UserDefault("Settings.direatlyEnterVideo", defaultValue: false)
     static var direatlyEnterVideo: Bool
 
+    /// 从详情页播放后，退出播放直接回到进入详情页之前的页面。
+    @UserDefault("Settings.exitPlayerToList", defaultValue: true)
+    static var exitPlayerToList: Bool
+
     @UserDefaultCodable("Settings.mediaQuality", defaultValue: .quality_1080p)
     static var mediaQuality: MediaQualityEnum
 

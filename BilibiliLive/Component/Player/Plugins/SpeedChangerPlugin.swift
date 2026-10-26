@@ -32,6 +32,78 @@ class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
         self.playerVC = playerVC
 
         currentPlaySpeed = Settings.mediaPlayerSpeed
+        installBoostGesture(on: playerVC)
+    }
+
+    func playerWillCleanUp(playerVC: AVPlayerViewController) {
+        endBoost()
+        if let boostGesture { playerVC.view.removeGestureRecognizer(boostGesture) }
+        boostGesture = nil
+    }
+
+    // MARK: - 长按触控板 2 倍速（松手恢复）
+
+    private var boostGesture: UILongPressGestureRecognizer?
+    private var isBoosting = false
+    private var boostLabel: UILabel?
+
+    private func installBoostGesture(on playerVC: AVPlayerViewController) {
+        guard boostGesture == nil else { return }
+        let gesture = UILongPressGestureRecognizer(target: self, action: #selector(handleBoost(_:)))
+        // Resting a finger on the touch surface (no click); a click keeps AVKit's own behaviour.
+        gesture.allowedPressTypes = []
+        gesture.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
+        gesture.minimumPressDuration = 0.6
+        gesture.allowableMovement = 60
+        gesture.cancelsTouchesInView = false
+        gesture.delegate = self
+        playerVC.view.addGestureRecognizer(gesture)
+        boostGesture = gesture
+    }
+
+    @objc private func handleBoost(_ gesture: UILongPressGestureRecognizer) {
+        switch gesture.state {
+        case .began:
+            guard let player, player.rate > 0, player.timeControlStatus == .playing else { return }
+            isBoosting = true
+            player.currentItem?.audioTimePitchAlgorithm = .timeDomain
+            playerVC?.selectSpeed(AVPlaybackSpeed(rate: 2, localizedName: "2X"))
+            showBoostLabel()
+        case .ended, .cancelled, .failed:
+            endBoost()
+        default:
+            break
+        }
+    }
+
+    private func endBoost() {
+        guard isBoosting else { return }
+        isBoosting = false
+        playerVC?.selectSpeed(AVPlaybackSpeed(rate: currentPlaySpeed.value, localizedName: currentPlaySpeed.name))
+        UIView.animate(withDuration: 0.2) { self.boostLabel?.alpha = 0 }
+    }
+
+    private func showBoostLabel() {
+        if boostLabel == nil, let containerView {
+            let label = UILabel()
+            label.text = "▶▶ 2X 倍速播放中"
+            label.font = .systemFont(ofSize: 30, weight: .semibold)
+            label.textColor = .white
+            label.textAlignment = .center
+            label.backgroundColor = UIColor.black.withAlphaComponent(0.45)
+            label.layer.cornerRadius = 14
+            label.layer.masksToBounds = true
+            containerView.addSubview(label)
+            label.snp.makeConstraints { make in
+                make.centerX.equalToSuperview()
+                make.top.equalToSuperview().offset(80)
+                make.width.equalTo(340)
+                make.height.equalTo(64)
+            }
+            boostLabel = label
+        }
+        boostLabel?.superview?.bringSubviewToFront(boostLabel!)
+        UIView.animate(withDuration: 0.2) { self.boostLabel?.alpha = 1 }
     }
 
     func playerDidChange(player: AVPlayer) {
@@ -109,4 +181,12 @@ extension PlaySpeed: Equatable {
         PlaySpeed(name: "1.75X", value: 1.75),
         PlaySpeed(name: "2X", value: 2),
     ]
+}
+
+extension SpeedChangerPlugin: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool
+    {
+        true
+    }
 }

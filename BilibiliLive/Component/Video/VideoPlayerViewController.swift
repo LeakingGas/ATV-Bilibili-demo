@@ -175,6 +175,8 @@ class VideoPlayerViewController: CommonPlayerViewController {
     var onPlaybackStarted: (() -> Void)?
     var onPlayInfoChanged: ((PlayInfo) -> Void)?
     var onDismissWithPlayInfo: ((PlayInfo) -> Void)?
+    /// 播放器被关闭（返回键退出）后调用，用于连同详情页一起返回。
+    var onDidExit: (() -> Void)?
 
     private let playMode: VideoPlayerMode
     private let playContextCache: PlayContextCache?
@@ -289,6 +291,10 @@ class VideoPlayerViewController: CommonPlayerViewController {
             }
         }
         stopAsyncWork()
+        if let onDidExit {
+            self.onDidExit = nil
+            DispatchQueue.main.async { onDidExit() }
+        }
     }
 
     override func stopPlayback() {

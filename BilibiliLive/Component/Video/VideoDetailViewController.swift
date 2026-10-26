@@ -77,6 +77,7 @@ class VideoDetailViewController: UIViewController {
     private var aid = 0
     private var cid = 0
     private var lastPlayCid: Int?
+    private var restartButton: BLCustomButton?
     private var lastPlayTitle: String?
     private var playTimeInSecond: Int?
     private var subType: Int?
@@ -131,6 +132,7 @@ class VideoDetailViewController: UIViewController {
         ugcCollectionView.register(RelatedVideoCell.self, forCellWithReuseIdentifier: String(describing: RelatedVideoCell.self))
         recommandCollectionView.collectionViewLayout = makeRelatedVideoCollectionViewLayout()
         ugcCollectionView.collectionViewLayout = makeRelatedVideoCollectionViewLayout()
+        setupRestartButton()
         noteView.onPrimaryAction = {
             [weak self] note in
             let detail = ContentDetailViewController.createDesp(content: note.label.text ?? "")
@@ -246,12 +248,41 @@ class VideoDetailViewController: UIViewController {
         if !direatlyEnterVideo {
             vc.present(self, animated: true)
         } else {
+            // 直接进入视频：详情页透明叠在原页面上，退出播放时一起关闭，返回进入视频之前的页面。
+            modalPresentationStyle = .overFullScreen
             vc.present(self, animated: false) { [weak self] in
                 guard let self else { return }
+                self.view.alpha = 0
                 let player = VideoPlayerViewController(playInfo: PlayInfo(aid: self.aid, cid: self.cid, epid: self.epid, seasonId: isBangumi ? self.seasonId : nil, lastPlayCid: self.lastPlayCid, playTimeInSecond: self.playTimeInSecond))
+                player.onDidExit = { [weak self] in self?.dismiss(animated: false) }
                 self.present(player, animated: true)
             }
         }
+    }
+
+    /// 从详情页开始播放。设置「退出播放回到列表」开启时，退出播放后连同详情页一起关闭。
+    private func presentPlayer(_ player: VideoPlayerViewController) {
+        if Settings.exitPlayerToList {
+            player.onDidExit = { [weak self] in self?.dismiss(animated: true) }
+        }
+        present(player, animated: true, completion: nil)
+    }
+
+    private func setupRestartButton() {
+        guard let stack = playButton.superview as? UIStackView,
+              let index = stack.arrangedSubviews.firstIndex(of: playButton) else { return }
+        let button = BLCustomButton()
+        button.image = UIImage(systemName: "arrow.counterclockwise")
+        button.highLightImage = UIImage(systemName: "arrow.counterclockwise.circle.fill")
+        button.title = "从头播放"
+        button.titleColor = playButton.titleColor
+        button.tintColor = playButton.tintColor
+        button.backgroundColor = .clear
+        button.snp.makeConstraints { $0.width.equalTo(160) }
+        button.isHidden = true
+        button.onPrimaryAction = { [weak self] _ in self?.startPlayback(fromBeginning: true) }
+        stack.insertArrangedSubview(button, at: index + 1)
+        restartButton = button
     }
 
     private func exit(with error: Error) {
@@ -418,6 +449,7 @@ class VideoDetailViewController: UIViewController {
                 playButton.title = "播放"
             }
         }
+        restartButton?.isHidden = playButton.title != "继续播放"
 
         avatarImageView.kf.setImage(with: data.avatar(size: 240), options: [.processor(DownsamplingImageProcessor(size: CGSize(width: 80, height: 80))), .processor(RoundCornerImageProcessor(radius: .widthFraction(0.5))), .cacheSerializer(FormatIndicatedCacheSerializer.png)])
 
@@ -488,7 +520,12 @@ class VideoDetailViewController: UIViewController {
     }
 
     @IBAction func actionPlay(_ sender: Any) {
-        let player = VideoPlayerViewController(playInfo: PlayInfo(aid: aid, cid: cid, epid: epid, seasonId: seasonId, subType: subType, lastPlayCid: lastPlayCid, playTimeInSecond: playTimeInSecond, title: data?.title))
+        startPlayback(fromBeginning: false)
+    }
+
+    private func startPlayback(fromBeginning: Bool) {
+        let player = VideoPlayerViewController(playInfo: PlayInfo(aid: aid, cid: cid, epid: epid, seasonId: seasonId, subType: subType, lastPlayCid: lastPlayCid, playTimeInSecond: playTimeInSecond, title: data?.title),
+                                               startTimeOverride: fromBeginning ? 0 : nil)
         player.data = data
         if pages.count > 0, let index = pages.firstIndex(where: { $0.cid == cid }) {
             let seq = pages.map({ PlayInfo(aid: aid, cid: $0.cid, epid: $0.epid, seasonId: seasonId, subType: subType, title: $0.part) })
@@ -502,7 +539,7 @@ class VideoDetailViewController: UIViewController {
                 player.sequenceProvider = VideoSequenceProvider(seq: seq, currentIndex: index)
             }
         }
-        present(player, animated: true, completion: nil)
+        presentPlayer(player)
     }
 
     @IBAction func actionLike(_ sender: Any) {
@@ -600,7 +637,7 @@ extension VideoDetailViewController: UICollectionViewDelegate {
             if seq.count > 0 {
                 player.sequenceProvider = VideoSequenceProvider(seq: seq, currentIndex: indexPath.item)
             }
-            present(player, animated: true, completion: nil)
+            presentPlayer(player)
         case replysCollectionView:
             guard let reply = replys?.replies?[indexPath.item] else { return }
             let detail = ReplyDetailViewController(reply: reply)

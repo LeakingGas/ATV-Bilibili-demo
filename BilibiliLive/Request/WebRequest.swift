@@ -570,6 +570,16 @@ extension WebRequest {
         }
     }
 
+    /// 视频评论（分页，按热度）。
+    static func requestReplys(aid: Int, page: Int) async throws -> Replys {
+        try await request(url: "https://api.bilibili.com/x/v2/reply", parameters: ["type": 1, "oid": aid, "sort": 1, "nohot": 1, "pn": page, "ps": 20])
+    }
+
+    /// 某条评论下的全部回复（楼中楼）。
+    static func requestReplyReplies(aid: Int, root: Int, page: Int = 1) async throws -> Replys {
+        try await request(url: "https://api.bilibili.com/x/v2/reply/reply", parameters: ["type": 1, "oid": aid, "root": root, "pn": page, "ps": 20])
+    }
+
     static func requestSubtitle(url: URL) async throws -> [SubtitleContent] {
         struct SubtitlContenteResp: Codable {
             let body: [SubtitleContent]
@@ -972,6 +982,10 @@ struct Replys: Codable, Hashable {
         let member: Member
         let content: Content
         let replies: [Reply]?
+        /// 评论 id（展开楼中楼时使用）与回复总数、点赞数。旧数据缺失时为 nil。
+        let rpid: Int?
+        let rcount: Int?
+        let like: Int?
     }
 
     let replies: [Reply]?

@@ -140,6 +140,9 @@ class SettingsViewController: UIViewController {
                 Toggle(title: "不显示详情页直接进入视频",
                        setting: Settings.direatlyEnterVideo,
                        onChange: Settings.direatlyEnterVideo.toggle())
+                Toggle(title: "退出播放直接回到列表（跳过详情页）",
+                       setting: Settings.exitPlayerToList,
+                       onChange: Settings.exitPlayerToList.toggle())
 
                 Actions(title: "视频详情相关推荐加载模式", message: "4k以上需要大会员",
                         current: Settings.showRelatedVideoInCurrentVC ? "页面刷新" : "新页面中打开",
