@@ -13,6 +13,12 @@ protocol BLTabBarContentVCProtocol {
     func reloadData()
 }
 
+/// 页面可以先处理返回键（例如把焦点从内容移回顶部标题栏），返回 true 表示已处理，
+/// 侧边栏这次不弹出。
+protocol BLMenuPressHandling: AnyObject {
+    func handleMenuPress() -> Bool
+}
+
 /// 主界面。系统顶部 tab 栏隐藏，改为左侧毛玻璃悬浮侧边栏：
 /// 平时内容全屏；按返回从左侧弹出侧边栏；侧边栏打开时再按返回回到 Apple TV 主屏幕；
 /// 按右方向键（或选中某一项）收起侧边栏，回到刚才的内容。
@@ -83,13 +89,14 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
     }
 
     @objc private func handleMenuTap() {
+        if let handler = selectedViewController as? BLMenuPressHandling, handler.handleMenuPress() { return }
         setSidebar(visible: true)
     }
 
     /// 窗口收到无人处理的返回键时调用（例如刚启动、还没有焦点）。返回是否已弹出侧边栏。
     func showSidebarFromWindowMenuPress() -> Bool {
         guard canShowSidebarOnMenu else { return false }
-        setSidebar(visible: true)
+        handleMenuTap()
         return true
     }
 
@@ -211,12 +218,18 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
         if sidebarVisible { return [sidebar] }
         // 默认实现会优先把焦点交给（已隐藏的）系统 tab 栏，导致启动后焦点不在视频上、
         // 左右键无效、返回键直接退出。始终把焦点交给当前页面的内容。
-        if let selected = selectedViewController { return [selected] }
+        // 内容还没加载出可聚焦的元素时（刚启动），先让左上角胶囊临时接住焦点：
+        // 没有任何焦点时系统会直接把返回键当成退出 App，这样启动后立刻按返回也能弹出侧边栏。
+        if let selected = selectedViewController { return currentPill.allowsFocus ? [selected, currentPill] : [selected] }
         return super.preferredFocusEnvironments
     }
 
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
         super.didUpdateFocus(in: context, with: coordinator)
+        // 内容里第一次拿到焦点后，胶囊不再可聚焦（只在启动的空档期临时接住焦点）。
+        if let next = context.nextFocusedView, next !== currentPill, !next.isDescendant(of: sidebar), currentPill.allowsFocus {
+            currentPill.allowsFocus = false
+        }
         // 焦点离开侧边栏（按右方向键回到内容）即收起。
         if sidebarVisible, !isPreviewing, let next = context.nextFocusedView, !next.isDescendant(of: sidebar) {
             setSidebar(visible: false)
@@ -469,6 +482,9 @@ extension BLTabBarViewController: UIGestureRecognizerDelegate {
 
 /// 左上角小胶囊：‹ 头像 当前页面。提示「按返回打开菜单」，不可聚焦。
 final class BLCurrentPagePill: UIView {
+    /// 仅在启动、内容还没有可聚焦元素时为 true。
+    var allowsFocus = true
+    override var canBecomeFocused: Bool { allowsFocus }
     private let blur = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let chevron = UIImageView(image: UIImage(systemName: "chevron.left"))
     private let avatarView = UIImageView()
@@ -477,7 +493,7 @@ final class BLCurrentPagePill: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        isUserInteractionEnabled = false
+        blur.isUserInteractionEnabled = false
         blur.layer.cornerRadius = 32
         blur.layer.cornerCurve = .continuous
         blur.clipsToBounds = true

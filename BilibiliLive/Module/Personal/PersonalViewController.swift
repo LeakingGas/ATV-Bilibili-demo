@@ -448,6 +448,22 @@ class EmptyViewController: UIViewController {
     }
 }
 
+extension PersonalViewController: BLMenuPressHandling {
+    /// 焦点在下方内容里（某个视频、收藏夹……）时，返回键先把焦点移回顶部当前选项；
+    /// 焦点已经在顶部标题栏时返回 false，由主界面弹出侧边栏。
+    func handleMenuPress() -> Bool {
+        guard let focused = UIScreen.main.focusedView, focused.isDescendant(of: contentView) else { return false }
+        let path = IndexPath(item: selectedIndex, section: 0)
+        leftCollectionView.scrollToItem(at: path, at: .centeredHorizontally, animated: true)
+        leftCollectionView.layoutIfNeeded()
+        forcedPill = path
+        setNeedsFocusUpdate()
+        updateFocusIfNeeded()
+        forcedPill = nil
+        return true
+    }
+}
+
 extension PersonalViewController: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
         true

@@ -115,6 +115,29 @@ class CategoryViewController: UIViewController, BLTabBarContentVCProtocol {
     func reloadData() {
         (currentViewController as? BLTabBarContentVCProtocol)?.reloadData()
     }
+
+    // MARK: - 返回键：焦点在右侧内容时先回到左侧当前分类
+
+    private var forcedCategory: IndexPath?
+
+    override var preferredFocusEnvironments: [UIFocusEnvironment] {
+        if let forcedCategory, let cell = typeCollectionView?.cellForItem(at: forcedCategory) { return [cell] }
+        return super.preferredFocusEnvironments
+    }
+}
+
+extension CategoryViewController: BLMenuPressHandling {
+    func handleMenuPress() -> Bool {
+        guard typeCollectionView != nil, let focused = UIScreen.main.focusedView, focused.isDescendant(of: contentView) else { return false }
+        let path = IndexPath(item: selectedIndex, section: 0)
+        typeCollectionView.scrollToItem(at: path, at: .centeredVertically, animated: true)
+        typeCollectionView.layoutIfNeeded()
+        forcedCategory = path
+        setNeedsFocusUpdate()
+        updateFocusIfNeeded()
+        forcedCategory = nil
+        return true
+    }
 }
 
 extension CategoryViewController: UICollectionViewDataSource {

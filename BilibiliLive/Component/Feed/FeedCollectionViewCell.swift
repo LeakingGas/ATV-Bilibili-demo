@@ -131,12 +131,13 @@ class FeedCollectionViewCell: BLMotionCollectionViewCell {
             let text = item.text.trimmingCharacters(in: .whitespaces)
             guard !text.isEmpty else { continue }
             if isDuration(text) { durations.append(text); continue }
+            // 只用图标表示含义，数字后不再加「观看 / 弹幕」。
+            let bare = text.replacingOccurrences(of: "观看", with: "").replacingOccurrences(of: "播放", with: "")
+                .replacingOccurrences(of: "弹幕", with: "").trimmingCharacters(in: .whitespaces)
             if text.contains("弹幕") {
-                stats.append(("list.bullet.rectangle", text))
+                stats.append(("list.bullet.rectangle", bare))
             } else if text.contains("观看") || text.contains("播放") {
-                stats.append(("play.rectangle", text))
-            } else if let icon = item.icon, isBareNumber(text) {
-                stats.append((icon, text + (icon.hasPrefix("play") ? "观看" : icon.hasPrefix("list.bullet") ? "弹幕" : "")))
+                stats.append(("play.rectangle", bare))
             } else {
                 stats.append((item.icon, text))
             }
