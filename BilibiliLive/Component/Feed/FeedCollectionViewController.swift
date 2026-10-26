@@ -101,10 +101,15 @@ class FeedCollectionViewController: UIViewController {
     var headerText = ""
     var customHeaderConfig: FeedHeaderConfig?
 
+    /// 离开列表前最后聚焦的位置。回到列表（例如从侧边栏切回来）时焦点回到这里，
+    /// 而不是第 0 个视频（那样会把列表滚回顶部）。整体替换数据时重置。
+    private var lastFocusedIndexPath: IndexPath?
+
     var displayDatas: [any DisplayData] {
         set {
             _displayData = newValue.map { AnyDispplayData(data: $0) }.uniqued()
             finished = false
+            lastFocusedIndexPath = nil
         }
         get {
             _displayData.map { $0.data }
@@ -261,8 +266,17 @@ extension FeedCollectionViewController: UICollectionViewDelegate {
     }
 
     func indexPathForPreferredFocusedView(in collectionView: UICollectionView) -> IndexPath? {
-        let indexPath = IndexPath(item: 0, section: 0)
-        return indexPath
+        if let last = lastFocusedIndexPath,
+           last.section < collectionView.numberOfSections,
+           last.item < collectionView.numberOfItems(inSection: last.section)
+        {
+            return last
+        }
+        return IndexPath(item: 0, section: 0)
+    }
+
+    func collectionView(_ collectionView: UICollectionView, didUpdateFocusIn context: UICollectionViewFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+        if let next = context.nextFocusedIndexPath { lastFocusedIndexPath = next }
     }
 
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
