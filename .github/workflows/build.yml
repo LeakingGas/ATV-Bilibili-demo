@@ -45,19 +45,24 @@ jobs:
           restore-keys: |
             btr-${{ steps.cachekey.outputs.xcode }}-${{ hashFiles('BilibiliLive.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-
       - name: Restore source timestamps for incremental build
+        continue-on-error: true
         run: |
           # checkout 会把所有文件时间改成当前时间，导致每次全部重编；按最后一次提交时间还原。
-          python3 - <<'PY'
-          import os, subprocess
-          out = subprocess.check_output(["git", "log", "--format=T%ct", "--name-only"], text=True)
-          seen, stamp = set(), None
-          for line in out.splitlines():
-              if line.startswith("T"):
-                  stamp = int(line[1:]); continue
-              if line and line not in seen and os.path.isfile(line):
-                  seen.add(line); os.utime(line, (stamp, stamp))
-          print(f"restored mtimes for {len(seen)} files")
+          cat > /tmp/mtime.py <<'PY'
+          import os, subprocess, sys, traceback
+          try:
+              out = subprocess.check_output(["git", "-c", "core.quotePath=false", "log", "--format=T%ct", "--name-only"], text=True, errors="replace")
+              seen, stamp = set(), None
+              for line in out.splitlines():
+                  if line.startswith("T") and line[1:].isdigit():
+                      stamp = int(line[1:]); continue
+                  if stamp and line and line not in seen and os.path.isfile(line):
+                      seen.add(line); os.utime(line, (stamp, stamp))
+              print(f"restored mtimes for {len(seen)} files")
+          except Exception:
+              print("::warning title=mtime::" + traceback.format_exc().replace("\n", " | ")[:900])
           PY
+          python3 /tmp/mtime.py
       - name: Native policy and fault-injection tests
         run: |
           set -o pipefail
