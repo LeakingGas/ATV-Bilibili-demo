@@ -175,7 +175,9 @@ class FeedCollectionViewController: UIViewController {
     private func requestInitialFocusIfNeeded() {
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.view.window, !self.view.isHidden else { return }
-            if let focused = UIScreen.main.focusedView, focused.window != nil { return }
+            // 已经有焦点、且在可见的内容里：不打扰。焦点不存在或落在隐藏的系统 tab 栏上时纠正。
+            if let focused = UIScreen.main.focusedView, focused.window != nil,
+               !(focused.isDescendant(of: (window.rootViewController as? UITabBarController)?.tabBar ?? UIView())) { return }
             let root = window.rootViewController
             root?.setNeedsFocusUpdate()
             root?.updateFocusIfNeeded()

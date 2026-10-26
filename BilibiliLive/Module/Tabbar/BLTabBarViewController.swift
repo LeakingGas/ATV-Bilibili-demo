@@ -86,6 +86,13 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
         setSidebar(visible: true)
     }
 
+    /// 窗口收到无人处理的返回键时调用（例如刚启动、还没有焦点）。返回是否已弹出侧边栏。
+    func showSidebarFromWindowMenuPress() -> Bool {
+        guard canShowSidebarOnMenu else { return false }
+        setSidebar(visible: true)
+        return true
+    }
+
     private var canShowSidebarOnMenu: Bool {
         guard !sidebarVisible, presentedViewController == nil, view.window != nil else { return false }
         if let nav = selectedViewController as? UINavigationController, nav.viewControllers.count > 1 { return false }
@@ -202,6 +209,9 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
         if sidebarVisible { return [sidebar] }
+        // 默认实现会优先把焦点交给（已隐藏的）系统 tab 栏，导致启动后焦点不在视频上、
+        // 左右键无效、返回键直接退出。始终把焦点交给当前页面的内容。
+        if let selected = selectedViewController { return [selected] }
         return super.preferredFocusEnvironments
     }
 

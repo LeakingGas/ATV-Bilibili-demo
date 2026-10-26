@@ -117,21 +117,50 @@ class FeedCollectionViewCell: BLMotionCollectionViewCell {
     /// 播放量 / 弹幕 / 时长等，用 SF Symbols 小图标 + 文字排成一行。
     private func makeStats(_ overlay: DisplayOverlay?, font: UIFont) -> NSAttributedString? {
         guard let overlay else { return nil }
-        let items = overlay.leftItems + overlay.rightItems
-        guard !items.isEmpty else { return nil }
+        // 不同接口给的文字不统一：有的是纯数字（需要补「观看 / 弹幕」），有的已带文字，
+        // 有的其实是时长（如 2:39）。按内容判断图标和后缀，时长放在最后、不带图标。
+        func isDuration(_ text: String) -> Bool {
+            text.range(of: #"^\d{1,3}:\d{2}(:\d{2})?$"#, options: .regularExpression) != nil
+        }
+        func isBareNumber(_ text: String) -> Bool {
+            text.range(of: #"^[\d.,]+[万亿]?$"#, options: .regularExpression) != nil
+        }
+        var stats = [(icon: String?, text: String)]()
+        var durations = [String]()
+        for item in overlay.leftItems + overlay.rightItems {
+            let text = item.text.trimmingCharacters(in: .whitespaces)
+            guard !text.isEmpty else { continue }
+            if isDuration(text) { durations.append(text); continue }
+            if text.contains("弹幕") {
+                stats.append(("list.bullet.rectangle", text))
+            } else if text.contains("观看") || text.contains("播放") {
+                stats.append(("play.rectangle", text))
+            } else if let icon = item.icon, isBareNumber(text) {
+                stats.append((icon, text + (icon.hasPrefix("play") ? "观看" : icon.hasPrefix("list.bullet") ? "弹幕" : "")))
+            } else {
+                stats.append((item.icon, text))
+            }
+        }
+        guard !stats.isEmpty || !durations.isEmpty else { return nil }
         let result = NSMutableAttributedString()
         let color = UIColor.white.withAlphaComponent(0.55)
-        for (offset, item) in items.enumerated() {
-            if offset > 0 { result.append(NSAttributedString(string: "   ", attributes: [.font: font])) }
-            var suffix = ""
-            if let icon = item.icon, let image = UIImage(systemName: icon, withConfiguration: UIImage.SymbolConfiguration(font: font))?.withTintColor(color, renderingMode: .alwaysOriginal) {
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+        // 小图标：约等于大写字母高度，垂直居中对齐文字。
+        let iconHeight = font.capHeight * 1.15
+        for (offset, stat) in stats.enumerated() {
+            if offset > 0 { result.append(NSAttributedString(string: "  ", attributes: attributes)) }
+            if let icon = stat.icon, let image = UIImage(systemName: icon)?.withTintColor(color, renderingMode: .alwaysOriginal) {
                 let attachment = NSTextAttachment(image: image)
+                let ratio = image.size.width / max(1, image.size.height)
+                attachment.bounds = CGRect(x: 0, y: (font.capHeight - iconHeight) / 2, width: iconHeight * ratio, height: iconHeight)
                 result.append(NSAttributedString(attachment: attachment))
-                result.append(NSAttributedString(string: " ", attributes: [.font: font]))
-                if icon.hasPrefix("play") { suffix = "观看" }
-                if icon.hasPrefix("list.bullet") { suffix = "弹幕" }
+                result.append(NSAttributedString(string: " ", attributes: attributes))
             }
-            result.append(NSAttributedString(string: item.text + suffix, attributes: [.font: font, .foregroundColor: color]))
+            result.append(NSAttributedString(string: stat.text, attributes: attributes))
+        }
+        for duration in durations {
+            if result.length > 0 { result.append(NSAttributedString(string: "  ", attributes: attributes)) }
+            result.append(NSAttributedString(string: duration, attributes: attributes))
         }
         return result
     }
