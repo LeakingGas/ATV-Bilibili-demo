@@ -34,7 +34,8 @@ enum Settings {
     @UserDefault("Settings.resumePrompt", defaultValue: true)
     static var resumePrompt: Bool
 
-    @UserDefaultCodable("Settings.mediaQuality", defaultValue: .quality_1080p)
+    // v2：默认 4K（新键名，让已有安装也换成新默认值）。
+    @UserDefaultCodable("Settings.mediaQuality.v2", defaultValue: .quality_2160p)
     static var mediaQuality: MediaQualityEnum
 
     @UserDefaultCodable("Settings.mediaPlayerSpeed", defaultValue: PlaySpeed.default)
@@ -55,7 +56,8 @@ enum Settings {
     @UserDefault("Settings.losslessAudio", defaultValue: false)
     static var losslessAudio: Bool
 
-    @UserDefault("Settings.preferAvc", defaultValue: false)
+    // v2：默认 AVC 优先。同一画质下 B 站的 AVC 码率常常是 HEVC 的数倍，画质明显更好。
+    @UserDefault("Settings.preferAvc.v2", defaultValue: true)
     static var preferAvc: Bool
 
     /// BTR CDN node expansion region (cdn-resolver.js). Default overseas: this port targets overseas Apple TVs.

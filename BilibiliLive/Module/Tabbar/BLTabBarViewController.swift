@@ -36,7 +36,7 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
         guard sidebarVisible, index != selectedIndex, let controllers = viewControllers, controllers.indices.contains(index) else { return }
         isPreviewing = true
         selectedIndex = index
-        if let selected = selectedViewController { rightFocusGuide.preferredFocusEnvironments = [selected] }
+        updateRightFocusGuideTarget()
         view.bringSubviewToFront(dimView)
         view.bringSubviewToFront(sidebar)
         // 切换页面时系统可能把焦点交给新页面；侧边栏仍打开时把焦点留在侧边栏。
@@ -170,6 +170,11 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
             guard let self, self.sidebarVisible else { return }
             self.preview(index: index)
         }
+        // 按右键：焦点没能自己移到内容上（例如搜索页）时，和按确定一样收起侧边栏进入内容。
+        sidebar.onRightPress = { [weak self] in
+            guard let self, self.sidebarVisible else { return }
+            self.setSidebar(visible: false)
+        }
         sidebar.alpha = 0
         sidebar.transform = CGAffineTransform(translationX: -560, y: 0)
         sidebar.isHidden = true
@@ -184,13 +189,26 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
         rightFocusGuide.isEnabled = false
     }
 
+    /// 右方向键的落点。搜索页的焦点在系统键盘上，直接指向搜索容器时系统找不到落点，
+    /// 所以把搜索框也放进候选。
+    private func updateRightFocusGuideTarget() {
+        guard let selected = selectedViewController else { return }
+        var targets: [UIFocusEnvironment] = []
+        if let search = selected as? UISearchContainerViewController {
+            targets.append(search.searchController.searchBar)
+            targets.append(search.searchController)
+        }
+        targets.append(selected)
+        rightFocusGuide.preferredFocusEnvironments = targets
+    }
+
     private func setSidebar(visible: Bool) {
         guard sidebarVisible != visible else { return }
         sidebarVisible = visible
         if visible {
             sidebar.update(account: AccountManager.shared.activeAccount?.profile)
             sidebar.isHidden = false
-            if let selected = selectedViewController { rightFocusGuide.preferredFocusEnvironments = [selected] }
+            updateRightFocusGuideTarget()
         }
         rightFocusGuide.isEnabled = visible
         UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.88, initialSpringVelocity: 0.4, options: [.beginFromCurrentState]) {
@@ -301,6 +319,7 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
 final class BLSidebarView: UIView {
     var onSelect: ((Int) -> Void)?
     var onFocus: ((Int) -> Void)?
+    var onRightPress: (() -> Void)?
 
     private let blur = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let avatarView = UIImageView()
@@ -370,6 +389,7 @@ final class BLSidebarView: UIView {
             let row = BLSidebarRow(title: item.title, symbol: item.symbol)
             row.addAction(UIAction { [weak self] _ in self?.onSelect?(index) }, for: .primaryActionTriggered)
             row.onFocus = { [weak self] in self?.onFocus?(index) }
+            row.onRightPress = { [weak self] in self?.onRightPress?() }
             stack.addArrangedSubview(row)
             return row
         }
@@ -396,6 +416,7 @@ final class BLSidebarRow: UIControl {
     }
 
     var onFocus: (() -> Void)?
+    var onRightPress: (() -> Void)?
 
     init(title: String, symbol: String) {
         super.init(frame: .zero)
@@ -435,6 +456,13 @@ final class BLSidebarRow: UIControl {
         if presses.contains(where: { $0.type == .select }) {
             sendActions(for: .primaryActionTriggered)
             return
+        }
+        if presses.contains(where: { $0.type == .rightArrow }) {
+            // 焦点引擎先处理方向键；下一轮仍停在本行说明右边没接住，交给侧边栏收起。
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isFocused else { return }
+                self.onRightPress?()
+            }
         }
         super.pressesEnded(presses, with: event)
     }
