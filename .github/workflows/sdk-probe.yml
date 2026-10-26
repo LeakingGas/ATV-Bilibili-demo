@@ -8,7 +8,10 @@ jobs:
         with:
           xcode-version: latest-stable
       - run: |
+          set +e +o pipefail
           SDK=$(xcrun --sdk appletvos --show-sdk-path)
           H=$SDK/System/Library/Frameworks/UIKit.framework/Headers
-          ls $H | grep -i tab | tr '\n' ' ' | xargs -I{} echo "::warning title=files::{}"
-          grep -rnh -i "sidebar" $H/UITabBarController*.h $H/UITab*.h 2>/dev/null | grep -v "^\s*//" | grep -vi "UNAVAILABLE(tvos" | head -45 | while IFS= read -r l; do echo "::warning title=sb::${l:0:300}"; done
+          echo "::warning title=files::$(ls $H | grep -i tab | tr '\n' ' ')"
+          grep -h -i "sidebar" $H/UITab*.h > /tmp/sb.txt
+          grep -v "UNAVAILABLE(tvos" /tmp/sb.txt | grep -v "^ *///" | head -45 | while IFS= read -r l; do echo "::warning title=sb::${l:0:300}"; done
+          exit 0
