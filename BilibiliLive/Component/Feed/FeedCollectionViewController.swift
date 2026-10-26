@@ -5,12 +5,10 @@
 //  Created by yicheng on 2021/4/5.
 //
 
-import GameController
 import Kingfisher
 import SnapKit
 import TVUIKit
 import UIKit
-import UIKit.UIGestureRecognizerSubclass
 
 protocol DisplayData: Hashable, AvatarProviding {
     var title: String { get }
@@ -126,6 +124,7 @@ class FeedCollectionViewController: UIViewController {
             snapshot.appendSections(Section.allCases)
             snapshot.appendItems(_displayData, toSection: .main)
             dataSource.apply(snapshot)
+            if oldValue.isEmpty, !_displayData.isEmpty { requestInitialFocusIfNeeded() }
         }
     }
 
@@ -169,12 +168,18 @@ class FeedCollectionViewController: UIViewController {
         collectionView.dataSource = dataSource
         collectionView.delegate = self
         collectionView.backgroundView = backdrop
-        ClickpadRotationTracker.shared.register(self)
     }
 
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        ClickpadRotationTracker.shared.installTouchObserver(on: view.window)
+    /// 第一批数据到达时，如果屏幕上还没有任何获得焦点的元素（刚从主屏幕进入 App），
+    /// 主动请求一次焦点更新，让第一个视频被选中。
+    private func requestInitialFocusIfNeeded() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.view.window, !self.view.isHidden else { return }
+            if let focused = UIScreen.main.focusedView, focused.window != nil { return }
+            let root = window.rootViewController
+            root?.setNeedsFocusUpdate()
+            root?.updateFocusIfNeeded()
+        }
     }
 
     // MARK: - 毛玻璃背景：取列表首个视频封面做大幅模糊，随页面内容定色调，不随焦点变化。
@@ -184,34 +189,6 @@ class FeedCollectionViewController: UIViewController {
     private func updateBackdropIfNeeded(force: Bool) {
         guard force || !backdrop.hasImage, let first = _displayData.first?.data.pic else { return }
         backdrop.setImage(url: first)
-    }
-
-    // MARK: - 触控板外圈转圈：顺时针 = 下一个视频，逆时针 = 上一个（按阅读顺序跨行）
-
-    private var rotationTarget: IndexPath?
-
-    override var preferredFocusEnvironments: [UIFocusEnvironment] {
-        if let rotationTarget, let cell = collectionView.cellForItem(at: rotationTarget) { return [cell] }
-        return super.preferredFocusEnvironments
-    }
-
-    /// 焦点在本列表内时处理一步转圈，返回是否已处理。
-    func handleRotationStep(_ step: Int) -> Bool {
-        guard isViewLoaded, let focused = UIScreen.main.focusedView, focused.isDescendant(of: collectionView),
-              let current = lastFocusedIndexPath else { return false }
-        let count = collectionView.numberOfItems(inSection: current.section)
-        let next = current.item + step
-        guard next >= 0, next < count else { return true }
-        let target = IndexPath(item: next, section: current.section)
-        if collectionView.cellForItem(at: target) == nil {
-            collectionView.scrollToItem(at: target, at: .centeredVertically, animated: false)
-            collectionView.layoutIfNeeded()
-        }
-        rotationTarget = target
-        setNeedsFocusUpdate()
-        updateFocusIfNeeded()
-        rotationTarget = nil
-        return true
     }
 
     // MARK: - Private
@@ -244,7 +221,7 @@ class FeedCollectionViewController: UIViewController {
             repeatingSubitem: item,
             count: style.feedColCount
         )
-        let vSpacing: CGFloat = style == .large ? 24 : 16
+        let vSpacing: CGFloat = style == .large ? 34 : 28
         let baseSpacing: CGFloat = style == .sideBar ? 24 : 0
         group.edgeSpacing = NSCollectionLayoutEdgeSpacing(leading: .fixed(baseSpacing), top: .fixed(vSpacing), trailing: .fixed(0), bottom: .fixed(vSpacing))
         let section = NSCollectionLayoutSection(group: group)
@@ -296,7 +273,7 @@ class FeedCollectionViewController: UIViewController {
     private func makeCellRegistration() -> DisplayCellRegistration {
         DisplayCellRegistration { [weak self] cell, indexPath, displayData in
             cell.styleOverride = self?.styleOverride
-            cell.setup(data: displayData.data)
+            cell.setup(data: displayData.data, index: indexPath.item + 1)
             cell.onLongPress = {
                 self?.didLongPress?(displayData.data)
             }
@@ -325,12 +302,6 @@ extension FeedCollectionViewController: UICollectionViewDelegate {
         if let next = context.nextFocusedIndexPath { lastFocusedIndexPath = next }
     }
 
-    func collectionView(_ collectionView: UICollectionView, shouldUpdateFocusIn context: UICollectionViewFocusUpdateContext) -> Bool {
-        // 正在外圈转圈时，系统把这段滑动当成普通方向滑动产生的焦点移动要忽略，只接受转圈带来的移动。
-        if ClickpadRotationTracker.shared.suppressesFocusEngine, rotationTarget == nil { return false }
-        return true
-    }
-
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
         guard _displayData.count > 0 else { return }
         guard indexPath.row == _displayData.count - 1, !isLoading, !finished else {
@@ -353,146 +324,6 @@ extension FeedDisplayStyle {
         case .normal: return 4
         case .large, .sideBar: return 3
         }
-    }
-}
-
-/// Siri Remote 触控板外圈转圈识别。
-/// 手指位置来自 GameController 的绝对坐标；按下 / 抬起来自 UIKit 触摸事件（绝对坐标在抬起时
-/// 不一定回到 0，之前据此判断抬起，导致第二次转圈失效）。
-/// 手指从外圈开始、沿外圈转动时，每转约 55° 发出一步：顺时针 +1，逆时针 -1。
-final class ClickpadRotationTracker {
-    static let shared = ClickpadRotationTracker()
-
-    private(set) var isRotating = false
-    private var lastSampleAt = 0.0
-
-    /// 是否应屏蔽系统自身的焦点移动：只在手指确实正沿外圈转动、且坐标在持续更新时为真。
-    /// 带新鲜度检查——之前状态偶尔卡在「转圈中」，导致左右键失灵，要按好几下才恢复。
-    var suppressesFocusEngine: Bool {
-        guard touching, startedOnRing, ProcessInfo.processInfo.systemUptime - lastSampleAt < 0.3 else { return false }
-        return isRotating || abs(accumulated) > 0.15
-    }
-
-    private let feeds = NSHashTable<FeedCollectionViewController>.weakObjects()
-    private var lastAngle: Double?
-    private var accumulated = 0.0
-    private var touching = false
-    private var decided = false
-    private var startedOnRing = false
-    private weak var observedWindow: UIWindow?
-    private let ringRadius = 0.55
-    private let startThreshold = 0.45
-    private let stepAngle = 1.1
-
-    private init() {
-        NotificationCenter.default.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] _ in
-            self?.attachControllers()
-        }
-        attachControllers()
-    }
-
-    func register(_ feed: FeedCollectionViewController) {
-        feeds.add(feed)
-    }
-
-    func installTouchObserver(on window: UIWindow?) {
-        guard let window, observedWindow !== window else { return }
-        observedWindow = window
-        let observer = TouchPresenceGestureRecognizer()
-        observer.onBegan = { [weak self] in self?.touchBegan() }
-        observer.onEnded = { [weak self] in self?.touchEnded() }
-        window.addGestureRecognizer(observer)
-    }
-
-    private func attachControllers() {
-        for controller in GCController.controllers() {
-            guard let pad = controller.microGamepad else { continue }
-            pad.reportsAbsoluteDpadValues = true
-            pad.dpad.valueChangedHandler = { [weak self] _, x, y in
-                DispatchQueue.main.async { self?.update(x: Double(x), y: Double(y)) }
-            }
-        }
-    }
-
-    private func reset() {
-        decided = false; startedOnRing = false; isRotating = false
-        lastAngle = nil; accumulated = 0
-    }
-
-    private func touchBegan() {
-        touching = true
-        reset()
-    }
-
-    private func touchEnded() {
-        touching = false
-        reset()
-    }
-
-    private func update(x: Double, y: Double) {
-        lastSampleAt = ProcessInfo.processInfo.systemUptime
-        let radius = hypot(x, y)
-        if radius < 0.001 { reset(); return }
-        // 没有触摸观察者时（极少见）退化为：有坐标即视为按住。
-        if observedWindow == nil { touching = true }
-        guard touching else { return }
-        if !decided {
-            decided = true
-            startedOnRing = radius >= ringRadius
-        }
-        guard startedOnRing, radius >= ringRadius * 0.8 else {
-            // 划过中间：这次触摸按普通滑动处理
-            startedOnRing = false; isRotating = false; lastAngle = nil; accumulated = 0
-            return
-        }
-        let angle = atan2(y, x)
-        defer { lastAngle = angle }
-        guard let last = lastAngle else { return }
-        var delta = angle - last
-        if delta > .pi { delta -= 2 * .pi } else if delta < -.pi { delta += 2 * .pi }
-        accumulated += delta
-        if !isRotating, abs(accumulated) > startThreshold { isRotating = true }
-        guard isRotating else { return }
-        // y 轴向上为正：顺时针时角度减小。
-        while accumulated <= -stepAngle { accumulated += stepAngle; step(+1) }
-        while accumulated >= stepAngle { accumulated -= stepAngle; step(-1) }
-    }
-
-    private func step(_ value: Int) {
-        for feed in feeds.allObjects where feed.handleRotationStep(value) { return }
-    }
-}
-
-/// 只观察触控板触摸的开始 / 结束，从不识别、不拦截任何事件。
-final class TouchPresenceGestureRecognizer: UIGestureRecognizer, UIGestureRecognizerDelegate {
-    var onBegan: (() -> Void)?
-    var onEnded: (() -> Void)?
-
-    init() {
-        super.init(target: nil, action: nil)
-        cancelsTouchesInView = false
-        delaysTouchesBegan = false
-        delaysTouchesEnded = false
-        allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
-        delegate = self
-    }
-
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        onBegan?()
-    }
-
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
-        onEnded?()
-        state = .failed
-    }
-
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
-        onEnded?()
-        state = .failed
-    }
-
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        true
     }
 }
 

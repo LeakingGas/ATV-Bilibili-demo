@@ -35,7 +35,7 @@ extension TitleSupplementaryView {
             make.bottom.equalToSuperview()
         }
         // 分区标题：大号粗体、略带透明，Apple TV 风格。
-        label.font = UIFont.systemFont(ofSize: 40, weight: .bold)
+        label.font = UIFont.systemFont(ofSize: 34, weight: .bold)
         label.textColor = UIColor.white.withAlphaComponent(0.9)
     }
 }

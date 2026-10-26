@@ -6,7 +6,6 @@
 //
 
 import Kingfisher
-import MarqueeLabel
 import TVUIKit
 import UIKit
 
@@ -14,136 +13,136 @@ class FeedCollectionViewCell: BLMotionCollectionViewCell {
     var onLongPress: (() -> Void)?
     var styleOverride: FeedDisplayStyle? { didSet { if oldValue != styleOverride { updateStyle() } }}
 
-    private let titleLabel = MarqueeLabel()
-    private let upLabel = UILabel()
+    // 参考 Apple TV 应用：大圆角封面在上，下方左侧大号序号，右侧标题 / UP主·日期 / 数据。
     private let imageView = UIImageView()
-    private let infoView = UIView()
-    private let avatarView = UIImageView()
-    private let overlayView = BLOverlayView()
+    private let badgeLabel = PaddingLabel()
+    private let indexLabel = UILabel()
+    private let titleLabel = UILabel()
+    private let upLabel = UILabel()
+    private let statsLabel = UILabel()
+    private var currentData: (any DisplayData)?
 
     override func setup() {
         super.setup()
+        scaleFactor = 1.06
         let longpress = UILongPressGestureRecognizer(target: self, action: #selector(actionLongPress(sender:)))
         addGestureRecognizer(longpress)
 
         contentView.addSubview(imageView)
         imageView.snp.makeConstraints { make in
-            make.leading.equalToSuperview()
-            make.trailing.equalToSuperview()
-            make.top.equalToSuperview()
+            make.leading.trailing.top.equalToSuperview()
             make.height.equalTo(imageView.snp.width).multipliedBy(9.0 / 16)
         }
-        imageView.layer.cornerRadius = 20
+        imageView.layer.cornerRadius = 24
         imageView.layer.cornerCurve = .continuous
         imageView.clipsToBounds = true
         imageView.contentMode = .scaleAspectFill
+        imageView.backgroundColor = UIColor.white.withAlphaComponent(0.06)
 
-        contentView.addSubview(overlayView)
-        overlayView.snp.makeConstraints { make in
-            make.leading.equalTo(imageView.snp.leading)
-            make.trailing.equalTo(imageView.snp.trailing)
-            make.bottom.equalTo(imageView.snp.bottom)
-            make.top.equalTo(imageView.snp.top)
-        }
-        overlayView.layer.cornerRadius = imageView.layer.cornerRadius
-        overlayView.clipsToBounds = true
-
-        contentView.addSubview(infoView)
-        infoView.snp.makeConstraints { make in
-            make.leading.trailing.bottom.equalToSuperview()
-            make.top.equalTo(imageView.snp.bottom).offset(8)
+        badgeLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        badgeLabel.textColor = .white
+        badgeLabel.layer.cornerRadius = 10
+        badgeLabel.layer.cornerCurve = .continuous
+        badgeLabel.clipsToBounds = true
+        badgeLabel.isHidden = true
+        contentView.addSubview(badgeLabel)
+        badgeLabel.snp.makeConstraints { make in
+            make.top.equalTo(imageView).offset(12)
+            make.trailing.equalTo(imageView).inset(12)
         }
 
-        let hStackView = UIStackView()
-        let stackView = UIStackView()
-        infoView.addSubview(hStackView)
-        hStackView.addArrangedSubview(avatarView)
-        hStackView.addArrangedSubview(stackView)
-        hStackView.snp.makeConstraints { make in
-            make.top.leading.trailing.equalToSuperview()
-            make.bottom.equalToSuperview().priority(.high)
-            make.height.equalTo(stackView.snp.height)
-        }
+        indexLabel.textColor = UIColor.white.withAlphaComponent(0.92)
+        indexLabel.setContentHuggingPriority(.required, for: .horizontal)
+        indexLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        hStackView.alignment = .top
-        hStackView.spacing = 10
-        avatarView.backgroundColor = .clear
-        avatarView.snp.makeConstraints { make in
-            make.width.equalTo(avatarView.snp.height)
-            make.height.equalTo(stackView.snp.height).multipliedBy(0.7)
-        }
-        stackView.setContentHuggingPriority(.required, for: .vertical)
-        avatarView.setContentHuggingPriority(.defaultLow, for: .vertical)
-        avatarView.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        avatarView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        avatarView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        stackView.axis = .vertical
-        stackView.addArrangedSubview(titleLabel)
-        stackView.addArrangedSubview(upLabel)
-        stackView.alignment = .leading
-        stackView.spacing = 6
-        stackView.setContentHuggingPriority(.required, for: .vertical)
-        titleLabel.holdScrolling = true
-        titleLabel.setContentHuggingPriority(.required, for: .vertical)
-        titleLabel.setContentCompressionResistancePriority(.required, for: .vertical)
-        titleLabel.fadeLength = 60
-        upLabel.setContentHuggingPriority(.required, for: .vertical)
-        upLabel.setContentCompressionResistancePriority(.required, for: .vertical)
-        // Apple TV 风格层级：标题近白、次要信息半透明白。
-        titleLabel.textColor = UIColor.white.withAlphaComponent(0.94)
+        titleLabel.numberOfLines = 2
+        titleLabel.textColor = UIColor.white.withAlphaComponent(0.95)
         upLabel.textColor = UIColor.white.withAlphaComponent(0.55)
-        upLabel.adjustsFontSizeToFitWidth = true
-        upLabel.minimumScaleFactor = 0.1
-    }
+        statsLabel.textColor = UIColor.white.withAlphaComponent(0.55)
+        [titleLabel, upLabel, statsLabel].forEach {
+            $0.lineBreakMode = .byTruncatingTail
+            $0.setContentCompressionResistancePriority(.required, for: .vertical)
+        }
 
-    func setup(data: any DisplayData) {
-        titleLabel.text = data.title
-        if let overlay = data.overlay {
-            overlayView.isHidden = false
-            overlayView.configure(overlay)
-        } else {
-            overlayView.isHidden = true
-        }
-        upLabel.text = [data.ownerName, data.date].compactMap({ $0 }).joined(separator: " · ")
-        if var pic = data.pic {
-            if pic.scheme == nil {
-                pic = URL(string: "http:\(pic.absoluteString)")!
-            }
-            imageView.kf.setImage(with: pic, options: [.processor(DownsamplingImageProcessor(size: CGSize(width: 360, height: 202))), .cacheOriginalImage])
-        }
-        if let avatar = data.avatar(size: 240) {
-            avatarView.isHidden = false
-            avatarView.kf.setImage(with: avatar, options: [.processor(DownsamplingImageProcessor(size: CGSize(width: 80, height: 80))), .processor(RoundCornerImageProcessor(radius: .widthFraction(0.5))), .cacheSerializer(FormatIndicatedCacheSerializer.png)])
-        } else {
-            avatarView.isHidden = true
+        let textStack = UIStackView(arrangedSubviews: [titleLabel, upLabel, statsLabel])
+        textStack.axis = .vertical
+        textStack.spacing = 6
+        textStack.setCustomSpacing(10, after: titleLabel)
+
+        let row = UIStackView(arrangedSubviews: [indexLabel, textStack])
+        row.axis = .horizontal
+        row.alignment = .top
+        row.spacing = 14
+        contentView.addSubview(row)
+        row.snp.makeConstraints { make in
+            make.top.equalTo(imageView.snp.bottom).offset(16)
+            make.leading.equalToSuperview().offset(4)
+            make.trailing.equalToSuperview()
+            make.bottom.equalToSuperview().priority(.high)
         }
         updateStyle()
     }
 
-    override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
-        super.didUpdateFocus(in: context, with: coordinator)
-        if isFocused {
-            startScroll()
+    func setup(data: any DisplayData) {
+        setup(data: data, index: nil)
+    }
+
+    func setup(data: any DisplayData, index: Int?) {
+        currentData = data
+        titleLabel.text = data.title
+        upLabel.text = [data.ownerName, data.date].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+        upLabel.isHidden = upLabel.text?.isEmpty ?? true
+        if let index {
+            indexLabel.text = "\(index)"
+            indexLabel.isHidden = false
         } else {
-            stopScroll()
+            indexLabel.isHidden = true
         }
+        if let badge = data.overlay?.badge {
+            badgeLabel.text = badge.text
+            badgeLabel.backgroundColor = badge.color ?? .systemPink
+            badgeLabel.isHidden = false
+        } else {
+            badgeLabel.isHidden = true
+        }
+        if var pic = data.pic {
+            if pic.scheme == nil {
+                pic = URL(string: "http:\(pic.absoluteString)")!
+            }
+            imageView.kf.setImage(with: pic, options: [.processor(DownsamplingImageProcessor(size: CGSize(width: 640, height: 360))), .cacheOriginalImage, .transition(.fade(0.2))])
+        }
+        updateStyle()
     }
 
-    private func startScroll() {
-        titleLabel.restartLabel()
-        titleLabel.holdScrolling = false
-    }
-
-    private func stopScroll() {
-        titleLabel.shutdownLabel()
-        titleLabel.holdScrolling = true
+    /// 播放量 / 弹幕 / 时长等，用 SF Symbols 小图标 + 文字排成一行。
+    private func makeStats(_ overlay: DisplayOverlay?, font: UIFont) -> NSAttributedString? {
+        guard let overlay else { return nil }
+        let items = overlay.leftItems + overlay.rightItems
+        guard !items.isEmpty else { return nil }
+        let result = NSMutableAttributedString()
+        let color = UIColor.white.withAlphaComponent(0.55)
+        for (offset, item) in items.enumerated() {
+            if offset > 0 { result.append(NSAttributedString(string: "   ", attributes: [.font: font])) }
+            var suffix = ""
+            if let icon = item.icon, let image = UIImage(systemName: icon, withConfiguration: UIImage.SymbolConfiguration(font: font))?.withTintColor(color, renderingMode: .alwaysOriginal) {
+                let attachment = NSTextAttachment(image: image)
+                result.append(NSAttributedString(attachment: attachment))
+                result.append(NSAttributedString(string: " ", attributes: [.font: font]))
+                if icon.hasPrefix("play") { suffix = "观看" }
+                if icon.hasPrefix("list.bullet") { suffix = "弹幕" }
+            }
+            result.append(NSAttributedString(string: item.text + suffix, attributes: [.font: font, .foregroundColor: color]))
+        }
+        return result
     }
 
     private func updateStyle() {
         let style = styleOverride ?? Settings.displayStyle
         titleLabel.font = style.titleFont
         upLabel.font = style.upFont
+        indexLabel.font = style.indexFont
+        statsLabel.attributedText = makeStats(currentData?.overlay, font: style.upFont)
+        statsLabel.isHidden = statsLabel.attributedText == nil
     }
 
     @objc private func actionLongPress(sender: UILongPressGestureRecognizer) {
@@ -154,8 +153,18 @@ class FeedCollectionViewCell: BLMotionCollectionViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         onLongPress = nil
-        avatarView.image = nil
-        stopScroll()
+        imageView.kf.cancelDownloadTask()
+        imageView.image = nil
+    }
+}
+
+/// 带内边距的标签（角标用）。
+final class PaddingLabel: UILabel {
+    var insets = UIEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
+    override func drawText(in rect: CGRect) { super.drawText(in: rect.inset(by: insets)) }
+    override var intrinsicContentSize: CGSize {
+        let size = super.intrinsicContentSize
+        return CGSize(width: size.width + insets.left + insets.right, height: size.height + insets.top + insets.bottom)
     }
 }
 
@@ -192,22 +201,30 @@ extension FeedDisplayStyle {
     var titleFont: UIFont {
         switch self {
         case .large:
-            return UIFont.systemFont(ofSize: 32, weight: .semibold)
+            return UIFont.systemFont(ofSize: 25, weight: .semibold)
         case .normal:
-            return UIFont.systemFont(ofSize: 29, weight: .semibold)
+            return UIFont.systemFont(ofSize: 23, weight: .semibold)
         case .sideBar:
-            return UIFont.systemFont(ofSize: 26, weight: .semibold)
+            return UIFont.systemFont(ofSize: 21, weight: .semibold)
         }
     }
 
     var upFont: UIFont {
         switch self {
         case .large:
-            return UIFont.systemFont(ofSize: 24, weight: .regular)
+            return UIFont.systemFont(ofSize: 20, weight: .regular)
         case .normal:
-            return UIFont.systemFont(ofSize: 23, weight: .regular)
+            return UIFont.systemFont(ofSize: 18, weight: .regular)
         case .sideBar:
-            return UIFont.systemFont(ofSize: 21, weight: .regular)
+            return UIFont.systemFont(ofSize: 17, weight: .regular)
         }
+    }
+
+    /// 序号：圆体粗字。
+    var indexFont: UIFont {
+        let size: CGFloat = self == .large ? 58 : self == .normal ? 50 : 44
+        let base = UIFont.systemFont(ofSize: size, weight: .bold)
+        guard let descriptor = base.fontDescriptor.withDesign(.rounded) else { return base }
+        return UIFont(descriptor: descriptor, size: size)
     }
 }

@@ -70,7 +70,7 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
     private var pillWidthConstraint: Constraint?
 
     private let leftCollectionView: UICollectionView = {
-        let size = NSCollectionLayoutSize(widthDimension: .estimated(150), heightDimension: .absolute(64))
+        let size = NSCollectionLayoutSize(widthDimension: .estimated(130), heightDimension: .absolute(56))
         let group = NSCollectionLayoutGroup.horizontal(layoutSize: size, subitems: [NSCollectionLayoutItem(layoutSize: size)])
         let section = NSCollectionLayoutSection(group: group)
         section.interGroupSpacing = 8
@@ -224,7 +224,8 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
         leftCollectionView.delegate = self
         leftCollectionView.dataSource = self
 
-        // 左上角：头像 + 用户名
+        // 头像 + 用户名已由主界面左上角的胶囊显示，这里隐藏以免重复。
+        profileContainerView.isHidden = true
         profileContainerView.snp.makeConstraints { make in
             make.leading.equalToSuperview().offset(80)
             make.top.equalTo(view.safeAreaLayoutGuide.snp.top).offset(4)
@@ -246,12 +247,12 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
         pillBackground.snp.makeConstraints { make in
             make.centerX.equalToSuperview()
             make.centerY.equalTo(profileContainerView)
-            make.height.equalTo(84)
+            make.height.equalTo(76)
             make.leading.greaterThanOrEqualTo(profileContainerView.snp.trailing).offset(40)
             make.trailing.lessThanOrEqualToSuperview().inset(80)
             pillWidthConstraint = make.width.equalTo(900).priority(.high).constraint
         }
-        pillBackground.layer.cornerRadius = 42
+        pillBackground.layer.cornerRadius = 38
         leftCollectionView.snp.makeConstraints { $0.edges.equalToSuperview() }
 
         // 下方：所选项的内容
@@ -324,15 +325,15 @@ final class BLPillCell: UICollectionViewCell {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        background.layer.cornerRadius = 32
+        background.layer.cornerRadius = 28
         background.layer.cornerCurve = .continuous
         contentView.addSubview(background)
         background.snp.makeConstraints { $0.edges.equalToSuperview() }
-        titleLabel.font = .systemFont(ofSize: 30, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 25, weight: .semibold)
         titleLabel.textAlignment = .center
         background.addSubview(titleLabel)
         titleLabel.snp.makeConstraints { make in
-            make.leading.trailing.equalToSuperview().inset(30)
+            make.leading.trailing.equalToSuperview().inset(26)
             make.centerY.equalToSuperview()
         }
         updateAppearance()

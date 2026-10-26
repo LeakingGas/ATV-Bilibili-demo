@@ -39,28 +39,28 @@ class CategoryViewController: UIViewController, BLTabBarContentVCProtocol {
         if typeCollectionView != nil {
             return
         }
-        let size = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .absolute(72))
+        let size = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1), heightDimension: .absolute(58))
         let group = NSCollectionLayoutGroup.vertical(layoutSize: size, subitems: [NSCollectionLayoutItem(layoutSize: size)])
         let section = NSCollectionLayoutSection(group: group)
-        section.interGroupSpacing = 8
-        section.contentInsets = NSDirectionalEdgeInsets(top: 24, leading: 20, bottom: 24, trailing: 20)
+        section.interGroupSpacing = 6
+        section.contentInsets = NSDirectionalEdgeInsets(top: 18, leading: 14, bottom: 18, trailing: 14)
         typeCollectionView = UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewCompositionalLayout(section: section))
         typeCollectionView.backgroundColor = .clear
         typeCollectionView.clipsToBounds = false
         typeCollectionView.remembersLastFocusedIndexPath = true
         typeCollectionView.register(BLCategoryRowCell.self, forCellWithReuseIdentifier: "cell")
 
-        panel.layer.cornerRadius = 40
+        panel.layer.cornerRadius = 32
         panel.layer.cornerCurve = .continuous
         panel.clipsToBounds = true
         panel.layer.borderWidth = 1
         panel.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
         view.addSubview(panel)
         panel.snp.makeConstraints { make in
-            make.leading.equalToSuperview().offset(48)
+            make.leading.equalToSuperview().offset(56)
             make.top.equalTo(view.safeAreaLayoutGuide.snp.top).offset(8)
             make.bottom.equalToSuperview().inset(48)
-            make.width.equalTo(400)
+            make.width.equalTo(330)
         }
         panel.contentView.addSubview(typeCollectionView)
         typeCollectionView.snp.makeConstraints { $0.edges.equalToSuperview() }
@@ -157,16 +157,16 @@ final class BLCategoryRowCell: UICollectionViewCell {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        background.layer.cornerRadius = 28
+        background.layer.cornerRadius = 24
         background.layer.cornerCurve = .continuous
         contentView.addSubview(background)
         background.snp.makeConstraints { $0.edges.equalToSuperview() }
-        titleLabel.font = .systemFont(ofSize: 30, weight: .medium)
+        titleLabel.font = .systemFont(ofSize: 25, weight: .medium)
         titleLabel.adjustsFontSizeToFitWidth = true
         titleLabel.minimumScaleFactor = 0.75
         background.addSubview(titleLabel)
         titleLabel.snp.makeConstraints { make in
-            make.leading.trailing.equalToSuperview().inset(28)
+            make.leading.trailing.equalToSuperview().inset(24)
             make.centerY.equalToSuperview()
         }
         updateAppearance()

@@ -19,6 +19,7 @@ protocol BLTabBarContentVCProtocol {
 /// （tvOS SDK 未开放系统侧边栏 UITabBarController.Mode.tabSidebar，因此自行实现。）
 class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
     private let sidebar = BLSidebarView()
+    private let currentPill = BLCurrentPagePill()
     private let dimView = UIView()
     private let rightFocusGuide = UIFocusGuide()
     private var sidebarVisible = false
@@ -53,6 +54,8 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
         Settings.bootstrapTabBarPlacementModelIfNeeded()
         NotificationCenter.default.addObserver(self, selector: #selector(handleTabBarPagesDidChange), name: .tabBarPagesDidChange, object: nil)
         tabBar.isHidden = true
+        // 给左上角的当前页面胶囊留出位置：内容的安全区下移，列表滚动时从胶囊下方穿过。
+        additionalSafeAreaInsets = UIEdgeInsets(top: 50, left: 0, bottom: 0, right: 0)
         setupSidebar()
         setupMenuGesture()
         reloadTabs(animated: false)
@@ -116,23 +119,38 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         tabBar.isHidden = true
+        view.bringSubviewToFront(currentPill)
         view.bringSubviewToFront(dimView)
         view.bringSubviewToFront(sidebar)
     }
 
+    private func updateCurrentPill() {
+        let pages = Settings.tabBarPages
+        let title = pages.indices.contains(selectedIndex) ? pages[selectedIndex].title : ""
+        currentPill.update(title: title, account: AccountManager.shared.activeAccount?.profile)
+    }
+
     private func setupSidebar() {
-        dimView.backgroundColor = UIColor.black.withAlphaComponent(0.35)
+        dimView.backgroundColor = UIColor.black.withAlphaComponent(0.25)
         dimView.alpha = 0
         dimView.isUserInteractionEnabled = false
         view.addSubview(dimView)
         dimView.snp.makeConstraints { $0.edges.equalToSuperview() }
 
         view.addSubview(sidebar)
+        // 左上角悬浮，高度随内容（不再贯穿整个屏幕）。
         sidebar.snp.makeConstraints { make in
-            make.leading.equalToSuperview().offset(48)
-            make.top.equalToSuperview().offset(48)
-            make.bottom.equalToSuperview().inset(48)
-            make.width.equalTo(460)
+            make.leading.equalToSuperview().offset(56)
+            make.top.equalToSuperview().offset(44)
+            make.bottom.lessThanOrEqualToSuperview().inset(44)
+            make.width.equalTo(360)
+        }
+
+        // 左上角：头像 + 当前页面名称的小胶囊（侧边栏收起时显示）。
+        view.addSubview(currentPill)
+        currentPill.snp.makeConstraints { make in
+            make.leading.equalToSuperview().offset(56)
+            make.top.equalToSuperview().offset(44)
         }
         sidebar.onSelect = { [weak self] index in
             guard let self else { return }
@@ -171,6 +189,7 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
         }
         rightFocusGuide.isEnabled = visible
         UIView.animate(withDuration: 0.35, delay: 0, usingSpringWithDamping: 0.88, initialSpringVelocity: 0.4, options: [.beginFromCurrentState]) {
+            self.currentPill.alpha = visible ? 0 : 1
             self.sidebar.alpha = visible ? 1 : 0
             self.sidebar.transform = visible ? .identity : CGAffineTransform(translationX: -560, y: 0)
             self.dimView.alpha = visible ? 1 : 0
@@ -229,6 +248,7 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
 
     func tabBarController(_ tabBarController: UITabBarController, didSelect viewController: UIViewController) {
         sidebar.select(index: selectedIndex)
+        updateCurrentPill()
     }
 
     @objc private func handleTabBarPagesDidChange() {
@@ -246,11 +266,15 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
             selectedIndex = index
         }
         sidebar.setItems(pages.map { ($0.title, $0.symbolName) }, selected: selectedIndex)
+        updateCurrentPill()
         preloadPages()
     }
 
     override var selectedIndex: Int {
-        didSet { sidebar.select(index: selectedIndex) }
+        didSet {
+            sidebar.select(index: selectedIndex)
+            updateCurrentPill()
+        }
     }
 
     private func controller(for page: TabBarPage) -> UIViewController {
@@ -274,10 +298,10 @@ final class BLSidebarView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.45
-        layer.shadowRadius = 40
-        layer.shadowOffset = CGSize(width: 0, height: 20)
-        blur.layer.cornerRadius = 44
+        layer.shadowOpacity = 0.35
+        layer.shadowRadius = 30
+        layer.shadowOffset = CGSize(width: 0, height: 16)
+        blur.layer.cornerRadius = 36
         blur.layer.cornerCurve = .continuous
         blur.clipsToBounds = true
         blur.layer.borderWidth = 1
@@ -285,32 +309,32 @@ final class BLSidebarView: UIView {
         addSubview(blur)
         blur.snp.makeConstraints { $0.edges.equalToSuperview() }
 
-        avatarView.layer.cornerRadius = 34
+        avatarView.layer.cornerRadius = 26
         avatarView.clipsToBounds = true
         avatarView.contentMode = .scaleAspectFill
         avatarView.backgroundColor = UIColor.white.withAlphaComponent(0.15)
         avatarView.image = UIImage(systemName: "person.crop.circle.fill")
         avatarView.tintColor = UIColor.white.withAlphaComponent(0.7)
-        nameLabel.font = .systemFont(ofSize: 30, weight: .semibold)
+        nameLabel.font = .systemFont(ofSize: 24, weight: .semibold)
         nameLabel.textColor = .white
         let header = UIStackView(arrangedSubviews: [avatarView, nameLabel])
         header.axis = .horizontal
-        header.spacing = 20
+        header.spacing = 16
         header.alignment = .center
-        avatarView.snp.makeConstraints { $0.width.height.equalTo(68) }
+        avatarView.snp.makeConstraints { $0.width.height.equalTo(52) }
 
         stack.axis = .vertical
-        stack.spacing = 10
+        stack.spacing = 6
         blur.contentView.addSubview(header)
         blur.contentView.addSubview(stack)
         header.snp.makeConstraints { make in
-            make.top.equalToSuperview().offset(40)
-            make.leading.trailing.equalToSuperview().inset(36)
+            make.top.equalToSuperview().offset(28)
+            make.leading.trailing.equalToSuperview().inset(28)
         }
         stack.snp.makeConstraints { make in
-            make.top.equalTo(header.snp.bottom).offset(36)
-            make.leading.trailing.equalToSuperview().inset(24)
-            make.bottom.lessThanOrEqualToSuperview().inset(32)
+            make.top.equalTo(header.snp.bottom).offset(22)
+            make.leading.trailing.equalToSuperview().inset(16)
+            make.bottom.equalToSuperview().inset(20)
         }
     }
 
@@ -361,28 +385,28 @@ final class BLSidebarRow: UIControl {
 
     init(title: String, symbol: String) {
         super.init(frame: .zero)
-        background.layer.cornerRadius = 30
+        background.layer.cornerRadius = 26
         background.layer.cornerCurve = .continuous
         background.isUserInteractionEnabled = false
         addSubview(background)
         background.snp.makeConstraints { $0.edges.equalToSuperview() }
         iconView.image = UIImage(systemName: symbol)
-        iconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 30, weight: .semibold)
+        iconView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 24, weight: .semibold)
         iconView.contentMode = .scaleAspectFit
         titleLabel.text = title
-        titleLabel.font = .systemFont(ofSize: 32, weight: .medium)
+        titleLabel.font = .systemFont(ofSize: 26, weight: .medium)
         [iconView, titleLabel].forEach { background.addSubview($0) }
         iconView.snp.makeConstraints { make in
-            make.leading.equalToSuperview().offset(26)
+            make.leading.equalToSuperview().offset(22)
             make.centerY.equalToSuperview()
-            make.width.height.equalTo(40)
+            make.width.height.equalTo(32)
         }
         titleLabel.snp.makeConstraints { make in
-            make.leading.equalTo(iconView.snp.trailing).offset(22)
+            make.leading.equalTo(iconView.snp.trailing).offset(16)
             make.trailing.equalToSuperview().inset(20)
             make.centerY.equalToSuperview()
         }
-        snp.makeConstraints { $0.height.equalTo(76) }
+        snp.makeConstraints { $0.height.equalTo(60) }
         updateAppearance()
     }
 
@@ -430,5 +454,59 @@ extension BLTabBarViewController: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
         // 其他返回键手势等我们失败后才生效（侧边栏已打开时我们不开始，系统照常退回主屏幕）。
         gestureRecognizer === menuTap && otherGestureRecognizer.allowedPressTypes.contains(NSNumber(value: UIPress.PressType.menu.rawValue))
+    }
+}
+
+/// 左上角小胶囊：‹ 头像 当前页面。提示「按返回打开菜单」，不可聚焦。
+final class BLCurrentPagePill: UIView {
+    private let blur = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
+    private let chevron = UIImageView(image: UIImage(systemName: "chevron.left"))
+    private let avatarView = UIImageView()
+    private let titleLabel = UILabel()
+    private var avatarURL: String?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        blur.layer.cornerRadius = 32
+        blur.layer.cornerCurve = .continuous
+        blur.clipsToBounds = true
+        blur.layer.borderWidth = 1
+        blur.layer.borderColor = UIColor.white.withAlphaComponent(0.1).cgColor
+        addSubview(blur)
+        blur.snp.makeConstraints { $0.edges.equalToSuperview() }
+        chevron.tintColor = UIColor.white.withAlphaComponent(0.6)
+        chevron.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 20, weight: .semibold)
+        chevron.contentMode = .scaleAspectFit
+        avatarView.layer.cornerRadius = 22
+        avatarView.clipsToBounds = true
+        avatarView.contentMode = .scaleAspectFill
+        avatarView.backgroundColor = UIColor.white.withAlphaComponent(0.15)
+        titleLabel.font = .systemFont(ofSize: 26, weight: .semibold)
+        titleLabel.textColor = UIColor.white.withAlphaComponent(0.92)
+        let row = UIStackView(arrangedSubviews: [chevron, avatarView, titleLabel])
+        row.axis = .horizontal
+        row.alignment = .center
+        row.spacing = 14
+        row.setCustomSpacing(10, after: chevron)
+        blur.contentView.addSubview(row)
+        row.snp.makeConstraints { make in
+            make.top.bottom.equalToSuperview().inset(10)
+            make.leading.equalToSuperview().offset(18)
+            make.trailing.equalToSuperview().inset(30)
+        }
+        avatarView.snp.makeConstraints { $0.width.height.equalTo(44) }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func update(title: String, account: AccountManager.Profile?) {
+        titleLabel.text = title
+        guard let avatar = account?.avatar, !avatar.isEmpty, avatar != avatarURL, let url = URL(string: avatar) else { return }
+        avatarURL = avatar
+        avatarView.kf.setImage(with: url, options: [.processor(DownsamplingImageProcessor(size: CGSize(width: 88, height: 88))), .cacheOriginalImage])
     }
 }
