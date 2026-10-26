@@ -250,11 +250,12 @@ class VideoDetailViewController: UIViewController {
         } else {
             // 直接进入视频：详情页透明叠在原页面上，退出播放时一起关闭，返回进入视频之前的页面。
             modalPresentationStyle = .overFullScreen
+            loadViewIfNeeded()
+            view.alpha = 0
             vc.present(self, animated: false) { [weak self] in
                 guard let self else { return }
-                self.view.alpha = 0
                 let player = VideoPlayerViewController(playInfo: PlayInfo(aid: self.aid, cid: self.cid, epid: self.epid, seasonId: isBangumi ? self.seasonId : nil, lastPlayCid: self.lastPlayCid, playTimeInSecond: self.playTimeInSecond))
-                player.onDidExit = { [weak self] in self?.dismiss(animated: false) }
+                player.exitRootViewController = vc
                 self.present(player, animated: true)
             }
         }
@@ -263,7 +264,7 @@ class VideoDetailViewController: UIViewController {
     /// 从详情页开始播放。设置「退出播放回到列表」开启时，退出播放后连同详情页一起关闭。
     private func presentPlayer(_ player: VideoPlayerViewController) {
         if Settings.exitPlayerToList {
-            player.onDidExit = { [weak self] in self?.dismiss(animated: true) }
+            player.exitRootViewController = presentingViewController
         }
         present(player, animated: true, completion: nil)
     }

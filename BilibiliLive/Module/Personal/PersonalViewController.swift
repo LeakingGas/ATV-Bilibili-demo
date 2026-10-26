@@ -138,6 +138,20 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
             self?.actionLogout()
         }
         cellModels.append(logout)
+        preloadContent()
+    }
+
+    /// 后台提前加载各选项的页面和数据，焦点移过去时立刻显示。
+    private func preloadContent() {
+        for (offset, model) in cellModels.enumerated() {
+            guard let vc = model.contentVC else { continue }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3 + Double(offset) * 0.12) { [weak self, weak vc] in
+                guard let self, let vc, !vc.isViewLoaded else { return }
+                vc.loadViewIfNeeded()
+                vc.view.frame = self.contentView.bounds.isEmpty ? self.view.bounds : self.contentView.bounds
+                vc.view.layoutIfNeeded()
+            }
+        }
     }
 
     private func makeCellModel(for page: TabBarPage) -> CellModel? {

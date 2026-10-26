@@ -16,7 +16,7 @@ extension Settings {
         var title: String {
             switch self {
             case .tabBar:
-                return "导航栏"
+                return "菜单栏"
             case .personal:
                 return "我的页面"
             case .hidden:

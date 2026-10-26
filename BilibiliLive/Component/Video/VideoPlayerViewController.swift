@@ -249,7 +249,7 @@ class VideoPlayerViewController: CommonPlayerViewController {
 
         if playMode == .regular {
             viewModel.onExit = { [weak self] in
-                self?.dismiss(animated: true)
+                self?.exitPlayer()
             }
         }
 
@@ -281,7 +281,7 @@ class VideoPlayerViewController: CommonPlayerViewController {
     }
 
     override func viewDidDisappear(_ animated: Bool) {
-        let isExiting = isBeingDismissed || isMovingFromParent || navigationController?.isBeingDismissed == true
+        let isExiting = isBeingDismissed || exitRequested || isMovingFromParent || navigationController?.isBeingDismissed == true
         let dismissPlayInfo = playMode == .feedFlow ? viewModel.currentPlayInfo : nil
         super.viewDidDisappear(animated)
         guard isExiting else { return }

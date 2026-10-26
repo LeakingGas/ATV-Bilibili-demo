@@ -23,7 +23,6 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
     private let rightFocusGuide = UIFocusGuide()
     private var sidebarVisible = false
     private var menuPressConsumed = false
-    private var previewWork: DispatchWorkItem?
     private var isPreviewing = false
 
     private func preview(index: Int) {
@@ -55,7 +54,54 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(handleTabBarPagesDidChange), name: .tabBarPagesDidChange, object: nil)
         tabBar.isHidden = true
         setupSidebar()
+        setupMenuGesture()
         reloadTabs(animated: false)
+    }
+
+    // MARK: - 返回键
+
+    private let menuTap = UITapGestureRecognizer()
+
+    /// 系统 UITabBarController 会先用返回键把焦点交给（已隐藏的）tab 栏，导致要按两次。
+    /// 用自己的返回键手势抢先处理：根页面按返回直接弹出侧边栏。
+    private func setupMenuGesture() {
+        menuTap.addTarget(self, action: #selector(handleMenuTap))
+        menuTap.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
+        menuTap.delegate = self
+        view.addGestureRecognizer(menuTap)
+    }
+
+    @objc private func handleMenuTap() {
+        setSidebar(visible: true)
+    }
+
+    private var canShowSidebarOnMenu: Bool {
+        guard !sidebarVisible, presentedViewController == nil else { return false }
+        if let nav = selectedViewController as? UINavigationController, nav.viewControllers.count > 1 { return false }
+        return true
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // 关掉系统自带的返回键手势（把焦点移到 tab 栏），避免抢在我们前面。
+        for gesture in (view.gestureRecognizers ?? []) + (tabBar.gestureRecognizers ?? []) where gesture !== menuTap {
+            if gesture.allowedPressTypes.contains(NSNumber(value: UIPress.PressType.menu.rawValue)) { gesture.isEnabled = false }
+        }
+    }
+
+    // MARK: - 预加载
+
+    /// 后台依次加载每个页面（数据也随之请求），侧边栏切换时内容已就绪、无需等待。
+    private func preloadPages() {
+        guard let controllers = viewControllers else { return }
+        for (offset, controller) in controllers.enumerated() where controller !== selectedViewController {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5 + Double(offset) * 0.15) { [weak self, weak controller] in
+                guard let self, let controller, !controller.isViewLoaded else { return }
+                controller.loadViewIfNeeded()
+                controller.view.frame = self.view.bounds
+                controller.view.layoutIfNeeded()
+            }
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -87,12 +133,10 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
             self.setSidebar(visible: false)
         }
         // 焦点移到哪一项，背后就切换到哪个页面（稍作防抖，快速滑过不逐个加载）。
+        // 焦点移到哪一项，背后立刻切换到哪个页面（各页面已在后台预加载）。
         sidebar.onFocus = { [weak self] index in
             guard let self, self.sidebarVisible else { return }
-            self.previewWork?.cancel()
-            let work = DispatchWorkItem { [weak self] in self?.preview(index: index) }
-            self.previewWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+            self.preview(index: index)
         }
         sidebar.alpha = 0
         sidebar.transform = CGAffineTransform(translationX: -560, y: 0)
@@ -110,7 +154,6 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
 
     private func setSidebar(visible: Bool) {
         guard sidebarVisible != visible else { return }
-        if !visible { previewWork?.cancel() }
         sidebarVisible = visible
         if visible {
             sidebar.update(account: AccountManager.shared.activeAccount?.profile)
@@ -194,6 +237,7 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
             selectedIndex = index
         }
         sidebar.setItems(pages.map { ($0.title, $0.symbolName) }, selected: selectedIndex)
+        preloadPages()
     }
 
     override var selectedIndex: Int {
@@ -365,5 +409,17 @@ final class BLSidebarRow: UIControl {
         layer.shadowOpacity = focused ? 0.25 : 0
         layer.shadowRadius = 14
         layer.shadowOffset = CGSize(width: 0, height: 8)
+    }
+}
+
+extension BLTabBarViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === menuTap else { return true }
+        return canShowSidebarOnMenu
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // 其他返回键手势等我们失败后才生效（侧边栏已打开时我们不开始，系统照常退回主屏幕）。
+        gestureRecognizer === menuTap && otherGestureRecognizer.allowedPressTypes.contains(NSNumber(value: UIPress.PressType.menu.rawValue))
     }
 }

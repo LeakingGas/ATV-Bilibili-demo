@@ -123,7 +123,7 @@ class SettingsViewController: UIViewController {
             }
 
             SectionModel(title: "界面") {
-                Navigation(title: "自定义Tab栏", desp: "") { [weak self] in
+                Navigation(title: "自定义菜单栏", desp: "") { [weak self] in
                     let controller = TabBarCustomizationViewController()
                     self?.present(controller, animated: true)
                 }

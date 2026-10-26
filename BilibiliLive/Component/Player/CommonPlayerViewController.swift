@@ -20,6 +20,21 @@ class CommonPlayerViewController: UIViewController {
     private var isRestoringFromPip = false
     /// 新 AVPlayerItem ready 后是否自动 play。换 CDN host 等场景可临时关掉，由调用方按用户暂停状态决定是否续播。
     var autoPlayWhenReady = true
+    /// 设置后，退出播放时从这个控制器一次性关闭（连同中间的详情页），
+    /// 只有最上层的播放器做退出动画，不会先露出详情页。
+    weak var exitRootViewController: UIViewController?
+
+    /// 已请求退出（用于整条链一起关闭时，本控制器的 isBeingDismissed 可能不为真）。
+    private(set) var exitRequested = false
+
+    func exitPlayer(animated: Bool = true) {
+        exitRequested = true
+        if let root = exitRootViewController, root.presentedViewController != nil {
+            root.dismiss(animated: animated)
+        } else {
+            dismiss(animated: animated)
+        }
+    }
     var showsPlaybackControls = true
     var allowsPictureInPicturePlayback = true
 
@@ -99,7 +114,7 @@ class CommonPlayerViewController: UIViewController {
         let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
         let actionOk = UIAlertAction(title: "OK", style: .default) {
             [weak self] _ in
-            self?.dismiss(animated: true, completion: nil)
+            self?.exitPlayer()
         }
         alertController.addAction(actionOk)
         present(alertController, animated: true, completion: nil)
@@ -151,7 +166,7 @@ class CommonPlayerViewController: UIViewController {
 
     private func cleanUpPlayerOnExit(force: Bool = false) {
         let isPictureInPictureRunning = PipRecorder.shared.playingPipViewController.contains { $0.playerVC == playerVC }
-        let shouldCleanUp = force || ((isBeingDismissed || isMovingFromParent || navigationController?.isBeingDismissed == true) && !isPictureInPictureRunning)
+        let shouldCleanUp = force || ((isBeingDismissed || exitRequested || isMovingFromParent || navigationController?.isBeingDismissed == true) && !isPictureInPictureRunning)
         guard shouldCleanUp else { return }
 
         cleanUpObserver()
@@ -253,7 +268,7 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
         if let presentedViewController = UIViewController.topMostViewController() as? CommonPlayerViewController,
            presentedViewController.playerVC == playerViewController
         {
-            dismiss(animated: true)
+            exitPlayer()
             return false
         }
         return false

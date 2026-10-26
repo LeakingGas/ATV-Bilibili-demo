@@ -90,7 +90,7 @@ class TabBarCustomizationViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "选中项目后按播放键开始排序"
+        title = "自定义菜单栏"
         view.backgroundColor = .black
 
         setupUI()
@@ -105,6 +105,12 @@ class TabBarCustomizationViewController: UIViewController {
 
     // MARK: - Press handling
 
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // 移动中按返回：只结束移动，留在本页继续选择其他项目。
+        if presses.first?.type == .menu, editingPage != nil { return }
+        super.pressesBegan(presses, with: event)
+    }
+
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         guard let press = presses.first else {
             super.pressesEnded(presses, with: event)
@@ -112,6 +118,8 @@ class TabBarCustomizationViewController: UIViewController {
         }
 
         switch press.type {
+        case .menu where editingPage != nil:
+            stopEditing()
         case .playPause, .select:
             editingPage != nil ? stopEditing() : startEditing()
         default:
@@ -159,17 +167,13 @@ class TabBarCustomizationViewController: UIViewController {
         }
 
         // 不同层
-        if toSection == .tabBar, tabBarCount >= 8 {
-            showAlert("导航栏最多保留 8 个页面")
-            return false
-        }
         if fromSection == .tabBar {
             if editItem.page.isFixedInTabBar {
                 showAlert("该项目只允许在导航栏展示")
                 return false
             }
             if tabBarCount <= 3 {
-                showAlert("导航栏至少保留 3 个页面")
+                showAlert("菜单栏至少保留 3 个页面")
                 return false
             }
         }
@@ -220,7 +224,7 @@ class TabBarCustomizationViewController: UIViewController {
 
     private func updateHintLabel() {
         hintLabel.text = editingPage != nil
-            ? "排序中：左右移动排序，上下跨区移动（移到「隐藏」即不显示）；按确认键或播放键完成"
+            ? "移动中：左右调整顺序，上下在区域间移动（移到「隐藏」即不显示）；按确认、播放或返回键完成"
             : "选中项目后按确认键或播放键开始移动；移到「隐藏」区域的页面将不再显示"
     }
 
@@ -324,14 +328,16 @@ extension TabBarCustomizationViewController: UICollectionViewDelegate {
             }
             if from.section != to.section {
                 // 跨区（可能涉及空分区占位格）：整体刷新并把焦点放到新位置。
+                // 不能在焦点更新回调里刷新数据（会崩溃），放到下一轮主循环。
                 let target = IndexPath(item: min(to.item, max(0, lists[to.section].count - 1)), section: to.section)
                 preferredIndexPath = target
-                collectionView.reloadData()
-                collectionView.layoutIfNeeded()
-                pendingFocusIndexPath = nil
-                DispatchQueue.main.async {
-                    collectionView.setNeedsFocusUpdate()
-                    collectionView.updateFocusIfNeeded()
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.collectionView.reloadData()
+                    self.collectionView.layoutIfNeeded()
+                    self.pendingFocusIndexPath = nil
+                    self.collectionView.setNeedsFocusUpdate()
+                    self.collectionView.updateFocusIfNeeded()
                 }
                 return false
             }
