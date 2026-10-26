@@ -201,11 +201,11 @@ extension FeedDisplayStyle {
     var titleFont: UIFont {
         switch self {
         case .large:
-            return UIFont.systemFont(ofSize: 25, weight: .semibold)
+            return UIFont.systemFont(ofSize: 25, weight: .regular)
         case .normal:
-            return UIFont.systemFont(ofSize: 23, weight: .semibold)
+            return UIFont.systemFont(ofSize: 23, weight: .regular)
         case .sideBar:
-            return UIFont.systemFont(ofSize: 21, weight: .semibold)
+            return UIFont.systemFont(ofSize: 21, weight: .regular)
         }
     }
 

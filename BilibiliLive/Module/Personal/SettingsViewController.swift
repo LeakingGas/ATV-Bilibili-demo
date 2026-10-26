@@ -51,12 +51,12 @@ class SettingsViewController: UIViewController {
 
     let collectionView: UICollectionView = {
         let layout = UICollectionViewCompositionalLayout { sectionIndex, environment -> NSCollectionLayoutSection? in
-            let itemSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1.0), heightDimension: .absolute(68))
+            let itemSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1.0), heightDimension: .absolute(62))
             let item = NSCollectionLayoutItem(layoutSize: itemSize)
 
-            let groupSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1.0), heightDimension: .absolute(68))
+            let groupSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1.0), heightDimension: .absolute(62))
             let group = NSCollectionLayoutGroup.vertical(layoutSize: groupSize, subitems: [item])
-            group.interItemSpacing = .fixed(10)
+            group.interItemSpacing = .fixed(8)
 
             let section = NSCollectionLayoutSection(group: group)
             let headerSize = NSCollectionLayoutSize(
@@ -71,7 +71,8 @@ class SettingsViewController: UIViewController {
             )
             header.pinToVisibleBounds = false
             section.boundarySupplementaryItems = [header]
-            section.interGroupSpacing = 10
+            section.interGroupSpacing = 8
+            section.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 18, trailing: 0)
             return section
         }
         return UICollectionView(frame: .zero, collectionViewLayout: layout)
@@ -83,9 +84,13 @@ class SettingsViewController: UIViewController {
         super.viewDidLoad()
         view.addSubview(collectionView)
         collectionView.remembersLastFocusedIndexPath = false
+        collectionView.clipsToBounds = false
+        // 居中、限制宽度，像 Apple TV 系统设置那样的一列。
         collectionView.snp.makeConstraints { make in
-            make.top.right.bottom.equalToSuperview()
-            make.left.equalToSuperview().offset(20)
+            make.top.bottom.equalToSuperview()
+            make.centerX.equalToSuperview()
+            make.width.equalToSuperview().offset(-200).priority(.high)
+            make.width.lessThanOrEqualTo(1180)
         }
 
         collectionView.delegate = self
@@ -437,22 +442,28 @@ class SettingsSwitchCell: BLMotionCollectionViewCell {
     }
 
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
-        updateColor()
+        super.didUpdateFocus(in: context, with: coordinator)
+        coordinator.addCoordinatedAnimations { self.updateColor() }
     }
 
     func setupView() {
+        scaleFactor = 1.02
         contentView.addSubview(titleLabel)
         contentView.addSubview(descLabel)
-        contentView.layer.cornerRadius = 10
+        // 毛玻璃风格的圆角行：平时淡白底，焦点白底黑字。
+        contentView.layer.cornerRadius = 18
+        contentView.layer.cornerCurve = .continuous
+        titleLabel.font = .systemFont(ofSize: 24, weight: .regular)
+        descLabel.font = .systemFont(ofSize: 22, weight: .regular)
 
         titleLabel.snp.makeConstraints { make in
-            make.leading.equalToSuperview().offset(20)
+            make.leading.equalToSuperview().offset(28)
             make.centerY.equalToSuperview()
-            make.trailing.lessThanOrEqualTo(descLabel.snp.leading).offset(-10)
+            make.trailing.lessThanOrEqualTo(descLabel.snp.leading).offset(-16)
         }
 
         descLabel.snp.makeConstraints { make in
-            make.trailing.equalToSuperview().offset(-20)
+            make.trailing.equalToSuperview().offset(-28)
             make.centerY.equalToSuperview()
         }
 
@@ -462,20 +473,14 @@ class SettingsSwitchCell: BLMotionCollectionViewCell {
     }
 
     func updateColor() {
-        if traitCollection.userInterfaceStyle == .dark {
-            if isFocused {
-                contentView.backgroundColor = UIColor.white
-                titleLabel.textColor = UIColor.black
-                descLabel.textColor = UIColor.black
-            } else {
-                contentView.backgroundColor = UIColor.clear
-                titleLabel.textColor = UIColor.white
-                descLabel.textColor = UIColor.secondaryLabel
-            }
+        if isFocused {
+            contentView.backgroundColor = UIColor.white
+            titleLabel.textColor = UIColor.black
+            descLabel.textColor = UIColor.black.withAlphaComponent(0.6)
         } else {
-            contentView.backgroundColor = isFocused ? UIColor.white : UIColor.clear
-            titleLabel.textColor = .black
-            descLabel.textColor = UIColor.secondaryLabel
+            contentView.backgroundColor = UIColor.white.withAlphaComponent(0.07)
+            titleLabel.textColor = UIColor.white.withAlphaComponent(0.92)
+            descLabel.textColor = UIColor.white.withAlphaComponent(0.5)
         }
     }
 }
@@ -495,12 +500,12 @@ class SettingsHeaderView: UICollectionReusableView {
 
     func setup() {
         addSubview(label)
-        label.font = .preferredFont(forTextStyle: .footnote)
-        label.textColor = UIColor.secondaryLabel
+        label.font = .systemFont(ofSize: 21, weight: .semibold)
+        label.textColor = UIColor.white.withAlphaComponent(0.5)
         label.snp.makeConstraints { make in
-            make.leading.equalToSuperview().offset(20)
-            make.top.equalToSuperview().offset(20)
-            make.bottom.equalToSuperview().offset(-20)
+            make.leading.equalToSuperview().offset(28)
+            make.top.equalToSuperview().offset(22)
+            make.bottom.equalToSuperview().offset(-12)
         }
     }
 }

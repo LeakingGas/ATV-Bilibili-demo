@@ -110,6 +110,13 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
                                                object: nil)
         updateAccountInfo()
         AccountManager.shared.refreshActiveAccountProfile()
+        for direction in [UISwipeGestureRecognizer.Direction.left, .right] {
+            let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleHorizontalSwipe(_:)))
+            swipe.direction = direction
+            swipe.cancelsTouchesInView = false
+            swipe.delegate = self
+            view.addGestureRecognizer(swipe)
+        }
     }
 
     deinit {
@@ -146,7 +153,8 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
 
     private func makeCellModel(for page: TabBarPage) -> CellModel? {
         let vc = TabBarPageVCFactory.createVC(for: page)
-        if page.requirePresentInPersonalPage {
+        // 收藏直接嵌在下方显示（默认收藏夹在前），焦点移上去即可看到，与其他选项一致。
+        if page.requirePresentInPersonalPage, page != .favorite {
             return CellModel(title: page.title) { [weak self] in
                 self?.present(vc, animated: true)
             }
@@ -268,6 +276,76 @@ class PersonalViewController: UIViewController, BLTabBarContentVCProtocol {
         if width > 0 { pillWidthConstraint?.update(offset: width) }
     }
 
+    // MARK: - 设置页里按左 / 右：切换顶部选项
+
+    private var lastFocusChange = 0.0
+    private var pressStartedAt = 0.0
+    private var forcedPill: IndexPath?
+
+    override var preferredFocusEnvironments: [UIFocusEnvironment] {
+        if let forcedPill, let cell = leftCollectionView.cellForItem(at: forcedPill) { return [cell] }
+        return super.preferredFocusEnvironments
+    }
+
+    override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+        super.didUpdateFocus(in: context, with: coordinator)
+        lastFocusChange = ProcessInfo.processInfo.systemUptime
+    }
+
+    /// 设置是竖向列表，左右键本来没有作用：这时左右键切换到顶部的上 / 下一个选项。
+    private var horizontalSwitchEnabled: Bool {
+        guard currentViewController is SettingsViewController,
+              let focused = UIScreen.main.focusedView else { return false }
+        return focused.isDescendant(of: contentView)
+    }
+
+    private func direction(of type: UIPress.PressType) -> Int? {
+        switch type {
+        case .rightArrow: return 1
+        case .leftArrow: return -1
+        default: return nil
+        }
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if let type = presses.first?.type, direction(of: type) != nil { pressStartedAt = ProcessInfo.processInfo.systemUptime }
+        super.pressesBegan(presses, with: event)
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        super.pressesEnded(presses, with: event)
+        guard let type = presses.first?.type, let step = direction(of: type), horizontalSwitchEnabled else { return }
+        let started = pressStartedAt
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self, self.lastFocusChange < started else { return } // 焦点动了就不切换
+            self.switchPill(by: step)
+        }
+    }
+
+    @objc private func handleHorizontalSwipe(_ gesture: UISwipeGestureRecognizer) {
+        guard horizontalSwitchEnabled else { return }
+        let step = gesture.direction == .right ? 1 : -1
+        let swipedAt = ProcessInfo.processInfo.systemUptime
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self, self.lastFocusChange < swipedAt - 0.4 else { return }
+            self.switchPill(by: step)
+        }
+    }
+
+    private func switchPill(by step: Int) {
+        var index = selectedIndex + step
+        while cellModels.indices.contains(index), cellModels[index].contentVC == nil { index += step }
+        guard cellModels.indices.contains(index) else { return }
+        show(index: index)
+        let path = IndexPath(item: index, section: 0)
+        leftCollectionView.scrollToItem(at: path, at: .centeredHorizontally, animated: true)
+        leftCollectionView.layoutIfNeeded()
+        forcedPill = path
+        setNeedsFocusUpdate()
+        updateFocusIfNeeded()
+        forcedPill = nil
+    }
+
     private func show(index: Int) {
         guard cellModels.indices.contains(index) else { return }
         let model = cellModels[index]
@@ -367,5 +445,11 @@ class EmptyViewController: UIViewController {
         label.text = "Nothing Here"
         view.addSubview(label)
         label.makeConstraintsBindToCenterOfSuperview()
+    }
+}
+
+extension PersonalViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        true
     }
 }
