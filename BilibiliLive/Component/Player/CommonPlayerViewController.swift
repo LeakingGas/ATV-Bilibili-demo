@@ -30,6 +30,12 @@ class CommonPlayerViewController: UIViewController {
     func exitPlayer(animated: Bool = true) {
         exitRequested = true
         if let root = exitRootViewController, root.presentedViewController != nil {
+            // 中间的详情页在退出动画期间会被系统临时放回画面，先把它隐藏，避免闪一下。
+            var middle = root.presentedViewController
+            while let controller = middle, controller !== self {
+                controller.view.isHidden = true
+                middle = controller.presentedViewController
+            }
             root.dismiss(animated: animated)
         } else {
             dismiss(animated: animated)

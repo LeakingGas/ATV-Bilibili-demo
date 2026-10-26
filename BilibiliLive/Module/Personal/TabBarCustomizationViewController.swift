@@ -2,6 +2,11 @@
 //  TabBarCustomizationViewController.swift
 //  BilibiliLive
 //
+//  自定义菜单栏。
+//  浏览：方向键正常移动焦点。
+//  按确定（或播放键）「拿起」当前项目 → 方向键 / 滑动移动它（左右调顺序，上下换区域），
+//  焦点始终跟着被拿起的项目；再按确定、播放或返回键「放下」。
+//
 
 import SnapKit
 import UIKit
@@ -9,19 +14,20 @@ import UIKit
 class TabBarCustomizationViewController: UIViewController {
     // MARK: - State
 
-    /// The page currently being reordered. `nil` means browse mode.
-    private var editingPage: TabBarPage?
-    private var pendingFocusIndexPath: IndexPath?
-    private var focusedIndexPath: IndexPath?
-    private var preferredIndexPath: IndexPath?
-
-    /// 按 sectionOrder 排列：导航栏 / 我的页面 / 隐藏。
     private static let sectionOrder: [Settings.TabBarPageSection] = [.tabBar, .personal, .hidden]
     private var lists: [[Settings.TabBarPagePlacement]] = [[], [], []]
-
     private var originalPlacements = [Settings.TabBarPagePlacement]()
 
+    /// 被拿起的项目所在位置；nil = 浏览模式。
+    private var picked: IndexPath?
+    private var focusedIndexPath: IndexPath?
+    /// 下一次强制聚焦的位置（拿起移动后让焦点跟随）。
+    private var forcedFocus: IndexPath?
+
+    private var isEditingItem: Bool { picked != nil }
+
     override var preferredFocusEnvironments: [any UIFocusEnvironment] {
+        if let forcedFocus, let cell = collectionView.cellForItem(at: forcedFocus) { return [cell] }
         return [collectionView]
     }
 
@@ -29,8 +35,9 @@ class TabBarCustomizationViewController: UIViewController {
 
     private let hintLabel: UILabel = {
         let label = UILabel()
-        label.font = .preferredFont(forTextStyle: .footnote)
-        label.textColor = UIColor.white
+        label.font = .systemFont(ofSize: 26, weight: .medium)
+        label.textColor = UIColor.white.withAlphaComponent(0.8)
+        label.numberOfLines = 2
         return label
     }()
 
@@ -55,35 +62,26 @@ class TabBarCustomizationViewController: UIViewController {
         return cv
     }()
 
+    private let menuTap = UITapGestureRecognizer()
+    private var swipes = [UISwipeGestureRecognizer]()
+
     // MARK: - Layout
 
     private func makeLayout() -> UICollectionViewCompositionalLayout {
-        UICollectionViewCompositionalLayout { [weak self] sectionIndex, environment in
-            self?.makeSection(environment: environment)
+        UICollectionViewCompositionalLayout { _, _ in
+            let itemSize = NSCollectionLayoutSize(widthDimension: .absolute(200), heightDimension: .absolute(110))
+            let item = NSCollectionLayoutItem(layoutSize: itemSize)
+            let group = NSCollectionLayoutGroup.horizontal(layoutSize: itemSize, subitems: [item])
+            let section = NSCollectionLayoutSection(group: group)
+            section.orthogonalScrollingBehavior = .continuous
+            section.interGroupSpacing = 26
+            section.contentInsets = NSDirectionalEdgeInsets(top: 18, leading: 0, bottom: 34, trailing: 40)
+            let header = NSCollectionLayoutBoundarySupplementaryItem(
+                layoutSize: NSCollectionLayoutSize(widthDimension: .fractionalWidth(1.0), heightDimension: .absolute(50)),
+                elementKind: UICollectionView.elementKindSectionHeader, alignment: .top)
+            section.boundarySupplementaryItems = [header]
+            return section
         }
-    }
-
-    private func makeSection(environment: NSCollectionLayoutEnvironment) -> NSCollectionLayoutSection {
-        let itemSize = NSCollectionLayoutSize(widthDimension: .absolute(200),
-                                              heightDimension: .absolute(120))
-        let item = NSCollectionLayoutItem(layoutSize: itemSize)
-
-        let groupSize = NSCollectionLayoutSize(widthDimension: .estimated(200),
-                                               heightDimension: .absolute(120))
-        let group = NSCollectionLayoutGroup.horizontal(layoutSize: groupSize, subitems: [item])
-
-        let section = NSCollectionLayoutSection(group: group)
-        section.orthogonalScrollingBehavior = .continuous
-        section.interGroupSpacing = 30
-        section.contentInsets = NSDirectionalEdgeInsets(top: 20, leading: 0, bottom: 30, trailing: 40)
-
-        let headerSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1.0),
-                                                heightDimension: .absolute(50))
-        let header = NSCollectionLayoutBoundarySupplementaryItem(layoutSize: headerSize,
-                                                                 elementKind: UICollectionView.elementKindSectionHeader,
-                                                                 alignment: .top)
-        section.boundarySupplementaryItems = [header]
-        return section
     }
 
     // MARK: - Lifecycle
@@ -92,60 +90,104 @@ class TabBarCustomizationViewController: UIViewController {
         super.viewDidLoad()
         title = "自定义菜单栏"
         view.backgroundColor = .black
-
         setupUI()
+        setupGestures()
         reloadPlacementsFromSettings()
         updateHintLabel()
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        if editingPage != nil { stopEditing() }
+        if isEditingItem { drop() }
+        commitIfNeeded()
     }
 
-    // MARK: - Press handling
+    // MARK: - Input
+
+    private func setupGestures() {
+        // 移动中按返回 = 放下，不退出本页。手势优先于导航控制器的返回。
+        menuTap.addTarget(self, action: #selector(handleMenuTap))
+        menuTap.allowedPressTypes = [NSNumber(value: UIPress.PressType.menu.rawValue)]
+        menuTap.delegate = self
+        view.addGestureRecognizer(menuTap)
+        // 触控板滑动（不产生方向键按压）在移动中也能移动项目。
+        for direction in [UISwipeGestureRecognizer.Direction.left, .right, .up, .down] {
+            let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipe(_:)))
+            swipe.direction = direction
+            swipe.delegate = self
+            swipe.isEnabled = false
+            view.addGestureRecognizer(swipe)
+            swipes.append(swipe)
+        }
+    }
+
+    @objc private func handleMenuTap() {
+        if isEditingItem { drop() }
+    }
+
+    @objc private func handleSwipe(_ gesture: UISwipeGestureRecognizer) {
+        guard isEditingItem else { return }
+        switch gesture.direction {
+        case .left: move(dx: -1, dy: 0)
+        case .right: move(dx: 1, dy: 0)
+        case .up: move(dx: 0, dy: -1)
+        case .down: move(dx: 0, dy: 1)
+        default: break
+        }
+    }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        // 移动中按返回：只结束移动，留在本页继续选择其他项目。
-        if presses.first?.type == .menu, editingPage != nil { return }
-        super.pressesBegan(presses, with: event)
+        guard isEditingItem, let type = presses.first?.type else {
+            super.pressesBegan(presses, with: event)
+            return
+        }
+        switch type {
+        case .leftArrow: move(dx: -1, dy: 0)
+        case .rightArrow: move(dx: 1, dy: 0)
+        case .upArrow: move(dx: 0, dy: -1)
+        case .downArrow: move(dx: 0, dy: 1)
+        case .menu, .select, .playPause: break // handled on release
+        default: super.pressesBegan(presses, with: event)
+        }
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        guard let press = presses.first else {
+        guard let type = presses.first?.type else {
             super.pressesEnded(presses, with: event)
             return
         }
-
-        switch press.type {
-        case .menu where editingPage != nil:
-            stopEditing()
-        case .playPause, .select:
-            editingPage != nil ? stopEditing() : startEditing()
+        switch type {
+        case .select, .playPause:
+            if isEditingItem { drop() } else { pick() }
+        case .menu where isEditingItem:
+            drop()
         default:
+            let arrows: [UIPress.PressType] = [.leftArrow, .rightArrow, .upArrow, .downArrow]
+            if isEditingItem, arrows.contains(type) { return }
             super.pressesEnded(presses, with: event)
         }
     }
 
-    // MARK: - Editing
+    // MARK: - Pick / move / drop
 
-    private func startEditing() {
-        guard let ip = focusedIndexPath,
-              let p = placement(at: ip)
-        else { return }
-        editingPage = p.page
+    private func pick() {
+        guard let indexPath = focusedIndexPath, placement(at: indexPath) != nil else { return }
+        picked = indexPath
+        swipes.forEach { $0.isEnabled = true }
         updateHintLabel()
-        collectionView.reconfigureItems(at: collectionView.indexPathsForVisibleItems)
+        collectionView.reconfigureItems(at: [indexPath])
     }
 
-    private func stopEditing() {
-        editingPage = nil
+    private func drop() {
+        let last = picked
+        picked = nil
+        swipes.forEach { $0.isEnabled = false }
         updateHintLabel()
         commitIfNeeded()
-        collectionView.reconfigureItems(at: collectionView.indexPathsForVisibleItems)
+        if let last, collectionView.numberOfSections > last.section, collectionView.numberOfItems(inSection: last.section) > last.item {
+            collectionView.reconfigureItems(at: [last])
+        }
     }
-
-    // MARK: - Move
 
     private func showAlert(_ title: String) {
         let alert = UIAlertController(title: title, message: nil, preferredStyle: .alert)
@@ -153,34 +195,42 @@ class TabBarCustomizationViewController: UIViewController {
         present(alert, animated: true)
     }
 
-    private func moveEditingItem(from: IndexPath, to: IndexPath) -> Bool {
-        guard var editItem = placement(at: from) else { return false }
-
-        let tabBarCount = lists[0].count
-        let fromSection = pageSection(for: from)
-        let toSection = pageSection(for: to)
-
-        if toSection == fromSection {
-            // 同一层
-            lists[from.section].swapAt(from.item, to.item)
-            return true
-        }
-
-        // 不同层
-        if fromSection == .tabBar {
-            if editItem.page.isFixedInTabBar {
-                showAlert("该项目只允许在导航栏展示")
-                return false
+    /// dx：同区域内左右挪一格；dy：移到上 / 下一个区域（保持大致相同的横向位置）。
+    private func move(dx: Int, dy: Int) {
+        guard let from = picked, var item = placement(at: from) else { return }
+        var to = from
+        if dx != 0 {
+            let target = from.item + dx
+            guard lists[from.section].indices.contains(target) else { return }
+            lists[from.section].swapAt(from.item, target)
+            to = IndexPath(item: target, section: from.section)
+        } else {
+            let targetSection = from.section + dy
+            guard Self.sectionOrder.indices.contains(targetSection) else { return }
+            if from.section == 0 {
+                if item.page.isFixedInTabBar { showAlert("「\(item.page.title)」只能放在菜单栏"); return }
+                if lists[0].count <= 3 { showAlert("菜单栏至少保留 3 个页面"); return }
             }
-            if tabBarCount <= 3 {
-                showAlert("菜单栏至少保留 3 个页面")
-                return false
-            }
+            item.section = Self.sectionOrder[targetSection]
+            lists[from.section].remove(at: from.item)
+            let insertAt = min(from.item, lists[targetSection].count)
+            lists[targetSection].insert(item, at: insertAt)
+            to = IndexPath(item: insertAt, section: targetSection)
         }
-        editItem.section = toSection
-        lists[from.section].remove(at: from.item)
-        lists[to.section].insert(editItem, at: min(to.item, lists[to.section].count))
-        return true
+        picked = to
+        collectionView.reloadData()
+        collectionView.layoutIfNeeded()
+        collectionView.scrollToItem(at: to, at: .centeredHorizontally, animated: false)
+        collectionView.layoutIfNeeded()
+        focus(on: to)
+    }
+
+    private func focus(on indexPath: IndexPath) {
+        forcedFocus = indexPath
+        setNeedsFocusUpdate()
+        updateFocusIfNeeded()
+        forcedFocus = nil
+        focusedIndexPath = indexPath
     }
 
     // MARK: - UI helpers
@@ -223,9 +273,11 @@ class TabBarCustomizationViewController: UIViewController {
     }
 
     private func updateHintLabel() {
-        hintLabel.text = editingPage != nil
-            ? "移动中：左右调整顺序，上下在区域间移动（移到「隐藏」即不显示）；按确认、播放或返回键完成"
-            : "选中项目后按确认键或播放键开始移动；移到「隐藏」区域的页面将不再显示"
+        if let picked, let item = placement(at: picked) {
+            hintLabel.text = "正在移动「\(item.page.title)」：← → 调整顺序，↑ ↓ 移到其他区域；按确定、播放或返回键放下"
+        } else {
+            hintLabel.text = "选中项目后按确定键拿起来移动；移到「隐藏」区域的页面将不再显示"
+        }
     }
 
     private func commitIfNeeded() {
@@ -245,9 +297,7 @@ class TabBarCustomizationViewController: UIViewController {
 
     @objc
     private func didTapRestoreDefault() {
-        if editingPage != nil {
-            stopEditing()
-        }
+        if isEditingItem { drop() }
         let placements = Settings.defaultPlacements
         lists = Self.sectionOrder.map { section in placements.filter { $0.section == section } }
         updateHintLabel()
@@ -255,13 +305,8 @@ class TabBarCustomizationViewController: UIViewController {
         commitIfNeeded()
     }
 
-    // MARK: - Data helpers
-
-    private func pageSection(for indexpath: IndexPath) -> Settings.TabBarPageSection {
-        Self.sectionOrder[indexpath.section]
-    }
-
     private func placement(at indexPath: IndexPath) -> Settings.TabBarPagePlacement? {
+        guard lists.indices.contains(indexPath.section) else { return nil }
         let list = lists[indexPath.section]
         return list.indices.contains(indexPath.item) ? list[indexPath.item] : nil
     }
@@ -275,16 +320,14 @@ extension TabBarCustomizationViewController: UICollectionViewDataSource {
     }
 
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        // 空分区放一个占位格，保证焦点能移进去（例如第一次隐藏某个页面）。
+        // 空区域放一个占位格，便于看清并移入。
         max(1, lists[section].count)
     }
 
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: TabBarTileCell.reuseID, for: indexPath) as! TabBarTileCell
         if let placement = placement(at: indexPath) {
-            let page = placement.page
-            cell.configure(title: page.title,
-                           isBeingEdited: page == editingPage)
+            cell.configure(title: placement.page.title, isBeingEdited: indexPath == picked)
         } else {
             cell.configure(title: "（空）", isBeingEdited: false)
         }
@@ -295,9 +338,6 @@ extension TabBarCustomizationViewController: UICollectionViewDataSource {
                         viewForSupplementaryElementOfKind kind: String,
                         at indexPath: IndexPath) -> UICollectionReusableView
     {
-        guard kind == UICollectionView.elementKindSectionHeader else {
-            return UICollectionReusableView()
-        }
         let view = collectionView.dequeueReusableSupplementaryView(ofKind: kind,
                                                                    withReuseIdentifier: TabBarSectionHeaderView.reuseID,
                                                                    for: indexPath) as! TabBarSectionHeaderView
@@ -312,58 +352,28 @@ extension TabBarCustomizationViewController: UICollectionViewDelegate {
     func collectionView(_ collectionView: UICollectionView,
                         shouldUpdateFocusIn context: UICollectionViewFocusUpdateContext) -> Bool
     {
-        guard editingPage != nil else { return true }
-
-        // For swipe gestures that bypass pressesBegan, derive direction and trigger move.
-        if let from = context.previouslyFocusedIndexPath,
-           let to = context.nextFocusedIndexPath
-        {
-            if pendingFocusIndexPath == from {
-                return false
-            }
-            pendingFocusIndexPath = to
-
-            if moveEditingItem(from: from, to: to) == false {
-                return false
-            }
-            if from.section != to.section {
-                // 跨区（可能涉及空分区占位格）：整体刷新并把焦点放到新位置。
-                // 不能在焦点更新回调里刷新数据（会崩溃），放到下一轮主循环。
-                let target = IndexPath(item: min(to.item, max(0, lists[to.section].count - 1)), section: to.section)
-                preferredIndexPath = target
-                DispatchQueue.main.async { [weak self] in
-                    guard let self else { return }
-                    self.collectionView.reloadData()
-                    self.collectionView.layoutIfNeeded()
-                    self.pendingFocusIndexPath = nil
-                    self.collectionView.setNeedsFocusUpdate()
-                    self.collectionView.updateFocusIfNeeded()
-                }
-                return false
-            }
-            collectionView.performBatchUpdates {
-                collectionView.moveItem(at: from, to: to)
-
-            } completion: { [weak self] _ in
-                self?.pendingFocusIndexPath = nil
-            }
-        }
-        return false
-    }
-
-    func indexPathForPreferredFocusedView(in collectionView: UICollectionView) -> IndexPath? {
-        defer { preferredIndexPath = nil }
-        return preferredIndexPath
+        // 移动中焦点只能由我们移动（跟随被拿起的项目）。
+        guard isEditingItem else { return true }
+        return forcedFocus != nil && context.nextFocusedIndexPath == forcedFocus
     }
 
     func collectionView(_ collectionView: UICollectionView,
                         didUpdateFocusIn context: UICollectionViewFocusUpdateContext,
                         with coordinator: UIFocusAnimationCoordinator)
     {
-        focusedIndexPath = context.nextFocusedIndexPath
-        if focusedIndexPath == pendingFocusIndexPath {
-            pendingFocusIndexPath = nil
-        }
+        if let next = context.nextFocusedIndexPath { focusedIndexPath = next }
+    }
+}
+
+extension TabBarCustomizationViewController: UIGestureRecognizerDelegate {
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        if gestureRecognizer === menuTap { return isEditingItem }
+        return isEditingItem
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // 导航控制器的返回手势等我们失败后才生效。
+        gestureRecognizer === menuTap && otherGestureRecognizer.allowedPressTypes.contains(NSNumber(value: UIPress.PressType.menu.rawValue))
     }
 }
 
@@ -450,7 +460,12 @@ class TabBarTileCell: BLMotionCollectionViewCell {
     }
 
     private func updateAppearance() {
-        if isFocused {
+        if isBeingEdited {
+            // 被拿起：品红底白字，明显区别于普通焦点。
+            contentView.backgroundColor = UIColor(red: 0.98, green: 0.45, blue: 0.62, alpha: 1)
+            titleLabel.textColor = .white
+            layer.shadowOpacity = 0.45
+        } else if isFocused {
             contentView.backgroundColor = .white
             titleLabel.textColor = .black
             layer.shadowOpacity = 0.3
