@@ -1,0 +1,16 @@
+name: SDK probe
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: macos-26
+    steps:
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - run: |
+          SDK=$(xcrun --sdk appletvos --show-sdk-path)
+          H=$SDK/System/Library/Frameworks/UIKit.framework/Headers
+          for f in UITabBarController.h UITab.h UITabGroup.h UITabBarControllerSidebar.h; do
+            [ -f "$H/$f" ] || { echo "::warning title=$f::missing"; continue; }
+            grep -nE "API_AVAILABLE|API_UNAVAILABLE|@property|^- \(|typedef|Sidebar|sidebar|mode" "$H/$f" | grep -iE "sidebar|mode|tvos|tabs|selectedTab" | head -40 | while IFS= read -r l; do echo "::warning title=$f::${l:0:400}"; done
+          done
