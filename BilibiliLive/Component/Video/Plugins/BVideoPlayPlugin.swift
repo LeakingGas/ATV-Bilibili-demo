@@ -14,7 +14,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private weak var playerVC: AVPlayerViewController?
     private var playerDelegate: BilibiliVideoResourceLoaderDelegate?
     private let playInfo: PlayInfo
-    private let playData: PlayerDetailData
+    private var playData: PlayerDetailData
     private let reportWatchHistory: Bool
     private let minimizeStalling: Bool
     private let isMuted: Bool
@@ -140,7 +140,35 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         }
     }
 
+    /// B 站视频地址带签名和过期时间，离开较久后旧地址会被 CDN 拒绝（之前回来一直黑屏的偶发原因之一），
+    /// 所以重载前先重新请求播放地址；刚从后台回来网络可能还没就绪，失败时稍等重试。
+    private func refreshPlayURL() async {
+        let aid = playData.aid, cid = playData.cid
+        for attempt in 0..<3 {
+            if attempt > 0 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+            do {
+                let fresh = playData.isBangumi
+                    ? try await WebRequest.requestPcgPlayUrl(aid: aid, cid: cid)
+                    : try await WebRequest.requestPlayUrl(aid: aid, cid: cid)
+                playData.videoPlayURLInfo = fresh
+                BTRTrace.shared.event("foreground_playurl",["attempt":attempt,"ok":true])
+                return
+            } catch {
+                BTRTrace.shared.event("foreground_playurl",["attempt":attempt,"ok":false])
+            }
+        }
+    }
+
     private func reloadInPlace(at position: Double, resume: Bool) async {
+        await refreshPlayURL()
+        for attempt in 0..<3 {
+            if attempt > 0 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+            if await reloadOnce(at: position, resume: resume) { return }
+        }
+        onLoadFailure?("回到 App 后重新加载失败，请返回后重新打开视频")
+    }
+
+    private func reloadOnce(at position: Double, resume: Bool) async -> Bool {
         do {
             let generation = beginLoadGeneration()
             try await playmedia(urlInfo: playData.videoPlayURLInfo,
@@ -149,12 +177,17 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
                                 maxQuality: lastMaxQuality,
                                 streamIndex: lastStreamIndex,
                                 isQualitySwitch: true)
-            guard loadGeneration == generation, !Task.isCancelled, let newPlayer = playerVC?.player else { return }
+            guard loadGeneration == generation, !Task.isCancelled, let newPlayer = playerVC?.player else { return true }
             _ = await newPlayer.seek(to: CMTime(seconds: position, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
-            guard loadGeneration == generation, playerVC?.player === newPlayer else { return }
+            guard loadGeneration == generation, playerVC?.player === newPlayer else { return true }
             if resume { newPlayer.play() } else { newPlayer.pause() }
+            return true
+        } catch is CancellationError {
+            return true
         } catch {
             Logger.warn("[player] foreground reload failed: \(error)")
+            BTRTrace.shared.event("foreground_reload_failed",BTRTrace.errorFields(error))
+            return false
         }
     }
 

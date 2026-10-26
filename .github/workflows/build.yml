@@ -1,6 +1,11 @@
 name: BTR unsigned tvOS IPA
 on:
   workflow_dispatch:
+    inputs:
+      clean:
+        description: '完全重新编译（不使用缓存）'
+        type: boolean
+        default: false
   push:
     branches: [btr-port]
   pull_request:
@@ -15,12 +20,44 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: latest-stable
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # 增量编译缓存：第三方库源码 + 编译中间结果。缓存键绑定 Xcode 版本和依赖版本，
+      # 任一变化即从零编译；手动触发时可勾选「完全重新编译」跳过缓存。
+      - name: Cache key
+        id: cachekey
+        run: |
+          echo "xcode=$(xcodebuild -version | tr -d '\n' | tr ' ' '_')" >> "$GITHUB_OUTPUT"
+      - name: Restore build cache
+        if: ${{ !inputs.clean }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/SourcePackages
+            build/DerivedData
+          key: btr-${{ steps.cachekey.outputs.xcode }}-${{ hashFiles('BilibiliLive.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-${{ github.sha }}
+          restore-keys: |
+            btr-${{ steps.cachekey.outputs.xcode }}-${{ hashFiles('BilibiliLive.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-
+      - name: Restore source timestamps for incremental build
+        run: |
+          # checkout 会把所有文件时间改成当前时间，导致每次全部重编；按最后一次提交时间还原。
+          python3 - <<'PY'
+          import os, subprocess
+          out = subprocess.check_output(["git", "log", "--format=T%ct", "--name-only"], text=True)
+          seen, stamp = set(), None
+          for line in out.splitlines():
+              if line.startswith("T"):
+                  stamp = int(line[1:]); continue
+              if line and line not in seen and os.path.isfile(line):
+                  seen.add(line); os.utime(line, (stamp, stamp))
+          print(f"restored mtimes for {len(seen)} files")
+          PY
       - name: Native policy and fault-injection tests
         run: |
           set -o pipefail
@@ -33,9 +70,19 @@ jobs:
           xcodebuild -project BilibiliLive.xcodeproj -scheme BilibiliLive \
             -configuration Release -sdk appletvos -destination 'generic/platform=tvOS' \
             -archivePath "$PWD/build/BTR.xcarchive" \
+            -derivedDataPath "$PWD/build/DerivedData" \
+            -clonedSourcePackagesDirPath "$PWD/build/SourcePackages" \
             -resultBundlePath "$PWD/build/Archive.xcresult" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY='' DEVELOPMENT_TEAM='' SKIP_SWIFTFORMAT=YES archive 2>&1 | tee build/archive.log
+      - name: Save build cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/SourcePackages
+            build/DerivedData
+          key: btr-${{ steps.cachekey.outputs.xcode }}-${{ hashFiles('BilibiliLive.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-${{ github.sha }}
       - name: Package unsigned IPA and matching source
         run: |
           set -euo pipefail

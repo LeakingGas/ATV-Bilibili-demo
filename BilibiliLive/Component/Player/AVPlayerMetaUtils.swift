@@ -11,13 +11,14 @@ import MediaPlayer
 
 enum AVPlayerMetaUtils {
     static func setPlayerInfo(title: String?, subTitle: String?, desp: String?, pic: URL?, player: AVPlayer) async {
-        let desp = desp?.components(separatedBy: "\n").joined(separator: " ")
+        // 只给播放器标题和副标题（控制栏上方显示）。不再提供简介和封面：
+        // 系统会因为它们多出一个「简介」页，内容和我们的「详情」页重复。
+        _ = desp
         let mapping: [AVMetadataIdentifier: Any?] = [
             .commonIdentifierTitle: title,
             .iTunesMetadataTrackSubTitle: subTitle,
-            .commonIdentifierDescription: desp,
         ]
-        var metas = mapping.compactMap { createMetadataItem(for: $0, value: $1) }
+        let metas = mapping.compactMap { createMetadataItem(for: $0, value: $1) }
 
         MainActor.callSafely {
             player.currentItem?.externalMetadata = metas
@@ -36,14 +37,9 @@ enum AVPlayerMetaUtils {
                    .processor(DownsamplingImageProcessor(size: CGSize(width: 640, height: 360))),
                ]
            ),
-           let data = resource.image.pngData(),
-           let item = createMetadataItem(for: .commonIdentifierArtwork, value: data)
+           resource.image.size.width > 0
         {
-            metas.append(item)
-            MainActor.callSafely {
-                player.currentItem?.externalMetadata = metas
-            }
-
+            // 封面只用于系统「正在播放」信息，不放进播放器元数据。
             let artwork = MPMediaItemArtwork(boundsSize: resource.image.size) { _ in resource.image }
             nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
         }

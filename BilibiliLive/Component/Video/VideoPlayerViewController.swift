@@ -295,6 +295,11 @@ class VideoPlayerViewController: CommonPlayerViewController {
             self.onDidExit = nil
             DispatchQueue.main.async { onDidExit() }
         }
+        // 播放器偶尔会被系统自己的流程关闭（没经过 exitPlayer），这时中间的详情页会露出来。
+        // 仍然回到进入详情页之前的页面。
+        if !exitRequested, let root = exitRootViewController, root.presentedViewController != nil {
+            DispatchQueue.main.async { root.dismiss(animated: true) }
+        }
     }
 
     override func stopPlayback() {
