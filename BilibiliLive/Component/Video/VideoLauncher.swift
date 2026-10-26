@@ -8,7 +8,6 @@
 
 import UIKit
 
-@MainActor
 enum VideoLauncher {
     static func play(aid: Int, cid: Int? = nil, epid: Int? = nil, from presenter: UIViewController? = nil) {
         let epid = (epid ?? 0) > 0 ? epid : nil
