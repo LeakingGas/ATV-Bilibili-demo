@@ -444,6 +444,16 @@ extension WebRequest {
         }
     }
 
+    /// 一键三连（点赞 + 投 2 币 + 收藏到默认收藏夹）。
+    static func requestTriple(aid: Int) async -> (like: Bool, coin: Bool, favorite: Bool)? {
+        do {
+            let json = try await requestJSON(method: .post, url: "https://api.bilibili.com/x/web-interface/archive/like/triple", parameters: ["aid": aid])
+            return (json["like"].boolValue, json["coin"].boolValue, json["fav"].boolValue)
+        } catch {
+            return nil
+        }
+    }
+
     static func requestCoin(aid: Int, num: Int) {
         requestJSON(method: .post, url: EndPoint.coin, parameters: ["aid": aid, "multiply": num, "select_like": 1])
     }

@@ -792,7 +792,8 @@ class RelatedVideoCell: BLMotionCollectionViewCell {
             make.top.left.right.equalToSuperview()
             make.width.equalTo(imageView.snp.height).multipliedBy(14.0 / 9)
         }
-        imageView.layer.cornerRadius = 12
+        imageView.layer.cornerRadius = 20
+        imageView.layer.cornerCurve = .continuous
         imageView.clipsToBounds = true
         imageView.contentMode = .scaleAspectFill
         titleLabel.snp.makeConstraints { make in

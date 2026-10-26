@@ -124,6 +124,7 @@ class BLCustomTextButton: BLButton {
     override func setup() {
         super.setup()
         effectView.layer.cornerRadius = 10
+        effectView.layer.cornerCurve = .continuous
         effectView.contentView.addSubview(titleLabel)
         titleLabel.snp.makeConstraints { make in
             make.top.bottom.equalToSuperview().inset(10)
@@ -133,6 +134,12 @@ class BLCustomTextButton: BLButton {
         titleLabel.font = titleFont
         titleLabel.textColor = isFocused ? titleSelectedColor : titleColor
         titleLabel.setContentCompressionResistancePriority(.required, for: .vertical)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // 胶囊形文字按钮
+        effectView.layer.cornerRadius = min(effectView.bounds.height / 2, 30)
     }
 
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
@@ -168,7 +175,8 @@ class BLButton: UIControl {
         selectedWhiteView.isHidden = !isFocused
         addSubview(effectView)
         effectView.isUserInteractionEnabled = false
-        effectView.layer.cornerRadius = 8
+        effectView.layer.cornerRadius = 18
+        effectView.layer.cornerCurve = .continuous
         effectView.clipsToBounds = true
         effectView.snp.makeConstraints { make in
             make.top.leading.trailing.equalToSuperview()
@@ -197,9 +205,10 @@ class BLButton: UIControl {
                 self.transform = CGAffineTransformMakeScale(1.1, 1.1)
                 let scaleDiff = (self.bounds.size.height * 1.1 - self.bounds.size.height) / 2
                 self.transform = CGAffineTransformTranslate(self.transform, 0, -scaleDiff)
-                self.layer.shadowOffset = CGSizeMake(0, 10)
-                self.layer.shadowOpacity = 0.15
-                self.layer.shadowRadius = 16.0
+                self.layer.shadowColor = UIColor.black.cgColor
+                self.layer.shadowOffset = CGSizeMake(0, 16)
+                self.layer.shadowOpacity = 0.3
+                self.layer.shadowRadius = 22.0
                 self.addMotionEffect(self.motionEffect)
             }
         } else {

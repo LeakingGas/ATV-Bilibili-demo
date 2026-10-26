@@ -53,9 +53,11 @@ class BLMotionCollectionViewCell: UICollectionViewCell {
             transform = CGAffineTransformMakeScale(scaleFactor, scaleFactor)
             let scaleDiff = (bounds.size.height * scaleFactor - bounds.size.height) / 2
             transform = CGAffineTransformTranslate(transform, 0, -scaleDiff)
-            layer.shadowOffset = CGSizeMake(0, 16)
-            layer.shadowOpacity = 0.2
-            layer.shadowRadius = 18.0
+            // Apple TV 风格的「浮起」：更柔和、更深的投影。
+            layer.shadowColor = UIColor.black.cgColor
+            layer.shadowOffset = CGSizeMake(0, 22)
+            layer.shadowOpacity = 0.38
+            layer.shadowRadius = 28.0
         } else {
             transform = CGAffineTransformIdentity
             layer.shadowOpacity = 0

@@ -33,7 +33,8 @@ class FeedCollectionViewCell: BLMotionCollectionViewCell {
             make.top.equalToSuperview()
             make.height.equalTo(imageView.snp.width).multipliedBy(9.0 / 16)
         }
-        imageView.layer.cornerRadius = 12
+        imageView.layer.cornerRadius = 20
+        imageView.layer.cornerCurve = .continuous
         imageView.clipsToBounds = true
         imageView.contentMode = .scaleAspectFill
 

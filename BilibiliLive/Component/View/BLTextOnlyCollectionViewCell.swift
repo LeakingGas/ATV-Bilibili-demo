@@ -30,12 +30,21 @@ class BLTextOnlyCollectionViewCell: BLMotionCollectionViewCell {
         titleLabel.textAlignment = .center
         titleLabel.numberOfLines = 2
         titleLabel.font = UIFont.systemFont(ofSize: 26, weight: .medium)
-        effectView.layer.cornerRadius = 16
+        effectView.layer.cornerRadius = 20
+        effectView.layer.cornerCurve = .continuous
         effectView.clipsToBounds = true
+        // 焦点态：白底黑字（系统按钮风格）。
+        selectedWhiteView.backgroundColor = .white
+        selectedWhiteView.isHidden = true
+        effectView.contentView.insertSubview(selectedWhiteView, at: 0)
+        selectedWhiteView.snp.makeConstraints { make in
+            make.edges.equalToSuperview()
+        }
     }
 
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
         super.didUpdateFocus(in: context, with: coordinator)
         selectedWhiteView.isHidden = !isFocused
+        titleLabel.textColor = isFocused ? .black : .white
     }
 }

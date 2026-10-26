@@ -24,7 +24,7 @@ class BLSettingLineCollectionViewCell: BLMotionCollectionViewCell {
         effectView.snp.makeConstraints { make in
             make.edges.equalToSuperview()
         }
-        effectView.layer.cornerRadius = 10
+        effectView.layer.cornerRadius = 18
         effectView.layer.cornerCurve = .continuous
         effectView.clipsToBounds = true
         selectedWhiteView.backgroundColor = UIColor.white

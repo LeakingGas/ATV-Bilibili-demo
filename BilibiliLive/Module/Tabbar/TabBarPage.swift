@@ -55,6 +55,26 @@ enum TabBarPage: String, CaseIterable, Codable {
         }
     }
 
+    /// 侧边栏图标（SF Symbols）。
+    var symbolName: String {
+        switch self {
+        case .live: return "dot.radiowaves.left.and.right"
+        case .feed: return "house"
+        case .tvRecommend: return "tv"
+        case .hot: return "flame"
+        case .ranking: return "chart.bar"
+        case .follows: return "person.2"
+        case .favorite: return "star"
+        case .personal: return "person.crop.circle"
+        case .search: return "magnifyingglass"
+        case .followBangumi: return "film"
+        case .followUps: return "person.badge.plus"
+        case .toView: return "clock"
+        case .history: return "clock.arrow.circlepath"
+        case .weeklyWatch: return "calendar"
+        }
+    }
+
     var isFixedInTabBar: Bool {
         self == .personal
     }
