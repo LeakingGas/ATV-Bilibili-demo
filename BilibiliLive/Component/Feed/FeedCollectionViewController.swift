@@ -111,6 +111,8 @@ class FeedCollectionViewController: UIViewController {
             _displayData = newValue.map { AnyDispplayData(data: $0) }.uniqued()
             finished = false
             lastFocusedIndexPath = nil
+            // 整体替换（包括刷新时先清空）：下一批数据到来时必须换背景。
+            backdropStale = true
             updateBackdropIfNeeded(force: true)
         }
         get {
@@ -188,8 +190,11 @@ class FeedCollectionViewController: UIViewController {
 
     private let backdrop = FeedBackdropView()
 
+    private var backdropStale = true
+
     private func updateBackdropIfNeeded(force: Bool) {
-        guard force || !backdrop.hasImage, let first = _displayData.first?.data.pic else { return }
+        guard force || backdropStale || !backdrop.hasImage, let first = _displayData.first?.data.pic else { return }
+        backdropStale = false
         backdrop.setImage(url: first)
     }
 
@@ -329,10 +334,10 @@ extension FeedDisplayStyle {
     }
 }
 
-/// 列表背景：封面图大幅模糊 + 深色毛玻璃 + 渐变，柔和、不抢内容。
+/// 列表背景：首个视频封面高斯模糊铺满全屏（保留色彩），再叠一层轻薄毛玻璃和渐变保证文字可读。
 final class FeedBackdropView: UIView {
     private let imageView = UIImageView()
-    private let blur = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
+    private let blur = UIVisualEffectView(effect: UIBlurEffect(style: .regular))
     private let gradient = CAGradientLayer()
     private(set) var hasImage = false
     private var currentURL: URL?
@@ -347,7 +352,9 @@ final class FeedBackdropView: UIView {
         imageView.snp.makeConstraints { $0.edges.equalToSuperview().inset(-60) }
         addSubview(blur)
         blur.snp.makeConstraints { $0.edges.equalToSuperview() }
-        gradient.colors = [UIColor.black.withAlphaComponent(0.15).cgColor, UIColor.black.withAlphaComponent(0.5).cgColor]
+        // 毛玻璃只取一部分强度：既有磨砂质感，又让封面颜色透出来。
+        blur.alpha = 0.55
+        gradient.colors = [UIColor.black.withAlphaComponent(0.05).cgColor, UIColor.black.withAlphaComponent(0.42).cgColor]
         gradient.startPoint = CGPoint(x: 0.5, y: 0)
         gradient.endPoint = CGPoint(x: 0.5, y: 1)
         layer.addSublayer(gradient)
@@ -369,10 +376,11 @@ final class FeedBackdropView: UIView {
         guard url != currentURL else { return }
         currentURL = url
         hasImage = true
-        // 小尺寸下采样后再放大，模糊更柔和、开销更小。
-        imageView.kf.setImage(with: url, options: [.processor(DownsamplingImageProcessor(size: CGSize(width: 192, height: 108))), .cacheOriginalImage]) { [weak self] result in
+        // 先缩小再高斯模糊：色块柔和、无马赛克感，开销也小。换背景时淡入淡出。
+        let processor = DownsamplingImageProcessor(size: CGSize(width: 192, height: 108)) |> BlurImageProcessor(blurRadius: 14)
+        imageView.kf.setImage(with: url, options: [.processor(processor), .cacheOriginalImage, .transition(.fade(0.8))]) { [weak self] result in
             guard let self, case .success = result else { return }
-            UIView.animate(withDuration: 0.6) { self.imageView.alpha = 0.9 }
+            UIView.animate(withDuration: 0.6) { self.imageView.alpha = 1 }
         }
     }
 }
