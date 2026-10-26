@@ -444,7 +444,7 @@ extension Diag {
         let message: String
         do {
             let address = try BTRTraceExport.shared.startDiagnostics()
-            message = address + "\n\n用同一网络下的电脑或手机浏览器打开这个地址，保存 bili-diag.txt 后发到聊天。下载完成前请让本 App 保持在前台。"
+            message = address + "\n\n用同一网络下的手机或电脑浏览器打开这个地址，点「复制全部」后粘贴到聊天，或点「下载 txt」保存文件发过来。下载完成前请让本 App 保持在前台。"
         } catch {
             message = "本地下载服务启动失败（错误码 \((error as NSError).code)）。"
         }

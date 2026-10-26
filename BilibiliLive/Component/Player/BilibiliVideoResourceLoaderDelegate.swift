@@ -1165,10 +1165,38 @@ final class BTRTraceExport {
             }
         }
         let diagPath = "/" + token + "/diag.txt"
+        // 纯文本直接在浏览器里显示（不再强制下载）。
         server[diagPath] = { _ in
             let bytes = Data(Diag.exportText().utf8)
             return HttpResponse.raw(200,"OK",["Content-Type":"text/plain; charset=utf-8",
-                "Content-Disposition":"attachment; filename=bili-diag.txt",
+                "Cache-Control":"no-store","Content-Length":String(bytes.count)]) { writer in
+                try writer.write(bytes)
+            }
+        }
+        // 带「复制全部」按钮的网页，手机上也方便复制。
+        let pagePath = "/" + token + "/diag"
+        server[pagePath] = { _ in
+            let escaped = Diag.exportText()
+                .replacingOccurrences(of: "&", with: "&amp;")
+                .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+            let html = """
+            <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+            <title>诊断日志</title><style>
+            body{margin:0;font:15px -apple-system,system-ui,sans-serif;background:#111;color:#eee}
+            header{position:sticky;top:0;display:flex;gap:10px;align-items:center;padding:12px 16px;background:#1c1c1e;border-bottom:1px solid #333}
+            button,a.btn{font:inherit;padding:10px 18px;border-radius:999px;border:0;background:#fff;color:#000;text-decoration:none}
+            a.btn{background:#333;color:#fff}#s{color:#8e8e93}
+            pre{margin:0;padding:16px;white-space:pre-wrap;word-break:break-all;font:12px ui-monospace,Menlo,monospace}
+            </style></head><body><header><button id="c">复制全部</button><a class="btn" href="diag.txt" download="bili-diag.txt">下载 txt</a><span id="s"></span></header>
+            <pre id="t">\(escaped)</pre><script>
+            document.getElementById('c').onclick=async()=>{const t=document.getElementById('t').innerText,s=document.getElementById('s');
+            try{await navigator.clipboard.writeText(t);s.textContent='已复制';}catch(e){const r=document.createRange();r.selectNodeContents(document.getElementById('t'));
+            const sel=getSelection();sel.removeAllRanges();sel.addRange(r);s.textContent=document.execCommand('copy')?'已复制':'已全选，请手动复制';}};
+            </script></body></html>
+            """
+            let bytes = Data(html.utf8)
+            return HttpResponse.raw(200,"OK",["Content-Type":"text/html; charset=utf-8",
                 "Cache-Control":"no-store","Content-Length":String(bytes.count)]) { writer in
                 try writer.write(bytes)
             }
@@ -1182,7 +1210,7 @@ final class BTRTraceExport {
         let base = "http://" + (Self.localIPv4() ?? "APPLE-TV-IP") + ":" + String(port)
         let address = base + path
         self.address = address
-        diagAddress = base + diagPath
+        diagAddress = base + pagePath
         if recordBTR {
             BTRTrace.shared.start()
             BTRTrace.shared.event("recording_started")
