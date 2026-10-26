@@ -12,6 +12,6 @@ jobs:
           SDK=$(xcrun --sdk appletvos --show-sdk-path)
           H=$SDK/System/Library/Frameworks/UIKit.framework/Headers
           echo "::warning title=files::$(ls $H | grep -i tab | tr '\n' ' ')"
-          grep -h -i "sidebar" $H/UITab*.h > /tmp/sb.txt
-          grep -v "UNAVAILABLE(tvos" /tmp/sb.txt | grep -v "^ *///" | head -45 | while IFS= read -r l; do echo "::warning title=sb::${l:0:300}"; done
+          grep -v "^ *//" $H/UITabBarControllerSidebar.h | grep -v "^ *$" | grep -v "^#" | head -60 | while IFS= read -r l; do echo "::warning title=h::${l:0:300}"; done
+          grep -n -i "tvos\|automatic\|group" $H/UITabBarController.h | head -30 | while IFS= read -r l; do echo "::warning title=tbc::${l:0:300}"; done
           exit 0
