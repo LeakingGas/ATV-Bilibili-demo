@@ -649,6 +649,7 @@ struct WebTopFeedRecommendResponse: Codable, Hashable {
         let owner: VideoOwner?
         let stat: Stat?
         let rcmd_reason: RecommendReason?
+        let pubdate: Int?
     }
 
     let item: [Item]

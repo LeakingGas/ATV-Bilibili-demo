@@ -141,26 +141,61 @@ struct RecommendFeedItem: PlayableData {
     var date: String? {
         switch source {
         case let .app(item): return item.date
-        case let .web(item): return item.rcmd_reason?.content
+        case let .web(item):
+            // 与 App 推荐一致：优先推荐理由，否则显示发布时间（相对时间）。
+            if let reason = item.rcmd_reason?.content, !reason.isEmpty { return reason }
+            return item.pubdate.map { Self.relativeDate($0) }
         }
     }
 
+    /// 两个接口统一成同一种格式：▶ 播放量  ≡ 弹幕数  时长（数字不带文字，由卡片统一补「观看 / 弹幕」）。
     var overlay: DisplayOverlay? {
+        var views: String?, danmaku: String?, duration: String?
         switch source {
         case let .app(item):
-            return item.overlay
-        case let .web(item):
-            var left = [DisplayOverlay.DisplayOverlayItem]()
-            if let view = item.stat?.view { left.append(DisplayOverlay.DisplayOverlayItem(icon: "play.rectangle", text: view.numberString())) }
-            if let danmaku = item.stat?.danmaku { left.append(DisplayOverlay.DisplayOverlayItem(icon: "list.bullet.rectangle", text: danmaku.numberString())) }
-            var right = [DisplayOverlay.DisplayOverlayItem]()
-            if let duration = item.duration, duration > 0 {
-                let text = duration >= 3600
-                    ? String(format: "%d:%02d:%02d", duration / 3600, duration % 3600 / 60, duration % 60)
-                    : String(format: "%02d:%02d", duration / 60, duration % 60)
-                right.append(DisplayOverlay.DisplayOverlayItem(icon: nil, text: text))
+            // App 接口这几格的含义和顺序不固定：按内容归类。
+            let texts = [item.cover_left_text_1, item.cover_left_text_2, item.cover_left_text_3, item.cover_right_text]
+                .compactMap { $0?.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            for text in texts {
+                if text.range(of: #"^\d{1,3}:\d{2}(:\d{2})?$"#, options: .regularExpression) != nil {
+                    duration = duration ?? text
+                } else if text.contains("弹幕") {
+                    danmaku = danmaku ?? Self.number(in: text)
+                } else if text.contains("观看") || text.contains("播放") {
+                    views = views ?? Self.number(in: text)
+                } else if text.range(of: #"^[\d.,]+[万亿]?$"#, options: .regularExpression) != nil {
+                    if views == nil { views = text } else if danmaku == nil { danmaku = text }
+                }
             }
-            return DisplayOverlay(leftItems: left, rightItems: right)
+        case let .web(item):
+            views = item.stat?.view.map { $0.numberString() }
+            danmaku = item.stat?.danmaku.map { $0.numberString() }
+            if let seconds = item.duration, seconds > 0 {
+                duration = seconds >= 3600
+                    ? String(format: "%d:%02d:%02d", seconds / 3600, seconds % 3600 / 60, seconds % 60)
+                    : String(format: "%02d:%02d", seconds / 60, seconds % 60)
+            }
         }
+        var left = [DisplayOverlay.DisplayOverlayItem]()
+        if let views { left.append(DisplayOverlay.DisplayOverlayItem(icon: "play.rectangle", text: views)) }
+        if let danmaku { left.append(DisplayOverlay.DisplayOverlayItem(icon: "list.bullet.rectangle", text: danmaku)) }
+        let right = duration.map { [DisplayOverlay.DisplayOverlayItem(icon: nil, text: $0)] } ?? []
+        guard !left.isEmpty || !right.isEmpty else { return nil }
+        return DisplayOverlay(leftItems: left, rightItems: right)
+    }
+
+    private static func number(in text: String) -> String {
+        text.replacingOccurrences(of: "观看", with: "").replacingOccurrences(of: "播放", with: "")
+            .replacingOccurrences(of: "弹幕", with: "").trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func relativeDate(_ timestamp: Int) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
+        let elapsed = Date().timeIntervalSince(date)
+        if elapsed < 3600 { return "\(max(1, Int(elapsed / 60)))分钟前" }
+        if elapsed < 86400 { return "\(Int(elapsed / 3600))小时前" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year) ? "M月d日" : "yyyy年M月d日"
+        return formatter.string(from: date)
     }
 }
