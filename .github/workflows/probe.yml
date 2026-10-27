@@ -7,12 +7,12 @@ jobs:
     steps:
       - name: probe vlckit
         run: |
-          for f in TVVLCKit VLCKit; do
-            body=$(curl -sL "https://code.videolan.org/videolan/VLCKit/raw/master/Packaging/$f.json" | tr -d '\n' | tail -c 1500)
-            echo "::notice title=$f::$body"
-          done
-          url=$(curl -sL "https://code.videolan.org/videolan/VLCKit/raw/master/Packaging/TVVLCKit.json" | python3 -c 'import json,sys; d=json.load(sys.stdin); k=sorted(d.keys(), key=lambda v:[int(x) if x.isdigit() else 0 for x in v.replace("-",".").split(".")])[-1]; print(d[k])')
-          echo "::notice title=latest::$url"
-          curl -sL "$url" -o tv.zip && unzip -l tv.zip | head -40 | while read l; do echo "::notice title=zip::$l"; done
-          unzip -q tv.zip -d tv && find tv -maxdepth 4 | head -40 | while read l; do echo "::notice title=tree::$l"; done
-          bin=$(find tv -path "*tvos-arm64/*" -name TVVLCKit -type f | head -1); [ -n "$bin" ] && file "$bin" | sed 's/^/::notice title=file::/' ; du -sh tv | sed 's/^/::notice title=size::/'
+          url="https://download.videolan.org/cocoapods/prod/TVVLCKit-3.7.2-3e42ae47-79128878.tar.xz"
+          curl -sfL "$url" -o tv.tar.xz || { echo "::error::download failed"; exit 1; }
+          ls -la tv.tar.xz | sed 's/^/::notice title=dl::/'
+          mkdir tv && tar -xJf tv.tar.xz -C tv
+          find tv -maxdepth 5 | grep -v "Headers/" | head -60 | while read l; do echo "::notice title=tree::$l"; done
+          for b in $(find tv -name TVVLCKit -type f | head -4); do echo "::notice title=bin::$b $(file -b "$b" | head -c 300)"; done
+          for p in $(find tv -name Info.plist -path "*xcframework/Info.plist"); do echo "::notice title=xcinfo::$(plutil -convert json -o - "$p" | head -c 1500)"; done
+          du -sh tv | sed 's/^/::notice title=size::/'
+          ls tv/*/ | head; find tv -name "*.h" | grep -i "VLCMediaPlayer.h\|VLCMedia.h" | head -3 | while read h; do grep -n "addPlaybackSlave\|- (void)play\|rate\|position" "$h" | head -20 | sed 's/^/::notice title=api::/'; done
