@@ -24,6 +24,8 @@ enum VideoLauncher {
 
     static func play(_ info: PlayInfo, askResume: Bool = true, from presenter: UIViewController? = nil) {
         let presenter = presenter ?? UIViewController.topMostViewController()
+        // Open the CDN connections while the play URL is still being requested.
+        BTRHTTPClient.shared.preconnect(hosts: BTRCDN.preconnectHosts(region: Settings.btrNodeRegion))
         if Settings.useVLCPlayer {
             presenter.topMostViewController().present(VLCVideoPlayerViewController(playInfo: info, askResume: askResume), animated: true)
             return

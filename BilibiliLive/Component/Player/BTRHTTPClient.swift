@@ -47,6 +47,30 @@ final class BTRHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Sendable
     private let lock = NSLock()
     private var transfers = [Int: Transfer]()
     private var session: URLSession!
+    /// App-wide client: one connection pool for every track and video (see MediaRangeDownloader).
+    static let shared = BTRHTTPClient()
+    private var lastPreconnect = [String: Double]()
+    /// BTR preconnectCdnNodes: open connections to the nodes before any media is asked for, so the
+    /// first pieces skip the TCP+TLS handshake (~0.6 s to the mainland). Two per host for HTTP/1.1.
+    func preconnect(hosts: [String]) {
+        let now = BTRTrace.now
+        lock.lock()
+        let due = hosts.filter { now - (lastPreconnect[$0] ?? -.infinity) > 15000 }
+        for host in due { lastPreconnect[host] = now }
+        lock.unlock()
+        guard !due.isEmpty else { return }
+        BTRTrace.shared.event("preconnect",["hosts":due.count])
+        for host in due {
+            guard let url = URL(string: "https://\(host)/") else { continue }
+            for _ in 0..<2 {
+                var request = URLRequest(url: url)
+                request.httpMethod = "HEAD"
+                request.timeoutInterval = 5
+                request.setValue(Keys.userAgent, forHTTPHeaderField: "User-Agent")
+                session.dataTask(with: request).resume()
+            }
+        }
+    }
     override init() {
         super.init()
         queue.maxConcurrentOperationCount = 1
@@ -117,7 +141,8 @@ final class BTRHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Sendable
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         guard let state = lookup(dataTask), let http = response as? HTTPURLResponse else {
-            completionHandler(.cancel); return
+            // A preconnect HEAD has no body: letting it finish keeps its connection in the pool.
+            completionHandler(dataTask.originalRequest?.httpMethod == "HEAD" ? .allow : .cancel); return
         }
         trace(state,"http_headers",["status":http.statusCode,"elapsedMs":BTRTrace.now-state.started])
         state.idleTimer?.cancel()
@@ -151,6 +176,19 @@ final class BTRHTTPClient: NSObject, URLSessionDataDelegate, @unchecked Sendable
         }
         state.onProgress()
         state.idleTimer = timer(4, task: dataTask, generation: state.idleGeneration)
+    }
+    // Which protocol carried a request and whether it reused an open connection (no secrets logged).
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        guard let last = metrics.transactionMetrics.last else { return }
+        var fields: [String: Any] = ["host":task.originalRequest?.url?.host ?? "","proto":last.networkProtocolName ?? "?",
+            "reused":last.isReusedConnection,"method":task.originalRequest?.httpMethod ?? ""]
+        if let start = last.connectStartDate, let end = last.secureConnectionEndDate ?? last.connectEndDate {
+            fields["connectMs"] = end.timeIntervalSince(start) * 1000
+        }
+        if let start = last.fetchStartDate, let first = last.responseStartDate {
+            fields["firstByteMs"] = first.timeIntervalSince(start) * 1000
+        }
+        BTRTrace.shared.event("http_metrics", fields)
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         lock.lock(); let state = transfers.removeValue(forKey: task.taskIdentifier); lock.unlock()

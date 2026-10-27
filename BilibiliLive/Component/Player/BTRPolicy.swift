@@ -115,6 +115,14 @@ enum BTRCDN {
         "cn-hk-eq-01-03.bilivideo.com",
     ]
 
+    /// Nodes worth opening before the play URL is known (the region's synthetic nodes).
+    static func preconnectHosts(region: BTRNodeRegion) -> [String] {
+        switch region {
+        case .mainland: return mainlandHosts
+        case .overseas: return overseasHosts
+        case .original: return []
+        }
+    }
     static func host(_ url: String) -> String { URLComponents(string: url)?.host?.lowercased() ?? "" }
     static func isAkamai(_ url: String) -> Bool { host(url).hasSuffix(".akamaized.net") }
     static func isRelay(_ url: String) -> Bool {

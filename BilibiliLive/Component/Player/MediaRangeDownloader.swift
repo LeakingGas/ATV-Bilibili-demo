@@ -274,7 +274,8 @@ actor MediaRangeDownloader {
     private let traceLabel: String
     private var timings = [BTRSegmentTiming]()
     func setTimings(_ timings: [BTRSegmentTiming]) { self.timings = timings }
-    private let client = BTRHTTPClient()
+    // One app-wide session: connections stay open across tracks and videos, like a browser's pool.
+    private let client = BTRHTTPClient.shared
     private var policy = BTRPolicy()
     private var total: Int64?
     private var anchor: (MediaByteRange, Data)?
@@ -300,7 +301,6 @@ actor MediaRangeDownloader {
         self.playback = playback; self.isAudio = isAudio; self.traceLabel = traceLabel
         playback.registerHosts(self.candidates.compactMap { URL(string: $0)?.host?.lowercased() })
     }
-    deinit { client.invalidate() }
     func markDowngraded() { downgraded = true }
     func knownTotal() -> Int64? { total }
     func updateKnownTotal(_ value: Int64?) { if total == nil, let value, value > 0 { total = value } }
@@ -451,46 +451,70 @@ actor MediaRangeDownloader {
         fastStartAt = BTRPlaybackSession.now
         await startupProbe()
     }
+    // BTR Promise.any: playback goes on with the first node that delivers. The other probes keep
+    // running in the background; each one measures and verifies its node when it lands.
+    private var probeWinner: String?
+    private var probeDone = 0
     private func startupProbe() async {
         let urls = Array(pool().prefix(8))
         guard !urls.isEmpty, let range = try? MediaByteRange(start: 0, end: 64 * 1024 - 1) else { return }
         let deadline = BTRDeadline(session: playback, generation: playback.generation, presentation: nil)
         let started = BTRTrace.now
-        var results = [String: Data]()
-        var winner: (String, Double)?
-        await withTaskGroup(of: (String, Data?).self) { group in
-            for url in urls {
-                group.addTask { (url, try? await self.sampleBytes(range, url: url, deadline: deadline)) }
-            }
-            var graceArmed = false
-            while let (url, data) = await group.next() {
-                if url.isEmpty { group.cancelAll(); break } // grace over: the rest are measured by what they got
-                if let data, data.count == Int(range.length) {
-                    results[url] = data
-                    if winner == nil { winner = (url, BTRTrace.now - started) }
-                    if !graceArmed {
-                        graceArmed = true
-                        group.addTask { try? await Task.sleep(nanoseconds: 700_000_000); return ("", nil) }
-                    }
-                }
-                if results.count == urls.count { group.cancelAll(); break }
+        for url in urls {
+            Task {
+                let data = try? await self.sampleBytes(range, url: url, deadline: deadline)
+                await self.probeFinished(url, data: data, length: Int(range.length), started: started)
             }
         }
-        guard let (winnerURL, winnerMs) = winner, let reference = results[winnerURL] else {
-            BTRTrace.shared.event("fast_probe",["hosts":urls.count,"ok":0,"elapsedMs":BTRTrace.now - started])
-            return
+        while probeWinner == nil, probeDone < urls.count, BTRTrace.now - started < 8000 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
         }
+        BTRTrace.shared.event("fast_probe",["hosts":urls.count,"winner":probeWinner.flatMap { URL(string:$0)?.host } ?? "",
+            "elapsedMs":BTRTrace.now - started])
+    }
+    private func probeFinished(_ url: String, data: Data?, length: Int, started: Double) {
+        probeDone += 1
+        let ok = data?.count == length
+        BTRTrace.shared.event("fast_probe_host",["host":URL(string:url)?.host ?? "","ok":ok,"elapsedMs":BTRTrace.now - started])
+        guard let data, ok else { return }
         if anchor == nil {
-            let sample = Data(reference.prefix(32 * 1024))
+            let sample = Data(data.prefix(32 * 1024))
             if referenceSample == nil { referenceSample = sample }
-            if referenceSample == sample {
-                for (url, data) in results {
-                    if Data(data.prefix(32 * 1024)) == sample { verified.insert(url) } else { banMismatch(url) }
-                }
-            }
+            if referenceSample == sample { verified.insert(url) } else { banMismatch(url); return }
         }
-        BTRTrace.shared.event("fast_probe",["hosts":urls.count,"ok":results.count,"winner":URL(string:winnerURL)?.host ?? "",
-            "winnerMs":winnerMs,"elapsedMs":BTRTrace.now - started,"measured":candidates.filter { speed($0) > 0 }.count])
+        guard probeWinner == nil else { return }
+        probeWinner = url
+        startHead(data)
+    }
+    /// The winner's 64 KiB is the file's first piece (BTR hands the probe to the player as its first
+    /// ordered chunk), and the rest of the head starts downloading before VLC asks for it.
+    private func startHead(_ head: Data) {
+        guard mode == .accelerated, prewarmID == nil, let total, slotAt(0) == nil,
+              let first = try? MediaByteRange(start: 0, end: Int64(head.count) - 1) else { return }
+        let slot = Slot(first)
+        slot.data = head; slot.finished = true
+        slots.append(slot); slots.sort { $0.range.start < $1.range.start }
+        let end = min(total - 1, (isAudio ? 512 * 1024 : 3 * 1024 * 1024) - 1)
+        let id = UUID()
+        prewarmID = id
+        let reader = Reader(cursor: 0, requestEnd: end, readAhead: false, generation: playback.generation, rescue: RescueBudget(playback.limit))
+        readers[id] = reader
+        BTRTrace.shared.event("fast_head",["track":traceID,"end":end])
+        schedule(reader)
+        Task {
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            self.endPrewarm(id)
+        }
+    }
+    private var firstByteSamples = [Double]()
+    private func recordFirstByte(_ ms: Double) {
+        firstByteSamples.append(ms)
+        if firstByteSamples.count > 12 { firstByteSamples.removeFirst() }
+    }
+    /// Median time to first byte of recent requests (0 when unknown).
+    private func typicalFirstByteMs() -> Double {
+        guard !firstByteSamples.isEmpty else { return 0 }
+        return firstByteSamples.sorted()[firstByteSamples.count / 2]
     }
     /// Playback-like deadline for a piece: when the reader will need it at the media bitrate.
     private func fastDeadline(_ start: Int64, now: Double) -> Double {
@@ -832,7 +856,10 @@ actor MediaRangeDownloader {
         // exist) all hedged blindly at 0.9 s, doubling every request. Those use the startup rule below.
         if fastStart {
             var observation = BTRHedgeObservation(seenAt: BTRPlaybackSession.now)
-            let wait = BTRPlaybackSession.now - fastStartAt < 20000 ? min(200, delay * 1000) : delay * 1000
+            // 200 ms is BTR's startup delay, but a reply takes at least one round trip (~220 ms to the
+            // mainland from the US): never copy a piece before 1.5x the usual first-byte time.
+            let base = BTRPlaybackSession.now - fastStartAt < 20000 ? min(200, delay * 1000) : delay * 1000
+            let wait = max(base, typicalFirstByteMs() * 1.5)
             while true {
                 try Task.checkCancellation()
                 guard deadline.valid else { throw CancellationError() }
@@ -937,7 +964,9 @@ actor MediaRangeDownloader {
         playback.transferStarted(host: host)
         let started = Self.now
         var outcome = "ok"
+        let firstByte = BTRFirstByte()
         defer {
+            if let at = firstByte.at { recordFirstByte((at - started) * 1000) }
             let bytes = progress.snapshot().count
             recentAttempts.append("range=\(range.start)-\(range.end) got=\(bytes) result=\(outcome)")
             if recentAttempts.count > 12 { recentAttempts.removeFirst(recentAttempts.count - 12) }
@@ -953,7 +982,7 @@ actor MediaRangeDownloader {
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         do {
             let length = try await client.fetch(request, range: range, progress: progress, knownTotal: total,
-                isCurrent: { requestDeadline.valid }, onProgress: { [playback] in playback.activity(generation: requestDeadline.generation) })
+                isCurrent: { requestDeadline.valid }, onProgress: { [playback] in firstByte.mark(); playback.activity(generation: requestDeadline.generation) })
             try Task.checkCancellation()
             if let length {
                 if let total, total != length { throw MediaRangeError.mismatch }
@@ -1020,4 +1049,12 @@ actor MediaRangeDownloader {
         }
         verified.insert(url)
     }
+}
+
+/// Time of a request's first body bytes (set from the URLSession delegate queue).
+final class BTRFirstByte: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Double?
+    var at: Double? { lock.lock(); defer { lock.unlock() }; return value }
+    func mark() { lock.lock(); if value == nil { value = ProcessInfo.processInfo.systemUptime }; lock.unlock() }
 }
