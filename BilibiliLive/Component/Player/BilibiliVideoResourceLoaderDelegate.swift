@@ -544,7 +544,11 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
                 let duration = Double(segment.duration) / Double(sidx.timescale)
                 let size = Int64(segment.size)
                 if seconds < presentation + duration || index == sidx.segments.count - 1 {
-                    if size > 0, let range = try? MediaByteRange(start: offset, end: offset + size - 1) {
+                    // diag14: AVPlayer only becomes ready once the NEXT segment has started arriving too
+                    // (device traces: first segment complete at ~3.3-5.4 s, ready at ~7.8 s while the 2nd
+                    // segment's first piece crawled). Prewarm both, so both are hedged as startup-critical.
+                    let nextSize = index + 1 < sidx.segments.count ? Int64(sidx.segments[index + 1].size) : 0
+                    if size > 0, let range = try? MediaByteRange(start: offset, end: offset + size + max(0, nextSize) - 1) {
                         await downloader.prewarm(range: range)
                     }
                     break
