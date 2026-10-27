@@ -554,8 +554,8 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
                     // diag14: AVPlayer only becomes ready once the NEXT segment has started arriving too
                     // (device traces: first segment complete at ~3.3-5.4 s, ready at ~7.8 s while the 2nd
                     // segment's first piece crawled). Prewarm both, so both are hedged as startup-critical.
-                    let nextSize = index + 1 < sidx.segments.count ? Int64(sidx.segments[index + 1].size) : 0
-                    if size > 0, let range = try? MediaByteRange(start: offset, end: offset + size + max(0, nextSize) - 1) {
+                    // （试过同时预下载下一段：两段一起抢带宽，第一段反而更慢，已撤回。）
+                    if size > 0, let range = try? MediaByteRange(start: offset, end: offset + size - 1) {
                         await downloader.prewarm(range: range)
                     }
                     break

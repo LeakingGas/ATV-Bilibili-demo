@@ -1,0 +1,18 @@
+name: probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: macos-26
+    steps:
+      - name: probe vlckit
+        run: |
+          for f in TVVLCKit VLCKit; do
+            body=$(curl -sL "https://code.videolan.org/videolan/VLCKit/raw/master/Packaging/$f.json" | tr -d '\n' | tail -c 1500)
+            echo "::notice title=$f::$body"
+          done
+          url=$(curl -sL "https://code.videolan.org/videolan/VLCKit/raw/master/Packaging/TVVLCKit.json" | python3 -c 'import json,sys; d=json.load(sys.stdin); k=sorted(d.keys(), key=lambda v:[int(x) if x.isdigit() else 0 for x in v.replace("-",".").split(".")])[-1]; print(d[k])')
+          echo "::notice title=latest::$url"
+          curl -sL "$url" -o tv.zip && unzip -l tv.zip | head -40 | while read l; do echo "::notice title=zip::$l"; done
+          unzip -q tv.zip -d tv && find tv -maxdepth 4 | head -40 | while read l; do echo "::notice title=tree::$l"; done
+          bin=$(find tv -path "*tvos-arm64/*" -name TVVLCKit -type f | head -1); [ -n "$bin" ] && file "$bin" | sed 's/^/::notice title=file::/' ; du -sh tv | sed 's/^/::notice title=size::/'

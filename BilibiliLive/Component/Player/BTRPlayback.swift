@@ -284,13 +284,13 @@ struct BTRStartupHedge {
     var firstBytes = 0
     /// now / started in milliseconds; copyBps in bytes per second (0 = unknown).
     mutating func due(now: Double, started: Double, bytes: Int, length: Int, copyBps: Double) -> Bool {
-        if bytes == 0 { return now - started >= 800 } // no first byte after 0.8 s
+        if bytes == 0 { return now - started >= 1200 } // no first byte after 1.2 s
         if firstByteAt == nil { firstByteAt = now; firstBytes = bytes; return false }
         let transferMs = now - firstByteAt!
-        guard transferMs >= 400 else { return false }
+        guard transferMs >= 600 else { return false }
         let rate = Double(bytes - firstBytes) * 1000 / transferMs
         let eta = Double(max(0, length - bytes)) * 1000 / max(1, rate)
-        guard eta >= 1000 else { return false }
+        guard eta >= 1500 else { return false }
         return copyBps <= 0 || copyBps > rate * 1.5
     }
 }
