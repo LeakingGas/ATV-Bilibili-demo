@@ -483,6 +483,22 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
             addAudioPlayBackInfo(info: firstAudio, url: firstUrl, duration: info.dash.duration)
         }
 
+        // i-frame（拖动进度条时的预览缩略图）。diag14 拖动日志：之前用的是正在播放的同一条 4K 流，
+        // 系统每取一张预览图就要下载一整段（约 18 MB），拖动时同时在好几个位置下载，
+        // 把真正要播的那段挤得很慢。改用这个视频码率最低的一条流（每段只有几百 KB）。
+        if let video = info.dash.video
+            .filter({ !videoCodecBlackList.contains($0.codecs) && ($0.width ?? 0) > 0 && ($0.height ?? 0) > 0 })
+            .min(by: { $0.bandwidth < $1.bandwidth }),
+            let url = video.playableURLs.first
+        {
+            let media = """
+            #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=\(Self.peakBandwidth(forAverage: video.bandwidth)),RESOLUTION=\(video.width!)x\(video.height!),URI="\(URLs.customDashPrefix)\(videoInfo.count)"
+
+            """
+            masterPlaylist.append(media)
+            videoInfo.append(PlaybackInfo(info: video, url: url, duration: info.dash.duration))
+        }
+
         do {
             // 只使用当前实例的 Server，不为媒体另建监听器；限制 loopback，动态端口。
             httpServer.listenAddressIPv4 = "127.0.0.1"
@@ -509,15 +525,6 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
             }
         }
 
-        // i-frame
-        if let video = videos.last, let url = video.playableURLs.first {
-            let media = """
-            #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=\(Self.peakBandwidth(forAverage: video.bandwidth)),RESOLUTION=\(video.width!)x\(video.height!),URI="\(URLs.customDashPrefix)\(videoInfo.count)"
-
-            """
-            masterPlaylist.append(media)
-            videoInfo.append(PlaybackInfo(info: video, url: url, duration: info.dash.duration))
-        }
 
         masterPlaylist.append("\n#EXT-X-ENDLIST\n")
 

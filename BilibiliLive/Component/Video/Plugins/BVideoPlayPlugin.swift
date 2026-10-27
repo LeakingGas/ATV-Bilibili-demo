@@ -415,6 +415,10 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             avStateObservers.append(NotificationCenter.default.addObserver(forName: .AVPlayerItemPlaybackStalled, object: item, queue: .main) { [weak self] _ in
                 self?.stalledAwaitingData = true
                 BTRTrace.shared.event("playback_stalled",["position":player.currentTime().seconds])
+                // 不等缓冲模式下系统卡住时会直接变成「暂停」（画面上出现暂停符号）。
+                // 改为等待状态（显示加载圈），数据一到由 playIfDataArrived 立刻继续。
+                player.automaticallyWaitsToMinimizeStalling = true
+                player.play()
             })
         }
         btrLastRate = Double(Settings.mediaPlayerSpeed.value)
@@ -466,6 +470,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private func playIfDataArrived(player: AVPlayer, item: AVPlayerItem, ahead: Double) {
         if player.timeControlStatus == .playing {
             stalledAwaitingData = false
+            if player.automaticallyWaitsToMinimizeStalling { player.automaticallyWaitsToMinimizeStalling = false }
             if item.preferredForwardBufferDuration < 15 { item.preferredForwardBufferDuration = 15 }
             return
         }
