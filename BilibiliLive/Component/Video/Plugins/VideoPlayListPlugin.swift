@@ -9,7 +9,7 @@ import AVKit
 
 class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
     private let nextActionIdentifierPrefix = "play.next"
-    private weak var playerVC: AVPlayerViewController?
+    private weak var host: PlayerHost?
     var onPlayEnd: (() -> Void)?
     var onPlayNextWithInfo: ((PlayInfo) -> Void)?
 
@@ -19,12 +19,12 @@ class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
         self.sequenceProvider = sequenceProvider
     }
 
-    func playerDidLoad(playerVC: AVPlayerViewController) {
-        self.playerVC = playerVC
+    func playerDidLoad(host: PlayerHost) {
+        self.host = host
     }
 
-    func playerWillStart(player: AVPlayer) {
-        guard let playerVC, let sequenceProvider else { return }
+    func playerWillStart(engine: PlayerEngine) {
+        guard let playerVC = host, let sequenceProvider else { return }
         let menuState = MainActor.assumeIsolated { () -> (PlayInfo?, PlayInfo?) in
             guard sequenceProvider.count > 0 else { return (nil, nil) }
             return (sequenceProvider.peekPrevious(), sequenceProvider.peekNext())
@@ -71,7 +71,7 @@ class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
         return actions
     }
 
-    func playerDidEnd(player: AVPlayer) {
+    func playerDidEnd(engine: PlayerEngine) {
         Task { [weak self] in
             guard let self else { return }
             if !(await playNext()) {
@@ -80,8 +80,10 @@ class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
                         self.sequenceProvider?.reset()
                     }
                     if !(await playNext()) {
-                        player.currentItem?.seek(to: .zero, completionHandler: nil)
-                        player.play()
+                        await MainActor.run {
+                            engine.seek(to: 0)
+                            engine.play()
+                        }
                     }
                     return
                 }

@@ -36,7 +36,8 @@ class URLPlayPlugin: NSObject {
 }
 
 extension URLPlayPlugin: CommonPlayerPlugin {
-    func playerDidLoad(playerVC: AVPlayerViewController) {
+    func playerDidLoad(host: PlayerHost) {
+        guard let playerVC = host.avPlayerViewController else { return }
         self.playerVC = playerVC
         playerVC.requiresLinearPlayback = isLive
         playerVC.player = nil
@@ -45,11 +46,11 @@ extension URLPlayPlugin: CommonPlayerPlugin {
         }
     }
 
-    func playerDidFail(player: AVPlayer) {
+    func playerDidFail(engine: PlayerEngine) {
         onPlayFail?()
     }
 
-    func playerDidPause(player: AVPlayer) {
+    func playerDidPause(engine: PlayerEngine) {
         if isLive {
             onPlayFail?()
         }

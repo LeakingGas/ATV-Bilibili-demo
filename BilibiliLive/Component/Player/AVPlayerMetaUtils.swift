@@ -23,7 +23,11 @@ enum AVPlayerMetaUtils {
         MainActor.callSafely {
             player.currentItem?.externalMetadata = metas
         }
+        await setNowPlayingInfo(title: title, subTitle: subTitle, pic: pic)
+    }
 
+    /// 系统「正在播放」信息（标题、UP 主、封面）。
+    static func setNowPlayingInfo(title: String?, subTitle: String?, pic: URL?) async {
         var nowPlayingInfo: [String: Any] = [
             MPMediaItemPropertyTitle: title ?? "",
             MPMediaItemPropertyArtist: subTitle ?? "",

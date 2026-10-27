@@ -268,22 +268,25 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         return lines.joined(separator: "\n")
     }
 
-    func playerDidFail(player: AVPlayer) {
+    func playerDidFail(engine: PlayerEngine) {
         // Strict BTR: report failure without switching transport.
-        guard transportMode == .accelerated, playerVC?.player === player else { return }
+        guard transportMode == .accelerated, let player = engine.avPlayer, playerVC?.player === player else { return }
         Task { @MainActor [weak self] in
             await self?.reportBTRFailure(reason: "player-failed")
         }
     }
 
-    func playerDidLoad(playerVC: AVPlayerViewController) {
+    func playerDidLoad(host: PlayerHost) {
+        guard let playerVC = host.avPlayerViewController else { return }
+        Diag.startupStep("player_engine", ["kind": "system"])
         Diag.mark("BPLAY \(Diag.id(self)) playerDidLoad aid=\(playData.aid) cid=\(playData.cid) start=\(playData.playerStartPos ?? -1)")
         self.playerVC = playerVC
         playerVC.player = nil
         startLoad(urlInfo: playData.videoPlayURLInfo, playerInfo: playData.playerInfo)
     }
 
-    func playerWillStart(player: AVPlayer) {
+    func playerWillStart(engine: PlayerEngine) {
+        guard let player = engine.avPlayer else { return }
         if playerVC?.player === player { markStartup("ready") }
         guard playerVC?.player === player,
               let target = resumeState.initialTarget(history: playData.playerStartPos.map { Double($0) }) else { return }
@@ -291,11 +294,12 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
-    func playerDidStart(player _: AVPlayer) {
+    func playerDidStart(engine _: PlayerEngine) {
         startNetworkLogging()
     }
 
-    func playerDidCleanUp(player: AVPlayer) {
+    func playerDidCleanUp(engine: PlayerEngine) {
+        guard let player = engine.avPlayer else { return }
         Diag.mark("BPLAY \(Diag.id(self)) cleanUp avplayer=\(Diag.id(player)) owner=\(btrOwner === player)")
         if btrOwner === player {
             stopBTRMonitoring()
@@ -628,9 +632,9 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         }
     }
 
-    func playerDidDismiss(playerVC: AVPlayerViewController) {
+    func playerDidDismiss(host: PlayerHost) {
         guard reportWatchHistory else { return }
-        guard let currentTime = playerVC.player?.currentTime().seconds, currentTime > 0 else { return }
+        guard let currentTime = host.avPlayerViewController?.player?.currentTime().seconds, currentTime > 0 else { return }
         WebRequest.reportWatchHistory(aid: playData.aid, cid: playData.cid, currentTime: Int(currentTime), epid: playData.epid, seasonId: playData.seasonId, subType: playData.subType)
     }
 
@@ -670,7 +674,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         }
     }
 
-    func playerWillCleanUp(playerVC: AVPlayerViewController) {
+    func playerWillCleanUp(host: PlayerHost) {
         Diag.mark("BPLAY \(Diag.id(self)) willCleanUp")
         invalidatePendingLoad(tearingDown: true)
     }

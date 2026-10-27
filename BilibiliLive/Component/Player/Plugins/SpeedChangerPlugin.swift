@@ -10,8 +10,8 @@ import AVKit
 class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
     private var notifyView: UILabel?
     private weak var containerView: UIView?
-    private weak var player: AVPlayer?
-    private weak var playerVC: AVPlayerViewController?
+    private weak var engine: PlayerEngine?
+    private weak var host: PlayerHost?
     private var hasShownSpeedNotification = false
 
     @Published private(set) var currentPlaySpeed: PlaySpeed = .default
@@ -28,16 +28,16 @@ class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
         }
     }
 
-    func playerDidLoad(playerVC: AVPlayerViewController) {
-        self.playerVC = playerVC
+    func playerDidLoad(host: PlayerHost) {
+        self.host = host
 
         currentPlaySpeed = Settings.mediaPlayerSpeed
-        installBoostGesture(on: playerVC)
+        installBoostGesture(on: host.hostViewController.view)
     }
 
-    func playerWillCleanUp(playerVC: AVPlayerViewController) {
+    func playerWillCleanUp(host: PlayerHost) {
         endBoost()
-        if let boostGesture { playerVC.view.removeGestureRecognizer(boostGesture) }
+        if let boostGesture { boostGesture.view?.removeGestureRecognizer(boostGesture) }
         boostGesture = nil
     }
 
@@ -47,7 +47,7 @@ class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
     private var isBoosting = false
     private var boostLabel: UILabel?
 
-    private func installBoostGesture(on playerVC: AVPlayerViewController) {
+    private func installBoostGesture(on view: UIView) {
         guard boostGesture == nil else { return }
         let gesture = UILongPressGestureRecognizer(target: self, action: #selector(handleBoost(_:)))
         // Resting a finger on the touch surface (no click); a click keeps AVKit's own behaviour.
@@ -57,17 +57,17 @@ class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
         gesture.allowableMovement = 60
         gesture.cancelsTouchesInView = false
         gesture.delegate = self
-        playerVC.view.addGestureRecognizer(gesture)
+        view.addGestureRecognizer(gesture)
         boostGesture = gesture
     }
 
     @objc private func handleBoost(_ gesture: UILongPressGestureRecognizer) {
         switch gesture.state {
         case .began:
-            guard let player, player.rate > 0, player.timeControlStatus == .playing else { return }
+            guard let engine, engine.isPlaying else { return }
+            if let player = engine.avPlayer, player.timeControlStatus != .playing { return }
             isBoosting = true
-            player.currentItem?.audioTimePitchAlgorithm = .timeDomain
-            playerVC?.selectSpeed(AVPlaybackSpeed(rate: 2, localizedName: "2X"))
+            host?.applyPlaybackSpeed(PlaySpeed(name: "2X", value: 2))
             showBoostLabel()
         case .ended, .cancelled, .failed:
             endBoost()
@@ -79,7 +79,7 @@ class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
     private func endBoost() {
         guard isBoosting else { return }
         isBoosting = false
-        playerVC?.selectSpeed(AVPlaybackSpeed(rate: currentPlaySpeed.value, localizedName: currentPlaySpeed.name))
+        host?.applyPlaybackSpeed(currentPlaySpeed)
         UIView.animate(withDuration: 0.2) { self.boostLabel?.alpha = 0 }
     }
 
@@ -106,15 +106,15 @@ class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
         UIView.animate(withDuration: 0.2) { self.boostLabel?.alpha = 1 }
     }
 
-    func playerDidChange(player: AVPlayer) {
-        self.player = player
+    func playerDidChange(engine: PlayerEngine) {
+        self.engine = engine
     }
 
-    func playerWillStart(player: AVPlayer) {
-        playerVC?.selectSpeed(AVPlaybackSpeed(rate: currentPlaySpeed.value, localizedName: currentPlaySpeed.name))
+    func playerWillStart(engine: PlayerEngine) {
+        host?.applyPlaybackSpeed(currentPlaySpeed)
     }
 
-    func playerDidStart(player: AVPlayer) {
+    func playerDidStart(engine: PlayerEngine) {
         guard !hasShownSpeedNotification else { return }
         hasShownSpeedNotification = true
 
@@ -153,8 +153,7 @@ class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
             UIAction(title: playSpeed.name, state: currentPlaySpeed == playSpeed ? .on : .off) {
                 [weak self] _ in
                 guard let self else { return }
-                player?.currentItem?.audioTimePitchAlgorithm = .timeDomain
-                playerVC?.selectSpeed(AVPlaybackSpeed(rate: playSpeed.value, localizedName: playSpeed.name))
+                host?.applyPlaybackSpeed(playSpeed)
                 currentPlaySpeed = playSpeed
             }
         }

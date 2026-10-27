@@ -36,8 +36,7 @@ class DanmuViewPlugin: NSObject {
     }
 
     private let danmuProvider: DanmuProviderProtocol
-    private var timeObserver: Any?
-    private weak var currentPlayer: AVPlayer? // 保存当前 player 的弱引用
+    private var timeObserver: PlayerTimeObservation?
     private var cancellable = Set<AnyCancellable>()
 
     private func shoot(_ model: DanmakuCellModel) {
@@ -55,52 +54,29 @@ class DanmuViewPlugin: NSObject {
 }
 
 extension DanmuViewPlugin: CommonPlayerPlugin {
-    func playerDidChange(player: AVPlayer) {
-        // 清理旧的 observer（必须用旧的 player 来移除）
-        if let timeObserver, let currentPlayer {
-            currentPlayer.removeTimeObserver(timeObserver)
-            self.timeObserver = nil
-        }
-
-        // 保存新的 player 引用
-        currentPlayer = player
-
+    func playerDidChange(engine: PlayerEngine) {
+        // 观察者登记在旧内核上，由 PlayerTimeObservation 从它自己的内核上摘掉。
+        timeObserver?.cancel()
+        timeObserver = nil
         // 清空当前显示的弹幕，准备重新同步
         danMuView.clean()
     }
 
-    func playerWillStart(player: AVPlayer) {
+    func playerWillStart(engine: PlayerEngine) {
         guard danmuProvider.observerPlayerTime else {
             return
         }
-
-        // 清理旧的 observer（如果有）
-        if let timeObserver, let currentPlayer {
-            currentPlayer.removeTimeObserver(timeObserver)
-        }
-        timeObserver = nil
-
-        // 保存新的 player 引用
-        currentPlayer = player
-
-        // 添加新的 observer 并保存引用
-        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 1),
-                                                      queue: DispatchQueue.global())
-        { [weak self] time in
+        timeObserver?.cancel()
+        timeObserver = engine.addPeriodicObserver(interval: 1, queue: DispatchQueue.global()) { [weak self] seconds in
             guard let self else { return }
             if !Defaults.shared.showDanmu { return }
-            let seconds = time.seconds
             danmuProvider.playerTimeChange(time: seconds)
         }
     }
 
-    func playerDidCleanUp(player: AVPlayer) {
-        // 观察者只能从添加它的那个播放器上移除，否则 AVFoundation 直接抛异常闪退。
-        if let timeObserver, let owner = currentPlayer {
-            owner.removeTimeObserver(timeObserver)
-        }
+    func playerDidCleanUp(engine: PlayerEngine) {
+        timeObserver?.cancel()
         timeObserver = nil
-        currentPlayer = nil
     }
 
     func addViewToPlayerOverlay(container: UIView) {
@@ -114,11 +90,11 @@ extension DanmuViewPlugin: CommonPlayerPlugin {
         danMuView.recaculateTracks()
     }
 
-    func playerDidStart(player: AVPlayer) {
+    func playerDidStart(engine: PlayerEngine) {
         danMuView.play()
     }
 
-    func playerDidPause(player: AVPlayer) {
+    func playerDidPause(engine: PlayerEngine) {
         danMuView.pause()
     }
 

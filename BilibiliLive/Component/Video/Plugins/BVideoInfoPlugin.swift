@@ -23,7 +23,16 @@ class BVideoInfoPlugin: NSObject, CommonPlayerPlugin {
         self.viewPoints = viewPoints
     }
 
-    func playerWillStart(player: AVPlayer) {
+    func playerDidLoad(host: PlayerHost) {
+        host.setDisplayInfo(title: title, subtitle: subTitle)
+    }
+
+    func playerWillStart(engine: PlayerEngine) {
+        guard let player = engine.avPlayer else {
+            // VLC：标题由界面显示；系统「正在播放」信息照样提供。
+            Task { await AVPlayerMetaUtils.setNowPlayingInfo(title: title, subTitle: subTitle, pic: pic) }
+            return
+        }
         Task {
             async let info: () = AVPlayerMetaUtils.setPlayerInfo(title: title, subTitle: subTitle, desp: desp, pic: pic, player: player)
             if let viewPoints {

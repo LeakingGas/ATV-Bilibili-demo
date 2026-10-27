@@ -4,44 +4,43 @@
 //
 //  Created by yicheng on 2024/5/25.
 //
+//  插件通过 PlayerHost（界面）和 PlayerEngine（内核）工作，同一个插件可以跑在系统播放器和 VLC 上。
+//
 
-import AVKit
 import UIKit
 
 protocol CommonPlayerPlugin: NSObject {
     func addViewToPlayerOverlay(container: UIView)
     func addMenuItems(current: inout [UIMenuElement]) -> [UIMenuElement]
 
-    func playerDidLoad(playerVC: AVPlayerViewController)
-    func playerDidDismiss(playerVC: AVPlayerViewController)
-    func playerWillCleanUp(playerVC: AVPlayerViewController)
-    func playerDidChange(player: AVPlayer)
-    func playerItemDidChange(playerItem: AVPlayerItem)
+    func playerDidLoad(host: PlayerHost)
+    func playerDidDismiss(host: PlayerHost)
+    func playerWillCleanUp(host: PlayerHost)
+    func playerDidChange(engine: PlayerEngine)
 
-    func playerWillStart(player: AVPlayer)
-    func playerDidStart(player: AVPlayer)
-    func playerDidPause(player: AVPlayer)
-    func playerDidEnd(player: AVPlayer)
-    func playerDidStall(player: AVPlayer)
-    func playerDidFail(player: AVPlayer)
-    func playerDidCleanUp(player: AVPlayer)
+    func playerWillStart(engine: PlayerEngine)
+    func playerDidStart(engine: PlayerEngine)
+    func playerDidPause(engine: PlayerEngine)
+    func playerDidEnd(engine: PlayerEngine)
+    func playerDidStall(engine: PlayerEngine)
+    func playerDidFail(engine: PlayerEngine)
+    func playerDidCleanUp(engine: PlayerEngine)
 }
 
 extension CommonPlayerPlugin {
     func addViewToPlayerOverlay(container: UIView) {}
     func addMenuItems(current: inout [UIMenuElement]) -> [UIMenuElement] { return [] }
 
-    func playerWillStart(player: AVPlayer) {}
-    func playerDidStart(player: AVPlayer) {}
-    func playerDidPause(player: AVPlayer) {}
-    func playerDidEnd(player: AVPlayer) {}
-    func playerDidStall(player: AVPlayer) {}
-    func playerDidFail(player: AVPlayer) {}
-    func playerDidCleanUp(player: AVPlayer) {}
+    func playerDidLoad(host: PlayerHost) {}
+    func playerDidDismiss(host: PlayerHost) {}
+    func playerWillCleanUp(host: PlayerHost) {}
+    func playerDidChange(engine: PlayerEngine) {}
 
-    func playerDidLoad(playerVC: AVPlayerViewController) {}
-    func playerDidDismiss(playerVC: AVPlayerViewController) {}
-    func playerWillCleanUp(playerVC: AVPlayerViewController) {}
-    func playerDidChange(player: AVPlayer) {}
-    func playerItemDidChange(playerItem: AVPlayerItem) {}
+    func playerWillStart(engine: PlayerEngine) {}
+    func playerDidStart(engine: PlayerEngine) {}
+    func playerDidPause(engine: PlayerEngine) {}
+    func playerDidEnd(engine: PlayerEngine) {}
+    func playerDidStall(engine: PlayerEngine) {}
+    func playerDidFail(engine: PlayerEngine) {}
+    func playerDidCleanUp(engine: PlayerEngine) {}
 }

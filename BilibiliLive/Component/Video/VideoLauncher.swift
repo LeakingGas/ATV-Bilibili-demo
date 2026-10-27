@@ -26,10 +26,6 @@ enum VideoLauncher {
         let presenter = presenter ?? UIViewController.topMostViewController()
         // Open the CDN connections while the play URL is still being requested.
         BTRHTTPClient.shared.preconnect(hosts: BTRCDN.preconnectHosts(region: Settings.btrNodeRegion))
-        if Settings.useVLCPlayer {
-            presenter.topMostViewController().present(VLCVideoPlayerViewController(playInfo: info, askResume: askResume), animated: true)
-            return
-        }
         let player = VideoPlayerViewController(playInfo: info)
         player.askResume = askResume
         // 列表页本身可能还盖着别的弹窗（例如搜索），从最上层弹出。

@@ -65,8 +65,9 @@ enum Settings {
     static var playWithoutWaiting: Bool
 
     /// 试验：用 VLC 引擎播放（不支持杜比视界 / HDR、画中画、画质切换，需要时关掉切回系统播放器）。
-    @UserDefault("Settings.useVLCPlayer", defaultValue: false)
-    static var useVLCPlayer: Bool
+    /// 播放器：系统 / VLC / 自动（有杜比视界用系统，其余 VLC）。
+    @UserDefaultCodable("Settings.playerEngine", defaultValue: .system)
+    static var playerEngine: PlayerEngineChoice
 
     /// BTR CDN node expansion region (cdn-resolver.js). Default overseas: this port targets overseas Apple TVs.
     @UserDefaultCodable("Settings.btrNodeRegion", defaultValue: .overseas)

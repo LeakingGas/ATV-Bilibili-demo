@@ -10,71 +10,65 @@ import Foundation
 
 class BUpnpPlugin: NSObject, CommonPlayerPlugin {
     let duration: Int?
-    weak var player: AVPlayer?
-    private var observar: Any?
+    weak var engine: PlayerEngine?
+    private var observar: PlayerTimeObservation?
 
     init(duration: Int?) {
         self.duration = duration
     }
 
     func pause() {
-        player?.pause()
+        engine?.pause()
     }
 
     func resume() {
-        player?.play()
+        engine?.play()
     }
 
     func seek(to time: TimeInterval) {
-        player?.seek(to: CMTime(seconds: time, preferredTimescale: 1), toleranceBefore: .zero, toleranceAfter: .zero)
+        engine?.seek(to: time)
     }
 
-    func playerWillStart(player: AVPlayer) {
+    func playerWillStart(engine: PlayerEngine) {
         BiliBiliUpnpDMR.shared.currentPlugin = self
-        if let observar, let owner = observedPlayer { owner.removeTimeObserver(observar) }
+        observar?.cancel()
         observar = nil
-        self.player = player
+        self.engine = engine
         guard let duration else { return }
-        observedPlayer = player
-        observar = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 5, preferredTimescale: 1), queue: .global()) { time in
+        observar = engine.addPeriodicObserver(interval: 5, queue: .global()) { seconds in
             DispatchQueue.main.async {
-                BiliBiliUpnpDMR.shared.sendProgress(duration: duration, current: Int(time.seconds))
+                BiliBiliUpnpDMR.shared.sendProgress(duration: duration, current: Int(seconds))
             }
         }
     }
 
-    func playerDidStart(player: AVPlayer) {
+    func playerDidStart(engine: PlayerEngine) {
         DispatchQueue.main.async {
             BiliBiliUpnpDMR.shared.sendStatus(status: .playing)
         }
     }
 
-    func playerDidPause(player: AVPlayer) {
+    func playerDidPause(engine: PlayerEngine) {
         DispatchQueue.main.async {
             BiliBiliUpnpDMR.shared.sendStatus(status: .paused)
         }
     }
 
-    func playerDidEnd(player: AVPlayer) {
+    func playerDidEnd(engine: PlayerEngine) {
         DispatchQueue.main.async {
             BiliBiliUpnpDMR.shared.sendStatus(status: .end)
         }
     }
 
-    func playerDidFail(player: AVPlayer) {
+    func playerDidFail(engine: PlayerEngine) {
         DispatchQueue.main.async {
             BiliBiliUpnpDMR.shared.sendStatus(status: .stop)
         }
     }
 
-    private weak var observedPlayer: AVPlayer?
-
-    func playerDidCleanUp(player: AVPlayer) {
-        if let observar, let owner = observedPlayer {
-            owner.removeTimeObserver(observar)
-        }
+    func playerDidCleanUp(engine: PlayerEngine) {
+        observar?.cancel()
         observar = nil
-        observedPlayer = nil
         DispatchQueue.main.async {
             BiliBiliUpnpDMR.shared.sendStatus(status: .stop)
         }

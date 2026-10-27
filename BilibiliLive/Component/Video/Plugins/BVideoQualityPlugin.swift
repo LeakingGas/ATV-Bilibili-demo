@@ -6,7 +6,7 @@
 import AVKit
 
 class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
-    private weak var playerVC: AVPlayerViewController?
+    private weak var playerVC: PlayerHost?
     private let playData: PlayerDetailData
     private var availableQualities: [QualityOption] = []
     private var currentQualityId: Int?
@@ -50,16 +50,16 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
         extractAvailableQualities()
     }
 
-    func playerDidLoad(playerVC: AVPlayerViewController) {
-        self.playerVC = playerVC
+    func playerDidLoad(host: PlayerHost) {
+        playerVC = host
     }
 
     // 流确定后（以及每次切换画质后）刷新菜单，标记当前画质。
-    func playerWillStart(player: AVPlayer) {
+    func playerWillStart(engine: PlayerEngine) {
         refreshMenu()
     }
 
-    func playerDidStart(player: AVPlayer) {
+    func playerDidStart(engine: PlayerEngine) {
         refreshMenu()
     }
 

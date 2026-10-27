@@ -4,6 +4,10 @@
 //
 //  Created by yicheng on 2024/5/23.
 //
+//  播放器容器：管理插件，把内核事件分发给插件。界面有两种（统一底层，见 PlayerEngine.swift）：
+//  - 系统播放器：AVPlayerViewController（返回键等系统问题的兜底逻辑都在这里）。
+//  - VLC：VLCPlayerSurface（仿照系统播放器做的界面）。
+//
 
 import AVKit
 import UIKit
@@ -18,12 +22,23 @@ class CommonPlayerViewController: UIViewController {
     private var playbackStalledObserver: Any?
     private var isEnd = false
     private var isRestoringFromPip = false
-    /// 底部控制栏（标题、胶囊按钮、进度条）当前是否显示。
+    /// 底部控制栏（标题、胶囊按钮、进度条）当前是否显示（系统播放器）。
     private var transportBarVisible = false
     /// 新 AVPlayerItem ready 后是否自动 play。换 CDN host 等场景可临时关掉，由调用方按用户暂停状态决定是否续播。
     var autoPlayWhenReady = true
     /// 已请求退出（播放器上面还盖着弹窗时，本控制器的 isBeingDismissed 可能不为真）。
     private(set) var exitRequested = false
+
+    /// 进入时就装上的界面；nil 表示等加载结果出来再决定（设置里选了 VLC / 自动时）。
+    var initialEngineKind: PlayerEngineKind? = .system
+    /// 当前装着的界面。
+    private(set) var installedEngineKind: PlayerEngineKind?
+    private var vlcSurface: VLCPlayerSurface?
+    /// 当前内核（系统播放器：包着 playerVC.player；VLC：VLCPlayerEngine）。
+    private(set) var currentEngine: PlayerEngine?
+
+    /// 插件看到的界面。
+    var playerHost: PlayerHost { vlcSurface ?? playerVC }
 
     func exitPlayer(animated: Bool = true) {
         guard !exitRequested else { return }
@@ -36,6 +51,7 @@ class CommonPlayerViewController: UIViewController {
             dismiss(animated: animated)
         }
     }
+
     var showsPlaybackControls = true
     var allowsPictureInPicturePlayback = true
 
@@ -47,6 +63,39 @@ class CommonPlayerViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         Diag.mark("PLAYER \(Diag.id(self)) viewDidLoad \(type(of: self))")
+        view.backgroundColor = .black
+        if let initialEngineKind { installSurface(initialEngineKind) }
+    }
+
+    // MARK: - 界面（系统 / VLC）
+
+    /// 装上指定的界面；已经装着别的界面时先把插件和旧界面拆掉。
+    func installSurface(_ kind: PlayerEngineKind) {
+        guard installedEngineKind != kind else { return }
+        if installedEngineKind != nil {
+            Diag.mark("PLAYER \(Diag.id(self)) switch surface -> \(kind)")
+            removeAllPlugins()
+            uninstallSurface()
+        }
+        installedEngineKind = kind
+        switch kind {
+        case .system:
+            installAVKitSurface()
+        case .vlc:
+            let surface = VLCPlayerSurface()
+            surface.surfaceDelegate = self
+            addChild(surface)
+            view.addSubview(surface.view)
+            surface.view.snp.makeConstraints { $0.edges.equalToSuperview() }
+            surface.didMove(toParent: self)
+            vlcSurface = surface
+        }
+        setNeedsFocusUpdate()
+    }
+
+    private var avkitObserved = false
+
+    private func installAVKitSurface() {
         addChild(playerVC)
         view.addSubview(playerVC.view)
         playerVC.didMove(toParent: self)
@@ -55,16 +104,43 @@ class CommonPlayerViewController: UIViewController {
         playerVC.allowsPictureInPicturePlayback = allowsPictureInPicturePlayback
         playerVC.delegate = self
 
+        guard !avkitObserved else { return }
+        avkitObserved = true
         let playerObservation = playerVC.observe(\.player, options: [.old, .new]) { [weak self] vc, obs in
             Logger.debug("player changed: \(String(describing: obs.oldValue)) -> \(String(describing: obs.newValue))")
             Diag.mark("PLAYER \(Diag.id(self)) avplayer \(Diag.id(obs.oldValue ?? nil)) -> \(Diag.id(obs.newValue ?? nil)) plugins=\(self?.activePlugins.count ?? -1)")
+            guard let self, self.installedEngineKind == .system else { return }
             if let oldPlayer = obs.oldValue, let oldPlayer {
-                self?.activePlugins.forEach { $0.playerDidCleanUp(player: oldPlayer) }
+                let oldEngine = (self.currentEngine as? AVPlayerEngine).flatMap { $0.player === oldPlayer ? $0 : nil } ?? AVPlayerEngine(player: oldPlayer)
+                self.activePlugins.forEach { $0.playerDidCleanUp(engine: oldEngine) }
             }
-            self?.playerDidChange(player: vc.player)
+            self.playerDidChange(player: vc.player)
         }
         observations.insert(playerObservation)
-        activePlugins.forEach { $0.playerDidLoad(playerVC: playerVC) }
+    }
+
+    private func uninstallSurface() {
+        switch installedEngineKind {
+        case .system:
+            cleanUpObserver()
+            let player = playerVC.player
+            player?.pause()
+            player?.replaceCurrentItem(with: nil)
+            playerVC.player = nil
+            playerVC.willMove(toParent: nil)
+            playerVC.view.removeFromSuperview()
+            playerVC.removeFromParent()
+        case .vlc:
+            vlcSurface?.shutdownEngine()
+            vlcSurface?.willMove(toParent: nil)
+            vlcSurface?.view.removeFromSuperview()
+            vlcSurface?.removeFromParent()
+            vlcSurface = nil
+        case nil:
+            break
+        }
+        currentEngine = nil
+        installedEngineKind = nil
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -83,17 +159,20 @@ class CommonPlayerViewController: UIViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         Diag.mark("PLAYER \(Diag.id(self)) viewDidDisappear dismissing=\(isBeingDismissed) exit=\(exitRequested)")
-        activePlugins.forEach { $0.playerDidDismiss(playerVC: playerVC) }
+        if installedEngineKind != nil {
+            activePlugins.forEach { $0.playerDidDismiss(host: playerHost) }
+        }
         cleanUpPlayerOnExit()
     }
 
-    // MARK: 返回键
+    // MARK: 返回键（系统播放器）
     //
     // 诊断日志实测：在控制栏上选过胶囊按钮 / 打开过菜单后，焦点被送回画面时，系统控制栏仍显示，
     // 但下一次返回 AVKit 不再处理（既不收起控制栏，也不调用 shouldDismiss），
     // 返回键一路传到 UIKit，被当作「关闭当前弹出的页面」直接把播放器关了。
     // 这里在按下返回的那一刻记录：控制栏是否显示、焦点是否在画面上（不在按钮或菜单里）。
     // 两者都成立时拦下这次返回，让控制栏收起（AVKit 自己收了就什么都不做），不关闭播放器。
+    // VLC 界面自己处理返回键，不会走到这里。
     private var interceptMenuPress = false
     /// 最近一次「控制栏显示、焦点在画面上」时按下返回的时间。
     private var guardedMenuPressAt: TimeInterval?
@@ -119,7 +198,7 @@ class CommonPlayerViewController: UIViewController {
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if presses.contains(where: { $0.type == .menu }) {
+        if installedEngineKind == .system, presses.contains(where: { $0.type == .menu }) {
             interceptMenuPress = transportBarVisible && focusIsOnVideoSurface && presentedViewController == nil
             Diag.mark("PLAYER \(Diag.id(self)) menu down bar=\(transportBarVisible) intercept=\(interceptMenuPress)")
             if interceptMenuPress {
@@ -202,26 +281,30 @@ class CommonPlayerViewController: UIViewController {
     }
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
-        return [playerVC.view]
+        if let vlcSurface { return [vlcSurface] }
+        return installedEngineKind == .system ? [playerVC.view] : []
     }
+
+    // MARK: - 插件
 
     func addPlugin(plugin: CommonPlayerPlugin) {
         if activePlugins.contains(where: { $0 == plugin }) {
             return
         }
-        plugin.addViewToPlayerOverlay(container: playerVC.contentOverlayView!)
+        let overlay: UIView? = vlcSurface?.contentOverlayView ?? playerVC.contentOverlayView
+        if let overlay { plugin.addViewToPlayerOverlay(container: overlay) }
         activePlugins.append(plugin)
-        plugin.playerDidLoad(playerVC: playerVC)
-        if playerVC.transportBarCustomMenuItems.isEmpty == false {
+        plugin.playerDidLoad(host: playerHost)
+        if !playerHost.transportBarCustomMenuItems.isEmpty || vlcSurface != nil {
             updateMenus()
         }
     }
 
     func removePlugin(plugin: CommonPlayerPlugin) {
         let removingPlugins = activePlugins.filter { $0 == plugin }
-        removingPlugins.forEach { $0.playerWillCleanUp(playerVC: playerVC) }
-        if let player = playerVC.player {
-            removingPlugins.forEach { $0.playerDidCleanUp(player: player) }
+        removingPlugins.forEach { $0.playerWillCleanUp(host: playerHost) }
+        if let currentEngine {
+            removingPlugins.forEach { $0.playerDidCleanUp(engine: currentEngine) }
         }
         activePlugins.removeAll { $0 == plugin }
     }
@@ -229,19 +312,20 @@ class CommonPlayerViewController: UIViewController {
     func removeAllPlugins() {
         guard !activePlugins.isEmpty else { return }
         Diag.mark("PLAYER \(Diag.id(self)) removeAllPlugins n=\(activePlugins.count) avplayer=\(Diag.id(playerVC.player))")
-        activePlugins.forEach { $0.playerWillCleanUp(playerVC: playerVC) }
-        if let player = playerVC.player {
-            Logger.debug("removeAllPlugins: clean up player: \(player)")
-            activePlugins.forEach { $0.playerDidCleanUp(player: player) }
+        let host = playerHost
+        activePlugins.forEach { $0.playerWillCleanUp(host: host) }
+        if let engine = currentEngine {
+            activePlugins.forEach { $0.playerDidCleanUp(engine: engine) }
         }
         activePlugins.removeAll()
     }
 
-    func playerWillStart(player: AVPlayer) {}
-    func playerDidStart(player: AVPlayer) {}
-    func playerDidEnd(player: AVPlayer) {}
-    func playerDidStall(player: AVPlayer) {}
-    func playerDidFail(player: AVPlayer) {}
+    // 子类钩子
+    func playerWillStart(engine: PlayerEngine) {}
+    func playerDidStart(engine: PlayerEngine) {}
+    func playerDidEnd(engine: PlayerEngine) {}
+    func playerDidStall(engine: PlayerEngine) {}
+    func playerDidFail(engine: PlayerEngine) {}
 
     func showErrorAlertAndExit(title: String = "播放失败", message: String = "未知错误") {
         let alertController = UIAlertController(title: title, message: message, preferredStyle: .alert)
@@ -264,7 +348,7 @@ class CommonPlayerViewController: UIViewController {
             let a = Self.menuRank(lhs.element), b = Self.menuRank(rhs.element)
             return a == b ? lhs.offset < rhs.offset : a < b
         }.map(\.element)
-        playerVC.transportBarCustomMenuItems = menus
+        playerHost.transportBarCustomMenuItems = menus
     }
 
     private static func menuRank(_ element: UIMenuElement) -> Int {
@@ -288,12 +372,7 @@ class CommonPlayerViewController: UIViewController {
     }
 
     func currentPlaybackTimeInSeconds() -> Int? {
-        guard let seconds = playerVC.player?.currentTime().seconds,
-              seconds.isFinite,
-              seconds > 0
-        else {
-            return nil
-        }
+        guard let seconds = currentEngine?.currentTime, seconds.isFinite, seconds > 0 else { return nil }
         return Int(seconds.rounded(.down))
     }
 
@@ -307,11 +386,13 @@ class CommonPlayerViewController: UIViewController {
 
         let player = playerVC.player
         player?.pause()
-        // Plugins may still be preparing the first AVPlayer. Always run their
-        // cleanup hook even when playerVC.player has not been installed yet.
+        // Plugins may still be preparing the first player. Always run their
+        // cleanup hook even when the engine has not been installed yet.
         removeAllPlugins()
         player?.replaceCurrentItem(with: nil)
         playerVC.player = nil
+        vlcSurface?.shutdownEngine()
+        currentEngine = nil
     }
 
     private func cleanUpObserver() {
@@ -328,52 +409,59 @@ class CommonPlayerViewController: UIViewController {
     }
 }
 
+// MARK: - 系统播放器内核事件
+
 extension CommonPlayerViewController {
     private func playerDidChange(player: AVPlayer?) {
         if let player {
-            activePlugins.forEach { $0.playerDidChange(player: player) }
+            let engine = AVPlayerEngine(player: player)
+            currentEngine = engine
+            activePlugins.forEach { $0.playerDidChange(engine: engine) }
             rateObserver = player.observe(\.rate, options: [.old, .new]) {
-                [weak self] _player, obs in
+                [weak self] _, _ in
                 DispatchQueue.main.async { [weak self] in
-                    self?.playerRateDidChange(player: player)
+                    self?.playerRateDidChange(engine: engine)
                 }
             }
             if let playItem = player.currentItem {
-                observePlayerItem(playItem)
+                observePlayerItem(playItem, engine: engine)
             }
             updateMenus()
         } else {
+            currentEngine = nil
             cleanUpObserver()
         }
     }
 
-    private func playerRateDidChange(player: AVPlayer) {
-        if player.rate > 0 {
-            activePlugins.forEach { $0.playerDidStart(player: player) }
-            playerDidStart(player: player)
-        } else if player.rate == 0 {
+    private func playerRateDidChange(engine: AVPlayerEngine) {
+        guard currentEngine === engine else { return }
+        if engine.player.rate > 0 {
+            activePlugins.forEach { $0.playerDidStart(engine: engine) }
+            playerDidStart(engine: engine)
+        } else if engine.player.rate == 0 {
             if !isEnd {
-                activePlugins.forEach { $0.playerDidPause(player: player) }
+                activePlugins.forEach { $0.playerDidPause(engine: engine) }
             }
         }
     }
 
-    private func observePlayerItem(_ playerItem: AVPlayerItem) {
+    private func observePlayerItem(_ playerItem: AVPlayerItem, engine: AVPlayerEngine) {
         statusObserver = playerItem.observe(\.status, options: [.new, .old]) {
             [weak self] item, _ in
-            guard let self, let player = playerVC.player else { return }
+            guard let self, self.currentEngine === engine else { return }
+            let player = engine.player
             Diag.mark("PLAYER \(Diag.id(self)) item \(Diag.id(item)) status=\(item.status.rawValue) avplayer=\(Diag.id(player)) owner=\(Diag.id(item.asset))")
             switch item.status {
             case .readyToPlay:
                 isEnd = false
-                activePlugins.forEach { $0.playerWillStart(player: player) }
-                playerWillStart(player: player)
+                activePlugins.forEach { $0.playerWillStart(engine: engine) }
+                playerWillStart(engine: engine)
                 if autoPlayWhenReady {
                     player.play()
                 }
             case .failed:
-                activePlugins.forEach { $0.playerDidFail(player: player) }
-                playerDidFail(player: player)
+                activePlugins.forEach { $0.playerDidFail(engine: engine) }
+                playerDidFail(engine: engine)
             default:
                 break
             }
@@ -381,20 +469,71 @@ extension CommonPlayerViewController {
         if let playToEndObserver {
             NotificationCenter.default.removeObserver(playToEndObserver)
         }
-        playToEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: playerItem, queue: .main) { [weak self] note in
-            guard let self, let player = playerVC.player else { return }
+        playToEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: playerItem, queue: .main) { [weak self] _ in
+            guard let self, self.currentEngine === engine else { return }
             isEnd = true
-            activePlugins.forEach { $0.playerDidEnd(player: player) }
-            playerDidEnd(player: player)
+            activePlugins.forEach { $0.playerDidEnd(engine: engine) }
+            playerDidEnd(engine: engine)
         }
         if let playbackStalledObserver {
             NotificationCenter.default.removeObserver(playbackStalledObserver)
         }
         playbackStalledObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemPlaybackStalled, object: playerItem, queue: .main) { [weak self] _ in
-            guard let self, let player = playerVC.player else { return }
-            activePlugins.forEach { $0.playerDidStall(player: player) }
-            playerDidStall(player: player)
+            guard let self, self.currentEngine === engine else { return }
+            activePlugins.forEach { $0.playerDidStall(engine: engine) }
+            playerDidStall(engine: engine)
         }
+    }
+}
+
+// MARK: - VLC 内核事件
+
+extension CommonPlayerViewController: VLCPlayerSurfaceDelegate {
+    func vlcSurfaceRequestsExit(_ surface: VLCPlayerSurface) {
+        exitPlayer()
+    }
+
+    func vlcSurface(_ surface: VLCPlayerSurface, didReplaceEngine old: VLCPlayerEngine?, with new: VLCPlayerEngine?) {
+        if let old {
+            activePlugins.forEach { $0.playerDidCleanUp(engine: old) }
+        }
+        currentEngine = new
+        if let new {
+            isEnd = false
+            activePlugins.forEach { $0.playerDidChange(engine: new) }
+            updateMenus()
+        }
+    }
+
+    func vlcSurfaceEngineDidBecomeReady(_ surface: VLCPlayerSurface) {
+        guard let engine = currentEngine else { return }
+        isEnd = false
+        activePlugins.forEach { $0.playerWillStart(engine: engine) }
+        playerWillStart(engine: engine)
+    }
+
+    func vlcSurfaceEngineDidStart(_ surface: VLCPlayerSurface) {
+        guard let engine = currentEngine else { return }
+        activePlugins.forEach { $0.playerDidStart(engine: engine) }
+        playerDidStart(engine: engine)
+    }
+
+    func vlcSurfaceEngineDidPause(_ surface: VLCPlayerSurface) {
+        guard let engine = currentEngine, !isEnd else { return }
+        activePlugins.forEach { $0.playerDidPause(engine: engine) }
+    }
+
+    func vlcSurfaceEngineDidEnd(_ surface: VLCPlayerSurface) {
+        guard let engine = currentEngine else { return }
+        isEnd = true
+        activePlugins.forEach { $0.playerDidEnd(engine: engine) }
+        playerDidEnd(engine: engine)
+    }
+
+    func vlcSurfaceEngineDidFail(_ surface: VLCPlayerSurface) {
+        guard let engine = currentEngine else { return }
+        activePlugins.forEach { $0.playerDidFail(engine: engine) }
+        playerDidFail(engine: engine)
     }
 }
 

@@ -202,7 +202,13 @@ class SettingsViewController: UIViewController {
                 }
                 Toggle(title: "AVC 优先（同画质码率更高）", setting: Settings.preferAvc, onChange: Settings.preferAvc.toggle())
                 Toggle(title: "不等缓冲，数据到了就播", setting: Settings.playWithoutWaiting, onChange: Settings.playWithoutWaiting.toggle())
-                Toggle(title: "使用 VLC 播放引擎（试验）", setting: Settings.useVLCPlayer, onChange: Settings.useVLCPlayer.toggle())
+                Actions(title: "播放器", message: "VLC 起播更快；杜比视界只能用系统播放器。「自动」：会播杜比视界时用系统播放器，其余用 VLC",
+                        current: Settings.playerEngine.title,
+                        options: PlayerEngineChoice.allCases,
+                        optionString: PlayerEngineChoice.allCases.map({ $0.title }))
+                {
+                    Settings.playerEngine = $0
+                }
                 CellModel(title: "BTR CDN 并行", desp: "始终开启", action: nil)
                 Actions(title: "BTR 节点", message: "同一视频地址分发到多个CDN节点并行下载；海外用户选海外节点",
                         current: Settings.btrNodeRegion.title,

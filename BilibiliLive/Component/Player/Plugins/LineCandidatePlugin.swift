@@ -18,8 +18,8 @@ class LineCandidatesPlugin: NSObject, CommonPlayerPlugin {
         super.init()
     }
 
-    func playerDidLoad(playerVC: AVPlayerViewController) {
-        self.playerVC = playerVC
+    func playerDidLoad(host: PlayerHost) {
+        playerVC = host.avPlayerViewController
     }
 
     func addMenuItems(current: inout [UIMenuElement]) -> [UIMenuElement] {

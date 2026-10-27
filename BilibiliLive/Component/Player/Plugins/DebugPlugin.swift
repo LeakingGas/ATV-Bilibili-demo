@@ -12,7 +12,7 @@ class DebugPlugin: NSObject, CommonPlayerPlugin {
     private var debugView: UILabel?
     private weak var containerView: UIView?
     private var debugTimer: Timer?
-    private weak var player: AVPlayer?
+    private weak var engine: PlayerEngine?
     private var debugEnable: Bool { debugTimer?.isValid ?? false }
 
     var customInfo: String = ""
@@ -22,8 +22,8 @@ class DebugPlugin: NSObject, CommonPlayerPlugin {
         containerView = container
     }
 
-    func playerDidChange(player: AVPlayer) {
-        self.player = player
+    func playerDidChange(engine: PlayerEngine) {
+        self.engine = engine
     }
 
     func addMenuItems(current: inout [UIMenuElement]) -> [UIMenuElement] {
@@ -89,15 +89,12 @@ class DebugPlugin: NSObject, CommonPlayerPlugin {
             bit in
             String(format: "%.2fMbps", bit / 1024.0 / 1024.0)
         }
-        guard let player else { return "Player no init" }
+        guard let engine else { return "Player no init" }
 
-        var logs = """
-        time control status: \(player.timeControlStatus.rawValue) \(player.reasonForWaitingToPlay?.rawValue ?? "")
-        player status:\(player.status.rawValue)
-        """
+        var logs = engine.debugText
 
         if let extra = additionDebugInfo?(), !extra.isEmpty { logs = extra + "\n" + logs }
-        guard let log = player.currentItem?.accessLog() else { return logs }
+        guard let log = engine.avPlayer?.currentItem?.accessLog() else { return logs }
         guard let item = log.events.last else { return logs }
         // 完整 uri 有几百字符，会把浮层其他信息挤掉，只显示 host（完整地址在日志里）
         let host = URLComponents(string: item.uri ?? "")?.host ?? "-"

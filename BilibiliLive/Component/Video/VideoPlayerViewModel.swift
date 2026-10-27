@@ -49,6 +49,8 @@ class VideoPlayerViewModel {
     /// 有观看记录时询问继续还是从头；返回 nil 表示不询问（直接续播）。
     var resumeChooser: ((ResumePrompt) async -> ResumeChoice)?
     private var hasHandledResumeChoice = false
+    /// 这次加载用哪个播放器（设置「播放器」+ 是否会选中杜比视界）。
+    private(set) var engineKind: PlayerEngineKind = .system
     private var hasBuiltSequence = false
 
     private var playInfo: PlayInfo
@@ -162,6 +164,7 @@ class VideoPlayerViewModel {
 
             playInfo = resolvedPlayInfo
             videoDetail = data.detail
+            engineKind = resolveEngineKind(data)
             BiliBiliUpnpDMR.shared.sendVideoSwitch(aid: resolvedPlayInfo.aid, cid: data.cid)
             cancellable.removeAll()
             let plugins = generatePlayerPlugin(data,
@@ -404,18 +407,47 @@ class VideoPlayerViewModel {
         }
     }
 
+    /// 系统 / VLC / 自动（会选中杜比视界时用系统播放器，其余用 VLC）。预览和刷视频流只用系统播放器。
+    private func resolveEngineKind(_ data: PlayerDetailData) -> PlayerEngineKind {
+        guard playMode == .regular else { return .system }
+        switch Settings.playerEngine {
+        case .system: return .system
+        case .vlc: return .vlc
+        case .auto: return BilibiliVideoResourceLoaderDelegate.selectsDolbyVision(data.videoPlayURLInfo) ? .system : .vlc
+        }
+    }
+
     private func generatePlayerPlugin(_ data: PlayerDetailData,
                                       playInfo: PlayInfo,
                                       danmuProvider: VideoDanmuProvider) -> [CommonPlayerPlugin]
     {
-        let playplugin = BVideoPlayPlugin(playInfo: playInfo,
+        let playplugin: CommonPlayerPlugin
+        let networkDebugInfo: () -> String
+        let switchQuality: (Int, Int?) async -> Void
+        let currentMedia: () -> VideoPlayURLInfo.DashInfo.DashMediaInfo?
+        if engineKind == .vlc {
+            let vlc = VLCVideoPlayPlugin(playInfo: playInfo, detailData: data, reportWatchHistory: playMode != .preview)
+            vlc.onLoadFailure = { [weak self] message in
+                self?.loadResult.send(.failure(message))
+            }
+            playplugin = vlc
+            networkDebugInfo = { [weak vlc] in vlc?.networkDebugInfo ?? "" }
+            switchQuality = { [weak vlc] quality, index in await vlc?.switchQuality(to: quality, streamIndex: index) }
+            currentMedia = { [weak vlc] in vlc?.currentMedia }
+        } else {
+            let system = BVideoPlayPlugin(playInfo: playInfo,
                                           detailData: data,
                                           reportWatchHistory: playMode != .preview,
                                           minimizeStalling: true,
                                           isMuted: playMode == .preview && previewMuted,
                                           mediaWarmupManager: playMode == .feedFlow ? mediaWarmupManager : nil)
-        playplugin.onLoadFailure = { [weak self] message in
-            self?.loadResult.send(.failure(message))
+            system.onLoadFailure = { [weak self] message in
+                self?.loadResult.send(.failure(message))
+            }
+            playplugin = system
+            networkDebugInfo = { [weak system] in system?.networkDebugInfo ?? "" }
+            switchQuality = { [weak system] quality, index in await system?.switchQuality(to: quality, streamIndex: index) }
+            currentMedia = { [weak system] in system?.currentMedia }
         }
 
         if playMode == .preview {
@@ -425,9 +457,7 @@ class VideoPlayerViewModel {
         let danmu = DanmuViewPlugin(provider: danmuProvider)
         let upnp = BUpnpPlugin(duration: data.detail?.View.duration)
         let debug = DebugPlugin()
-        debug.additionDebugInfo = { [weak playplugin] in
-            playplugin?.networkDebugInfo ?? ""
-        }
+        debug.additionDebugInfo = networkDebugInfo
         let playSpeed = SpeedChangerPlugin()
         playSpeed.$currentPlaySpeed.sink { [weak danmu] speed in
             danmu?.danMuView.playingSpeed = speed.value
@@ -461,13 +491,13 @@ class VideoPlayerViewModel {
         }
 
         // 添加画质选择器插件
-        let qualitySelector = BVideoQualityPlugin(detailData: data) { [weak playplugin] qualityId, streamIndex in
+        let qualitySelector = BVideoQualityPlugin(detailData: data) { qualityId, streamIndex in
             Task { @MainActor in
-                await playplugin?.switchQuality(to: qualityId, streamIndex: streamIndex)
+                await switchQuality(qualityId, streamIndex)
             }
         }
 
-        qualitySelector.currentMediaProvider = { [weak playplugin] in playplugin?.currentMedia }
+        qualitySelector.currentMediaProvider = currentMedia
         plugins.append(qualitySelector)
 
         if let clips = data.clips {
@@ -480,7 +510,7 @@ class VideoPlayerViewModel {
             plugins.append(sponsor)
         }
 
-        if Settings.danmuMask {
+        if Settings.danmuMask, engineKind == .system {
             if let mask = data.playerInfo?.dm_mask,
                let video = data.videoPlayURLInfo.dash.video.first,
                mask.fps > 0

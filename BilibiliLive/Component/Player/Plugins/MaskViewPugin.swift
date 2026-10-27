@@ -19,7 +19,9 @@ class MaskViewPugin: NSObject, CommonPlayerPlugin {
         self.maskProvider = maskProvider
     }
 
-    func playerDidChange(player: AVPlayer) {
+    func playerDidChange(engine: PlayerEngine) {
+        // 弹幕防挡需要系统播放器提供的画面数据，VLC 内核不支持。
+        guard let player = engine.avPlayer else { return }
         if maskProvider.needVideoOutput() {
             setUpOutput(player: player)
         }
@@ -39,7 +41,7 @@ class MaskViewPugin: NSObject, CommonPlayerPlugin {
 
     private weak var observedPlayer: AVPlayer?
 
-    func playerDidCleanUp(player: AVPlayer) {
+    func playerDidCleanUp(engine: PlayerEngine) {
         if let observer, let owner = observedPlayer {
             owner.removeTimeObserver(observer)
         }

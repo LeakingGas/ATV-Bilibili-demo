@@ -10,57 +10,51 @@ import AVKit
 class BVideoClipsPlugin: NSObject, CommonPlayerPlugin {
     let clipInfos: [VideoPlayURLInfo.ClipInfo]
 
-    private var observers = [Any]()
-    private weak var playerVC: AVPlayerViewController?
+    private var observers = [PlayerTimeObservation]()
+    private weak var host: PlayerHost?
 
     init(clipInfos: [VideoPlayURLInfo.ClipInfo]) {
         self.clipInfos = clipInfos
     }
 
-    func playerDidLoad(playerVC: AVPlayerViewController) {
-        self.playerVC = playerVC
+    func playerDidLoad(host: PlayerHost) {
+        self.host = host
     }
-
-    private weak var observedPlayer: AVPlayer?
 
     private func removeObservers() {
-        if let owner = observedPlayer {
-            observers.forEach { owner.removeTimeObserver($0) }
-        }
+        observers.forEach { $0.cancel() }
         observers.removeAll()
-        observedPlayer = nil
     }
 
-    func playerWillStart(player: AVPlayer) {
+    func playerWillStart(engine: PlayerEngine) {
         removeObservers()
-        observedPlayer = player
         for clip in clipInfos {
-            let start = CMTime(seconds: clip.start, preferredTimescale: 1)
-            let end = CMTime(seconds: clip.end, preferredTimescale: 1)
-            let startObserver = player.addBoundaryTimeObserver(forTimes: [NSValue(time: start)], queue: .main) {
-                [weak player, weak self] in
+            let start = Double(clip.start).rounded(.down)
+            let end = Double(clip.end).rounded(.down)
+            let startObserver = engine.addBoundaryObserver(times: [start]) {
+                [weak engine, weak self] in
                 let action = {
                     clip.skipped = true
-                    player?.seek(to: CMTime(seconds: Double(clip.end), preferredTimescale: 1), toleranceBefore: .zero, toleranceAfter: .zero)
+                    engine?.seek(to: Double(clip.end).rounded(.down))
                 }
                 if clip.skipped != true, Settings.autoSkip {
                     action()
                 } else {
                     let action = UIAction(title: clip.customText) { _ in action() }
-                    self?.playerVC?.contextualActions = [action]
+                    self?.host?.contextualActions = [action]
                 }
             }
             observers.append(startObserver)
 
-            let endObserver = player.addBoundaryTimeObserver(forTimes: [NSValue(time: end)], queue: .main) {
+            let endObserver = engine.addBoundaryObserver(times: [end]) {
                 [weak self] in
-                self?.playerVC?.contextualActions = []
+                self?.host?.contextualActions = []
             }
             observers.append(endObserver)
         }
     }
 
-    func playerDidCleanUp(player: AVPlayer) {
+    func playerDidCleanUp(engine: PlayerEngine) {
         removeObservers()
     }
 }

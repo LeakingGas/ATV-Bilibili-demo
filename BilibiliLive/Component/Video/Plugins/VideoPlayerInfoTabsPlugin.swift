@@ -23,7 +23,7 @@ final class VideoPlayerInfoTabsPlugin: NSObject, CommonPlayerPlugin {
     private let relatedCandidates: [PlayInfo]
     private let ownerMid: Int
     private var uploaderLoadTask: Task<Void, Never>?
-    private weak var playerVC: AVPlayerViewController?
+    private weak var playerVC: PlayerHost?
 
     init(detail: VideoDetail?, currentPlayInfo: PlayInfo, sequenceProvider: VideoSequenceProvider?) {
         self.currentPlayInfo = currentPlayInfo
@@ -71,19 +71,19 @@ final class VideoPlayerInfoTabsPlugin: NSObject, CommonPlayerPlugin {
         uploaderLoadTask?.cancel()
     }
 
-    func playerDidLoad(playerVC: AVPlayerViewController) {
-        self.playerVC = playerVC
-        interactions.attach(to: playerVC)
+    func playerDidLoad(host: PlayerHost) {
+        playerVC = host
+        interactions.attach(to: host)
         refreshCustomInfoViewControllers()
     }
 
-    func playerDidDismiss(playerVC: AVPlayerViewController) {
+    func playerDidDismiss(host: PlayerHost) {
         removeCustomInfoViewControllers()
         uploaderLoadTask?.cancel()
         uploaderLoadTask = nil
     }
 
-    func playerWillCleanUp(playerVC: AVPlayerViewController) {
+    func playerWillCleanUp(host: PlayerHost) {
         removeCustomInfoViewControllers()
         interactions.detach()
         uploaderLoadTask?.cancel()
@@ -172,7 +172,8 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
     private var busy = Set<Kind>()
     private var focusedKind: Kind?
     private var suppressActionsUntil = Date.distantPast
-    private weak var playerVC: AVPlayerViewController?
+    private weak var host: PlayerHost?
+    private var playerView: UIView? { host?.hostViewController.view }
     private var longPress: UILongPressGestureRecognizer?
     private var focusObserver: NSObjectProtocol?
 
@@ -219,16 +220,16 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
 
     // MARK: attach
 
-    func attach(to playerVC: AVPlayerViewController) {
-        guard self.playerVC !== playerVC else { return }
+    func attach(to host: PlayerHost) {
+        guard self.host !== host else { return }
         detach()
-        self.playerVC = playerVC
+        self.host = host
         let gesture = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
         gesture.allowedPressTypes = [NSNumber(value: UIPress.PressType.select.rawValue)]
         gesture.minimumPressDuration = 0.8
         gesture.cancelsTouchesInView = false
         gesture.delegate = self
-        playerVC.view.addGestureRecognizer(gesture)
+        host.hostViewController.view.addGestureRecognizer(gesture)
         longPress = gesture
         focusObserver = NotificationCenter.default.addObserver(forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main) { [weak self] note in
             guard let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext else { return }
@@ -297,13 +298,13 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
             let ok = await WebRequest.requestLike(aid: aid, like: next)
             if !ok { liked = !next; bump(.like, next ? -1 : 1) }
             busy.remove(.like); onStateChange?()
-            if ok, next { VideoInteractionAnimationView.show(in: playerVC?.view, kinds: [.like], text: "已点赞") }
+            if ok, next { VideoInteractionAnimationView.show(in: playerView, kinds: [.like], text: "已点赞") }
         }
     }
 
     private func askCoin() {
         guard coins < 2 else {
-            VideoInteractionAnimationView.show(in: playerVC?.view, kinds: [], text: "已经投过 2 个硬币了")
+            VideoInteractionAnimationView.show(in: playerView, kinds: [], text: "已经投过 2 个硬币了")
             return
         }
         let alert = UIAlertController(title: "投币", message: "投币会同时点赞", preferredStyle: .actionSheet)
@@ -319,7 +320,7 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
         coins += count; bump(.coin, count)
         if !liked { liked = true; bump(.like, 1) }
         onStateChange?()
-        VideoInteractionAnimationView.show(in: playerVC?.view, kinds: [.like, .coin], text: "投币成功")
+        VideoInteractionAnimationView.show(in: playerView, kinds: [.like, .coin], text: "投币成功")
     }
 
     private func toggleFavorite() {
@@ -338,7 +339,7 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
                     guard let self else { return }
                     WebRequest.requestFavorite(aid: self.aid, mid: list.id)
                     self.favorited = true; self.bump(.favorite, 1); self.onStateChange?()
-                    VideoInteractionAnimationView.show(in: self.playerVC?.view, kinds: [.favorite], text: "已收藏")
+                    VideoInteractionAnimationView.show(in: self.playerView, kinds: [.favorite], text: "已收藏")
                 })
             }
             alert.addAction(UIAlertAction(title: "取消", style: .cancel))
@@ -348,10 +349,10 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
 
     private func triple() {
         guard aid > 0 else { return }
-        VideoInteractionAnimationView.show(in: playerVC?.view, kinds: Kind.allCases, text: "一键三连中…", pending: true)
+        VideoInteractionAnimationView.show(in: playerView, kinds: Kind.allCases, text: "一键三连中…", pending: true)
         Task { @MainActor in
             guard let result = await WebRequest.requestTriple(aid: aid) else {
-                VideoInteractionAnimationView.show(in: playerVC?.view, kinds: [], text: "三连失败，请稍后再试")
+                VideoInteractionAnimationView.show(in: playerView, kinds: [], text: "三连失败，请稍后再试")
                 return
             }
             if result.like, !liked { liked = true; bump(.like, 1) }
@@ -359,13 +360,13 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
             if result.favorite, !favorited { favorited = true; bump(.favorite, 1) }
             onStateChange?()
             let done = Kind.allCases.filter { isOn($0) }
-            VideoInteractionAnimationView.show(in: playerVC?.view, kinds: done,
+            VideoInteractionAnimationView.show(in: playerView, kinds: done,
                                                text: done.count == 3 ? "一键三连成功！" : "三连完成 \(done.count)/3")
         }
     }
 
     private func presenter() -> UIViewController? {
-        var top: UIViewController? = playerVC
+        var top: UIViewController? = host?.hostViewController
         while let presented = top?.presentedViewController { top = presented }
         return top
     }

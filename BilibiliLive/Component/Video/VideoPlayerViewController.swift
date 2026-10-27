@@ -211,6 +211,10 @@ class VideoPlayerViewController: CommonPlayerViewController {
                                          startTimeOverride: startTimeOverride)
         currentRetryKey = playInfo.sequenceKey
         super.init(nibName: nil, bundle: nil)
+        // 设置里选了 VLC / 自动：先不装界面，拿到播放地址后再决定用哪个播放器。
+        if playMode == .regular, Settings.playerEngine != .system {
+            initialEngineKind = nil
+        }
         if playMode == .preview {
             showsPlaybackControls = false
             allowsPictureInPicturePlayback = false
@@ -247,6 +251,7 @@ class VideoPlayerViewController: CommonPlayerViewController {
                 Diag.mark("VPLAYER \(Diag.id(self)) load success plugins=\(plugins.count)")
                 self?.neighborPreloadTask?.cancel()
                 self?.removeAllPlugins()
+                if let kind = self?.viewModel.engineKind { self?.installSurface(kind) }
                 plugins.forEach { self?.addPlugin(plugin: $0) }
                 self?.neighborPreloadTask = Task { [weak self] in
                     await self?.viewModel.preloadNeighborsIfNeeded()
@@ -313,7 +318,7 @@ class VideoPlayerViewController: CommonPlayerViewController {
         super.stopPlayback()
     }
 
-    override func playerDidStart(player: AVPlayer) {
+    override func playerDidStart(engine: PlayerEngine) {
         switch playMode {
         case .preview:
             onPlaybackStarted?()
@@ -322,14 +327,14 @@ class VideoPlayerViewController: CommonPlayerViewController {
         }
     }
 
-    override func playerDidStall(player: AVPlayer) {
+    override func playerDidStall(engine: PlayerEngine) {
         guard playMode == .feedFlow else { return }
         attemptRetryOrShowRecovery(message: "播放卡住了，请选择重试或切换下一条。")
     }
 
-    override func playerDidFail(player: AVPlayer) {
+    override func playerDidFail(engine: PlayerEngine) {
         guard playMode == .feedFlow else {
-            super.playerDidFail(player: player)
+            super.playerDidFail(engine: engine)
             return
         }
         attemptRetryOrShowRecovery(message: "当前视频加载失败，请选择重试或切换下一条。")
