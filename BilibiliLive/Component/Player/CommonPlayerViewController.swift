@@ -95,6 +95,18 @@ class CommonPlayerViewController: UIViewController {
     // 这里在按下返回的那一刻记录：控制栏是否显示、焦点是否在画面上（不在按钮或菜单里）。
     // 两者都成立时拦下这次返回，让控制栏收起（AVKit 自己收了就什么都不做），不关闭播放器。
     private var interceptMenuPress = false
+    /// 最近一次「控制栏显示、焦点在画面上」时按下返回的时间。
+    private var guardedMenuPressAt: TimeInterval?
+
+    func shouldBlockUnexpectedDismiss() -> Bool {
+        guard !exitRequested, let at = guardedMenuPressAt else { return false }
+        return ProcessInfo.processInfo.systemUptime - at < 1.5
+    }
+
+    func handleBlockedDismiss() {
+        guardedMenuPressAt = nil
+        if transportBarVisible { hideTransportBar() }
+    }
 
     private var focusIsOnVideoSurface: Bool {
         guard let focused = view.window?.windowScene?.focusSystem?.focusedItem as? UIView else { return true }
@@ -110,7 +122,10 @@ class CommonPlayerViewController: UIViewController {
         if presses.contains(where: { $0.type == .menu }) {
             interceptMenuPress = transportBarVisible && focusIsOnVideoSurface && presentedViewController == nil
             Diag.mark("PLAYER \(Diag.id(self)) menu down bar=\(transportBarVisible) intercept=\(interceptMenuPress)")
-            if interceptMenuPress { return }
+            if interceptMenuPress {
+                guardedMenuPressAt = ProcessInfo.processInfo.systemUptime
+                return
+            }
         }
         super.pressesBegan(presses, with: event)
     }

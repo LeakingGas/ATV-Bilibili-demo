@@ -25,6 +25,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         Logger.setup()
         ImageCache.default.diskStorage.config.sizeLimit = 500 * 1024 * 1024
         AVInfoPanelCollectionViewThumbnailCellHook.start()
+        _ = UIViewController.installDismissGuard
         AccountManager.shared.bootstrap()
         BiliBiliUpnpDMR.shared.start()
         URLSession.shared.configuration.headers.add(.userAgent("BiLiBiLi AppleTV Client/1.0.0 (github/yichengchen/ATV-Bilibili-live-demo)"))
