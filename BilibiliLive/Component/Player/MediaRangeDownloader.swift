@@ -537,6 +537,10 @@ actor MediaRangeDownloader {
         let rescue = RescueBudget(playback.limit)
         var admitted = false
         let readerID = UUID()
+        // diag14: the piece this reader is currently streaming. Progressive delivery polls instead of
+        // awaiting the piece task, so a cancelled request must cancel (and wait for) it explicitly,
+        // as the old await-with-cancellation-handler did.
+        var headSlot: Slot?
         defer {
             if admitted { streams -= 1 }
             readers[readerID] = nil
@@ -571,6 +575,7 @@ actor MediaRangeDownloader {
                 reader.cursor = cursor
                 schedule(reader)
                 guard let slot = self.slotAt(cursor) else { throw MediaRangeError.truncated }
+                headSlot = slot
                 let waitStarted = BTRTrace.now
                 let upto = min(slot.range.end, range.end)
                 let from = Int(cursor - slot.range.start), to = Int(upto - slot.range.start) + 1
@@ -618,6 +623,14 @@ actor MediaRangeDownloader {
             BTRTrace.shared.event("stream_complete")
             pipe.close()
         } catch {
+            if Task.isCancelled || error is CancellationError, let slot = headSlot, !slot.finished {
+                readers[readerID] = nil
+                if !wanted(slot) {
+                    slot.task?.cancel()
+                    remove(slot)
+                    _ = try? await slot.task?.value
+                }
+            }
             playback.recordError(error, isAudio: isAudio, generation: generation)
             BTRTrace.shared.event("stream_failed",BTRTrace.errorFields(error))
             pipe.fail(error)
