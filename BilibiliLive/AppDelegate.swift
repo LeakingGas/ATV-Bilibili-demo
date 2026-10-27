@@ -30,9 +30,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         BiliBiliUpnpDMR.shared.start()
         URLSession.shared.configuration.headers.add(.userAgent("BiLiBiLi AppleTV Client/1.0.0 (github/yichengchen/ATV-Bilibili-live-demo)"))
         WebRequest.requestIndex()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-            Diag.presentAbnormalNoticeIfNeeded()
-        }
         return true
     }
 

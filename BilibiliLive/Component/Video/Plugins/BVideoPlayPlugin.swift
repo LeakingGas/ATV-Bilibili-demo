@@ -351,8 +351,13 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         avStateObservers.forEach { NotificationCenter.default.removeObserver($0) }
         avStateObservers.removeAll()
         let id = Diag.id(player)
+        var lastStatus = player.timeControlStatus
         avStateObservations.append(player.observe(\.timeControlStatus, options: [.initial, .new]) { player, _ in
             let status = ["paused", "waiting", "playing"][min(player.timeControlStatus.rawValue, 2)]
+            if lastStatus == .playing, player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
+                Diag.eventWindow(String(format: "stall at %.1fs", player.currentTime().seconds))
+            }
+            lastStatus = player.timeControlStatus
             Diag.startupStep("av_time_control", ["player": id, "status": status, "reason": player.reasonForWaitingToPlay?.rawValue ?? "-"])
         })
         avStateObservations.append(player.observe(\.reasonForWaitingToPlay, options: [.new]) { player, _ in
@@ -423,6 +428,9 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         btrJumpObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemTimeJumped,
             object: item, queue: .main) { [weak self, weak player] _ in
                 guard let self, let player, self.playerVC?.player === player else { return }
+                if self.startupMarks.contains(where: { $0.hasPrefix("playing") }) {
+                    Diag.eventWindow(String(format: "seek to %.1fs", player.currentTime().seconds))
+                }
                 self.sampleBTR(player: player, jumped: true)
             }
     }

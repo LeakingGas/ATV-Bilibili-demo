@@ -100,6 +100,9 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        // 侧边栏支持触控板外圈转圈上下移动。
+        ClickpadRotationTracker.shared.register(self)
+        ClickpadRotationTracker.shared.installTouchObserver(on: view.window)
         // 关掉系统自带的返回键手势（把焦点移到 tab 栏），避免抢在我们前面。
         for gesture in (view.gestureRecognizers ?? []) + (tabBar.gestureRecognizers ?? []) where gesture !== menuTap {
             if gesture.allowedPressTypes.contains(NSNumber(value: UIPress.PressType.menu.rawValue)) { gesture.isEnabled = false }
@@ -221,6 +224,18 @@ class BLTabBarViewController: UITabBarController, UITabBarControllerDelegate {
         }
         setNeedsFocusUpdate()
         updateFocusIfNeeded()
+    }
+
+    /// 转圈移动时由我们指定焦点，屏蔽系统按滑动方向乱跳。
+    private var applyingRotation = false
+
+    override func shouldUpdateFocus(in context: UIFocusUpdateContext) -> Bool {
+        if sidebarVisible, !applyingRotation, ClickpadRotationTracker.shared.suppressesFocusEngine,
+           let next = context.nextFocusedView, next.isDescendant(of: sidebar)
+        {
+            return false
+        }
+        return super.shouldUpdateFocus(in: context)
     }
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
@@ -401,8 +416,19 @@ final class BLSidebarView: UIView {
         for (i, row) in rows.enumerated() { row.isCurrent = i == index }
     }
 
+    /// 转圈时要移到的行。
+    var rotationTarget: Int?
+
+    /// 当前焦点所在行往上 / 往下移 step 行后的行号（到头就停在头）。
+    func rowIndex(movingFocusedBy step: Int) -> Int? {
+        guard let current = rows.firstIndex(where: { $0.isFocused }) else { return nil }
+        let target = max(0, min(rows.count - 1, current + step))
+        return target == current ? nil : target
+    }
+
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
-        rows.indices.contains(selectedIndex) ? [rows[selectedIndex]] : rows
+        if let rotationTarget, rows.indices.contains(rotationTarget) { return [rows[rotationTarget]] }
+        return rows.indices.contains(selectedIndex) ? [rows[selectedIndex]] : rows
     }
 }
 
@@ -555,5 +581,19 @@ final class BLCurrentPagePill: UIView {
         guard let avatar = account?.avatar, !avatar.isEmpty, avatar != avatarURL, let url = URL(string: avatar) else { return }
         avatarURL = avatar
         avatarView.kf.setImage(with: url, options: [.processor(DownsamplingImageProcessor(size: CGSize(width: 88, height: 88))), .cacheOriginalImage])
+    }
+}
+
+extension BLTabBarViewController: ClickpadRotationHandling {
+    func handleRotationStep(_ step: Int) -> Bool {
+        guard sidebarVisible, view.window != nil, presentedViewController == nil else { return false }
+        guard let target = sidebar.rowIndex(movingFocusedBy: step) else { return true }
+        sidebar.rotationTarget = target
+        applyingRotation = true
+        setNeedsFocusUpdate()
+        updateFocusIfNeeded()
+        applyingRotation = false
+        sidebar.rotationTarget = nil
+        return true
     }
 }

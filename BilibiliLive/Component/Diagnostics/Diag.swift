@@ -365,7 +365,7 @@ enum Diag {
         text += "======== 本轮运行 ========\n"
         text += "---- crash.log ----\n" + demangle(read("crash.log")) + "\n"
         text += "---- events.log 末尾 ----\n" + tail(read("events.log"), lines: 2500) + "\n\n"
-        text += "======== 最近的起播记录（startups.log）========\n" + startupExport(lines: 4000) + "\n\n"
+        text += "======== 最近的起播记录（startups.log）========\n" + startupExport(lines: 15000) + "\n\n"
         text += "======== 应用日志末尾 ========\n"
         for path in Logger.logFilePaths.prefix(2).reversed() {
             if let data = FileManager.default.contents(atPath: path) {
@@ -538,6 +538,32 @@ extension Diag {
     private static var startupT0 = 0.0
     private static var startupUntil = 0.0
 
+    private static var windowIsEvent = false
+
+    /// 播放中的拖动 / 卡顿：和起播一样详细地记录接下来的过程（最长 45 秒，恢复播放后 5 秒结束）。
+    /// 起播记录还在进行时只插一行标记，不打断。
+    static func eventWindow(_ label: String) {
+        let now = ProcessInfo.processInfo.systemUptime
+        startupLock.lock()
+        let active = startupSeq > 0 && now <= startupUntil
+        if active {
+            startupUntil = max(startupUntil, now + (windowIsEvent ? 45 : 0))
+            startupLock.unlock()
+            startupEvent("mark", ["event": label])
+            return
+        }
+        if startupFD < 0 { startupLock.unlock(); return }
+        startupSeq += 1
+        startupT0 = now
+        startupUntil = now + 45
+        windowIsEvent = true
+        let seq = startupSeq
+        startupLock.unlock()
+        mark("EVENT S\(seq) \(label)")
+        startupWrite("\n==== S\(seq) \(ISO8601DateFormatter().string(from: Date())) EVENT \(label)\n")
+        startupEvent("event_begin", ["event": label])
+    }
+
     /// 打开一个视频时调用。
     static func startupBegin(_ label: String) {
         startupLock.lock()
@@ -549,6 +575,7 @@ extension Diag {
         startupSeq += 1
         startupT0 = ProcessInfo.processInfo.systemUptime
         startupUntil = startupT0 + 90
+        windowIsEvent = false
         let seq = startupSeq
         startupLock.unlock()
         mark("STARTUP S\(seq) begin \(label)")
@@ -569,6 +596,10 @@ extension Diag {
         let active = now <= startupUntil && startupSeq > 0
         if active, name == "startup_mark", (fields["mark"] as? String) == "playing" {
             startupUntil = min(startupUntil, now + 8)
+        }
+        // 拖动 / 卡顿的记录窗口：恢复播放后再记 5 秒就结束。
+        if active, name == "av_time_control", (fields["status"] as? String) == "playing", windowIsEvent {
+            startupUntil = min(startupUntil, now + 5)
         }
         let seq = startupSeq, t0 = startupT0
         startupLock.unlock()
