@@ -42,6 +42,21 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     var startOffset: Double?
     /// 当前实际播放的视频流（默认模式下为允许的最高画质）。
     var primaryMedia: VideoPlayURLInfo.DashInfo.DashMediaInfo? { videoInfo.first?.info }
+    /// 当前使用的音频流。
+    var primaryAudio: VideoPlayURLInfo.DashInfo.DashMediaInfo? { videoInfo.first { infoIsAudio($0.info) }?.info }
+
+    /// 给第三方播放引擎（VLC）用：直接读本地 BTR 代理上的整个文件。
+    /// 第三方引擎会请求 `bytes=0-` 这类不定长范围，代理需要先知道文件总长，这里先取一小段拿到总长。
+    func prepareDirectURL(for media: VideoPlayURLInfo.DashInfo.DashMediaInfo) async -> URL? {
+        guard let local = mediaTransportURL(for: media), let url = URL(string: local),
+              let id = proxyRegistry.id(for: media), let downloader = proxyRegistry.downloader(for: media) else { return nil }
+        if await downloader.knownTotal() == nil, let probe = try? MediaByteRange(start: 0, end: 1023) {
+            _ = try? await downloader.fetch(range: probe)
+        }
+        guard let total = await downloader.knownTotal() else { return nil }
+        proxyRegistry.updateTotalLength(total, for: id)
+        return url
+    }
     /// 当前首选视频流的简短描述（debug 浮层显示）。
     var primaryVideoDescription: String {
         guard let media = videoInfo.first?.info else { return "" }

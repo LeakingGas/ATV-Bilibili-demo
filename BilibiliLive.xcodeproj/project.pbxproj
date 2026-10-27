@@ -22,6 +22,8 @@
 		F927ED9F2610B5C300EAB8E3 /* Kingfisher in Frameworks */ = {isa = PBXBuildFile; productRef = F927ED9E2610B5C300EAB8E3 /* Kingfisher */; };
 		F9B5736E260F652C00771ED5 /* Alamofire in Frameworks */ = {isa = PBXBuildFile; productRef = F9B5736D260F652C00771ED5 /* Alamofire */; };
 		F9B57378260F6BB400771ED5 /* SwiftyJSON in Frameworks */ = {isa = PBXBuildFile; productRef = F9B57377260F6BB400771ED5 /* SwiftyJSON */; };
+		B7C0DE02B7C0DE02B7C0DE02 /* TVVLCKit.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B7C0DE01B7C0DE01B7C0DE01 /* TVVLCKit.xcframework */; };
+		B7C0DE03B7C0DE03B7C0DE03 /* TVVLCKit.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B7C0DE01B7C0DE01B7C0DE01 /* TVVLCKit.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -32,6 +34,7 @@
 			dstSubfolderSpec = 10;
 			files = (
 				695081FB2D0FD9E30063044D /* PocketSVG in Embed Frameworks */,
+				B7C0DE03B7C0DE03B7C0DE03 /* TVVLCKit.xcframework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -39,6 +42,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B7C0DE01B7C0DE01B7C0DE01 /* TVVLCKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = TVVLCKit.xcframework; path = ThirdParty/TVVLCKit/TVVLCKit.xcframework; sourceTree = SOURCE_ROOT; };
 		F9B57350260F5F7400771ED5 /* BilibiliLive.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BilibiliLive.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -75,6 +79,7 @@
 				499C75EC293058C9003160FB /* CocoaAsyncSocket in Frameworks */,
 				F927ED9F2610B5C300EAB8E3 /* Kingfisher in Frameworks */,
 				2806E51E2C1593A000164C10 /* LookinServer in Frameworks */,
+				B7C0DE02B7C0DE02B7C0DE02 /* TVVLCKit.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -85,6 +90,7 @@
 			isa = PBXGroup;
 			children = (
 				4930B8FD2D686DC30074E861 /* BilibiliLive */,
+				B7C0DE01B7C0DE01B7C0DE01 /* TVVLCKit.xcframework */,
 				F9B57351260F5F7400771ED5 /* Products */,
 			);
 			sourceTree = "<group>";

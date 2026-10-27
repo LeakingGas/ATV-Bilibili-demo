@@ -23,9 +23,13 @@ enum VideoLauncher {
     }
 
     static func play(_ info: PlayInfo, askResume: Bool = true, from presenter: UIViewController? = nil) {
+        let presenter = presenter ?? UIViewController.topMostViewController()
+        if Settings.useVLCPlayer {
+            presenter.topMostViewController().present(VLCVideoPlayerViewController(playInfo: info, askResume: askResume), animated: true)
+            return
+        }
         let player = VideoPlayerViewController(playInfo: info)
         player.askResume = askResume
-        let presenter = presenter ?? UIViewController.topMostViewController()
         // 列表页本身可能还盖着别的弹窗（例如搜索），从最上层弹出。
         presenter.topMostViewController().present(player, animated: true)
     }

@@ -88,3 +88,6 @@ iOSInjectionProject/
 
 # End of https://www.toptal.com/developers/gitignore/api/swift
 fastlane/README.md
+
+# VLC engine binary (downloaded by scripts/fetch-vlckit.sh)
+ThirdParty/TVVLCKit/

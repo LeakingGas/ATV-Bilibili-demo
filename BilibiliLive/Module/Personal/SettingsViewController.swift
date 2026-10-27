@@ -202,6 +202,7 @@ class SettingsViewController: UIViewController {
                 }
                 Toggle(title: "AVC 优先（同画质码率更高）", setting: Settings.preferAvc, onChange: Settings.preferAvc.toggle())
                 Toggle(title: "不等缓冲，数据到了就播", setting: Settings.playWithoutWaiting, onChange: Settings.playWithoutWaiting.toggle())
+                Toggle(title: "使用 VLC 播放引擎（试验）", setting: Settings.useVLCPlayer, onChange: Settings.useVLCPlayer.toggle())
                 CellModel(title: "BTR CDN 并行", desp: "始终开启", action: nil)
                 Actions(title: "BTR 节点", message: "同一视频地址分发到多个CDN节点并行下载；海外用户选海外节点",
                         current: Settings.btrNodeRegion.title,

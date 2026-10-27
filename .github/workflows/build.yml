@@ -21,6 +21,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Fetch VLC engine (TVVLCKit)
+        run: ./scripts/fetch-vlckit.sh
       - name: Native policy and fault-injection tests
         run: |
           set -o pipefail
