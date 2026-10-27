@@ -8,11 +8,11 @@ jobs:
       - name: probe vlckit
         run: |
           url="https://download.videolan.org/cocoapods/prod/TVVLCKit-3.7.2-3e42ae47-79128878.tar.xz"
-          curl -sfL "$url" -o tv.tar.xz || { echo "::error::download failed"; exit 1; }
-          ls -la tv.tar.xz | sed 's/^/::notice title=dl::/'
+          curl -sfL "$url" -o tv.tar.xz
           mkdir tv && tar -xJf tv.tar.xz -C tv
-          find tv -maxdepth 5 | grep -v "Headers/" | head -60 | while read l; do echo "::notice title=tree::$l"; done
-          for b in $(find tv -name TVVLCKit -type f | head -4); do echo "::notice title=bin::$b $(file -b "$b" | head -c 300)"; done
-          for p in $(find tv -name Info.plist -path "*xcframework/Info.plist"); do echo "::notice title=xcinfo::$(plutil -convert json -o - "$p" | head -c 1500)"; done
-          du -sh tv | sed 's/^/::notice title=size::/'
-          ls tv/*/ | head; find tv -name "*.h" | grep -i "VLCMediaPlayer.h\|VLCMedia.h" | head -3 | while read h; do grep -n "addPlaybackSlave\|- (void)play\|rate\|position" "$h" | head -20 | sed 's/^/::notice title=api::/'; done
+          echo "::notice title=tree::$(find tv -maxdepth 4 -not -path '*/doc/*' -not -path '*Headers/*' | tr '\n' ' ' | head -c 3000)"
+          echo "::notice title=bins::$(for b in $(find tv -name TVVLCKit -type f); do echo "$b: $(file -b "$b")"; done | tr '\n' ' ' | head -c 3000)"
+          echo "::notice title=xcinfo::$(for p in $(find tv -path '*xcframework/Info.plist'); do plutil -convert json -o - "$p"; done | head -c 3000)"
+          h=$(find tv -name VLCMediaPlayer.h | head -1)
+          echo "::notice title=api::$(grep -n 'addPlaybackSlave\|^- (void)play\|^- (void)pause\|float position\|VLCTime \*time\|isPlaying\|state;' "$h" | tr '\n' ' ' | head -c 3000)"
+          echo "::notice title=size::$(du -sh tv)"
