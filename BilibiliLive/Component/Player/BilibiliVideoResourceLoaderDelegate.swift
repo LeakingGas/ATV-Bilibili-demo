@@ -50,6 +50,8 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     func prepareDirectURL(for media: VideoPlayURLInfo.DashInfo.DashMediaInfo) async -> URL? {
         guard let local = mediaTransportURL(for: media), let url = URL(string: local),
               let id = proxyRegistry.id(for: media), let downloader = proxyRegistry.downloader(for: media) else { return nil }
+        // VLC only: BTR startup probe / proven nodes / deadline hedging (see MediaRangeDownloader).
+        await downloader.enableFastStart(bytesPerSecond: Double(media.bandwidth) / 8)
         if await downloader.knownTotal() == nil, let probe = try? MediaByteRange(start: 0, end: 1023) {
             _ = try? await downloader.fetch(range: probe)
         }

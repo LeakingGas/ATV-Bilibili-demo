@@ -430,6 +430,74 @@ actor MediaRangeDownloader {
         readers[id] = nil; prewarmID = nil
         evict()
     }
+    // MARK: - VLC fast start (BTR native-mse-player / downloadStartupMediaRange)
+    //
+    // Only the VLC engine turns this on (prepareDirectURL), so the system player keeps its
+    // behaviour and the two can be compared. What it adds, as upstream BTR does it:
+    //  - the first 64 KiB raced on up to 8 nodes at once: opens (TLS) and measures every node
+    //    before any media piece is assigned, and verifies them against the winner;
+    //  - media pieces go only to nodes that have delivered (no unmeasured node holds the start);
+    //  - hedging against a playback-like deadline (read position + media bitrate) with the
+    //    startup copy delay of 200 ms for the first 20 s;
+    //  - the rescue budget renews every 4 MiB, like BTR's per-segment budget (VLC reads the
+    //    whole file through one request, so a per-request budget ran out after 1-2 hedges).
+    private var fastStart = false
+    private var fastStartBps = 0.0
+    private var fastStartAt = 0.0
+    func enableFastStart(bytesPerSecond: Double) async {
+        guard !fastStart else { return }
+        fastStart = true
+        fastStartBps = max(64 * 1024, bytesPerSecond)
+        fastStartAt = BTRPlaybackSession.now
+        await startupProbe()
+    }
+    private func startupProbe() async {
+        let urls = Array(pool().prefix(8))
+        guard !urls.isEmpty, let range = try? MediaByteRange(start: 0, end: 64 * 1024 - 1) else { return }
+        let deadline = BTRDeadline(session: playback, generation: playback.generation, presentation: nil)
+        let started = BTRTrace.now
+        var results = [String: Data]()
+        var winner: (String, Double)?
+        await withTaskGroup(of: (String, Data?).self) { group in
+            for url in urls {
+                group.addTask { (url, try? await self.sampleBytes(range, url: url, deadline: deadline)) }
+            }
+            var graceArmed = false
+            while let (url, data) = await group.next() {
+                if url.isEmpty { group.cancelAll(); break } // grace over: the rest are measured by what they got
+                if let data, data.count == Int(range.length) {
+                    results[url] = data
+                    if winner == nil { winner = (url, BTRTrace.now - started) }
+                    if !graceArmed {
+                        graceArmed = true
+                        group.addTask { try? await Task.sleep(nanoseconds: 700_000_000); return ("", nil) }
+                    }
+                }
+                if results.count == urls.count { group.cancelAll(); break }
+            }
+        }
+        guard let (winnerURL, winnerMs) = winner, let reference = results[winnerURL] else {
+            BTRTrace.shared.event("fast_probe",["hosts":urls.count,"ok":0,"elapsedMs":BTRTrace.now - started])
+            return
+        }
+        if anchor == nil {
+            let sample = Data(reference.prefix(32 * 1024))
+            if referenceSample == nil { referenceSample = sample }
+            if referenceSample == sample {
+                for (url, data) in results {
+                    if Data(data.prefix(32 * 1024)) == sample { verified.insert(url) } else { banMismatch(url) }
+                }
+            }
+        }
+        BTRTrace.shared.event("fast_probe",["hosts":urls.count,"ok":results.count,"winner":URL(string:winnerURL)?.host ?? "",
+            "winnerMs":winnerMs,"elapsedMs":BTRTrace.now - started,"measured":candidates.filter { speed($0) > 0 }.count])
+    }
+    /// Playback-like deadline for a piece: when the reader will need it at the media bitrate.
+    private func fastDeadline(_ start: Int64, now: Double) -> Double {
+        let cursor = readers.values.filter { $0.cursor <= start && $0.requestEnd >= start }.map(\.cursor).max() ?? start
+        return now + Double(start - cursor) * 1000 / fastStartBps
+    }
+
     /// Verify every node concurrently instead of one node per first lane.
     func verifyAllHosts() {
         let deadline = BTRDeadline(session: playback, generation: playback.generation, presentation: nil)
@@ -482,7 +550,9 @@ actor MediaRangeDownloader {
         slots.sort { $0.range.start < $1.range.start }
         let urls = pool()
         let measured = Dictionary(uniqueKeysWithValues: urls.map { ($0, speed($0)) })
-        let primaries = policy.assign(urls, count: planned.count) { measured[$0] ?? 0 }
+        // VLC fast start: only nodes that have delivered carry media pieces (BTR provenUrls).
+        let proven = fastStart ? urls.filter { (measured[$0] ?? 0) > 0 } : []
+        let primaries = policy.assign(proven.isEmpty ? urls : proven, count: planned.count) { measured[$0] ?? 0 }
         let delay = policy.hedgeDelay
         for (index, piece) in planned.enumerated() {
             guard let slot = slots.first(where: { $0.range == piece }) else { continue }
@@ -567,6 +637,7 @@ actor MediaRangeDownloader {
                 BTRTrace.shared.event("prewarm_handoff",["start":cursor,"readyBytes":slots.filter { $0.finished }.reduce(0) { $0 + $1.range.length }])
             }
             let reader = Reader(cursor: cursor, requestEnd: range.end, readAhead: readAhead, generation: generation, rescue: rescue)
+            var rescueRenewedAt = cursor
             readers[readerID] = reader
             // diag14: read-ahead pieces already in flight become critical once the player asks for them
             // (device trace: the 2nd segment's read-ahead pieces stalled 2-8 s without being hedged).
@@ -619,6 +690,10 @@ actor MediaRangeDownloader {
                     "firstByteMs":firstByteMs,"inFlight":slots.filter { !$0.finished }.count,"held":slots.filter { $0.finished }.count])
                 if upto == slot.range.end { remove(slot) }
                 cursor = upto + 1
+                if fastStart, cursor - rescueRenewedAt >= 4 * 1024 * 1024 {
+                    rescueRenewedAt = cursor
+                    rescue.value = BTRRescue(max(1, Int(ceil(Double(playback.limit) / 8))))
+                }
             }
             reader.cursor = cursor
             if readAhead { refill() }
@@ -755,6 +830,27 @@ actor MediaRangeDownloader {
         // With no mapped playback deadline retain BTR compatibility-mode timing — except for pieces the
         // player waits for: device trace showed prewarm pieces (scheduled before the playlist timings
         // exist) all hedged blindly at 0.9 s, doubling every request. Those use the startup rule below.
+        if fastStart {
+            var observation = BTRHedgeObservation(seenAt: BTRPlaybackSession.now)
+            let wait = BTRPlaybackSession.now - fastStartAt < 20000 ? min(200, delay * 1000) : delay * 1000
+            while true {
+                try Task.checkCancellation()
+                guard deadline.valid else { throw CancellationError() }
+                if let first = state.contexts.first {
+                    let now = BTRPlaybackSession.now
+                    let got = first.progress.snapshot().count
+                    let due = fastDeadline(range.start, now: now)
+                    if observation.due(now: now, started: first.started, bytes: got,
+                        length: Int(range.length) - first.base.count, delay: wait, deadline: due,
+                        copyBps: speed(copy), connectionBps: policy.connectionBps, rescue: &rescue.value) {
+                        BTRTrace.shared.event("fast_hedge",["start":range.start,"end":range.end,"bytes":got,
+                            "elapsedMs":now - first.started,"slackMs":due - now,"copyBps":speed(copy)])
+                        return
+                    }
+                }
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
         if deadline.presentation == nil && !slot.critical {
             try await Task.sleep(nanoseconds: UInt64(delay * 1e9)); return
         }
