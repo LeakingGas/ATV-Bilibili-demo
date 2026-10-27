@@ -10,7 +10,20 @@ import UIKit
 final class BLWindow: UIWindow {
     private var menuHandled = false
 
+    /// 诊断：记录每一次遥控器按键（在分发给任何界面之前）。
+    override func sendEvent(_ event: UIEvent) {
+        if let presses = event as? UIPressesEvent {
+            for press in presses.allPresses where press.phase == .began || press.phase == .ended {
+                Diag.mark("PRESS \(Diag.pressName(press.type)) \(press.phase == .began ? "down" : "up") focus=\(Diag.describeFocus())")
+            }
+        }
+        super.sendEvent(event)
+    }
+
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.type == .menu }) {
+            Diag.mark("WINDOW got unhandled menu press")
+        }
         if presses.contains(where: { $0.type == .menu }),
            let tabBar = rootViewController as? BLTabBarViewController, tabBar.showSidebarFromWindowMenuPress()
         {

@@ -281,6 +281,7 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
                               with coordinator: AVPlayerViewControllerAnimationCoordinator)
     {
         transportBarVisible = visible
+        Diag.mark("PLAYER \(Diag.id(self)) transportBar -> \(visible ? "visible" : "hidden")")
     }
 
     @objc func playerViewControllerShouldDismiss(_ playerViewController: AVPlayerViewController) -> Bool {

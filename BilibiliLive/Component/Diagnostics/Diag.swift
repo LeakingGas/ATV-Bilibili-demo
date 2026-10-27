@@ -239,6 +239,11 @@ enum Diag {
 
     private static func observeLifecycle() {
         let center = NotificationCenter.default
+        // 焦点每次移动都记一笔（返回键、控制栏相关的问题要看焦点在哪）。
+        observers.append(center.addObserver(forName: UIFocusSystem.didUpdateNotification, object: nil, queue: .main) { note in
+            guard let context = note.userInfo?[UIFocusSystem.focusUpdateContextUserInfoKey] as? UIFocusUpdateContext else { return }
+            mark("FOCUS \(describe(context.previouslyFocusedItem)) -> \(describe(context.nextFocusedItem)) heading=\(context.focusHeading.rawValue)")
+        })
         let names: [(Notification.Name, String)] = [
             (UIApplication.willResignActiveNotification, "LIFECYCLE resign-active"),
             (UIApplication.didEnterBackgroundNotification, "LIFECYCLE background"),
@@ -359,7 +364,7 @@ enum Diag {
         }
         text += "======== 本轮运行 ========\n"
         text += "---- crash.log ----\n" + demangle(read("crash.log")) + "\n"
-        text += "---- events.log 末尾 ----\n" + tail(read("events.log"), lines: 400) + "\n\n"
+        text += "---- events.log 末尾 ----\n" + tail(read("events.log"), lines: 2500) + "\n\n"
         text += "======== 应用日志末尾 ========\n"
         for path in Logger.logFilePaths.prefix(2).reversed() {
             if let data = FileManager.default.contents(atPath: path) {
@@ -459,5 +464,61 @@ extension Diag {
     static func id(_ object: AnyObject?) -> String {
         guard let object else { return "nil" }
         return String(UInt(bitPattern: ObjectIdentifier(object).hashValue) & 0xFFFFF, radix: 16)
+    }
+}
+
+// MARK: - 按键 / 焦点描述
+
+extension Diag {
+    static func pressName(_ type: UIPress.PressType) -> String {
+        switch type {
+        case .menu: return "MENU"
+        case .select: return "SELECT"
+        case .playPause: return "PLAYPAUSE"
+        case .upArrow: return "UP"
+        case .downArrow: return "DOWN"
+        case .leftArrow: return "LEFT"
+        case .rightArrow: return "RIGHT"
+        case .pageUp: return "PAGEUP"
+        case .pageDown: return "PAGEDOWN"
+        default: return "type\(type.rawValue)"
+        }
+    }
+
+    static func describeFocus() -> String {
+        guard let window = UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.windows.first { $0.isKeyWindow } }).first else { return "?" }
+        return describe(window.windowScene?.focusSystem?.focusedItem)
+    }
+
+    /// 类名 + 可见文字 + 所在的上层容器（看出焦点在控制栏、胶囊菜单还是下滑面板）。
+    static func describe(_ item: UIFocusItem?) -> String {
+        guard let item else { return "nil" }
+        var text = String(describing: type(of: item))
+        if let view = item as? UIView {
+            if let label = firstText(in: view, depth: 3) { text += "[\(label.prefix(24))]" }
+            var chain = [String]()
+            var parent = view.superview
+            var hops = 0
+            while let current = parent, hops < 14 {
+                let name = String(describing: type(of: current))
+                if name.hasPrefix("AV") || name.contains("TransportBar") || name.contains("InfoPanel") || name.contains("Menu") {
+                    if chain.last != name { chain.append(name) }
+                }
+                parent = current.superview
+                hops += 1
+            }
+            if !chain.isEmpty { text += " in " + chain.prefix(4).joined(separator: "<") }
+        }
+        return text
+    }
+
+    private static func firstText(in view: UIView, depth: Int) -> String? {
+        if let label = view as? UILabel, let text = label.text, !text.isEmpty { return text }
+        if let label = view.accessibilityLabel, !label.isEmpty { return label }
+        guard depth > 0 else { return nil }
+        for sub in view.subviews {
+            if let text = firstText(in: sub, depth: depth - 1) { return text }
+        }
+        return nil
     }
 }
