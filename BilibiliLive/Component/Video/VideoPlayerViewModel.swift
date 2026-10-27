@@ -150,9 +150,14 @@ class VideoPlayerViewModel {
 
             let danmuProvider = VideoDanmuProvider(enableDanmuFilter: Settings.enableDanmuFilter,
                                                    enableDanmuRemoveDup: Settings.enableDanmuRemoveDup)
+            // Danmaku load in the background (as the VLC player does): device log showed this await
+            // holding the player back 0.2-1.8 s before any video request was made.
             Diag.startupStep("vm_danmu_begin")
-            await danmuProvider.initVideo(cid: data.cid, startPos: data.playerStartPos ?? 0)
-            Diag.startupStep("vm_danmu_done")
+            let danmuStart = data.playerStartPos ?? 0
+            Task {
+                await danmuProvider.initVideo(cid: data.cid, startPos: danmuStart)
+                Diag.startupStep("vm_danmu_done")
+            }
             guard !Task.isCancelled, loadGeneration == generation else { return }
 
             playInfo = resolvedPlayInfo
