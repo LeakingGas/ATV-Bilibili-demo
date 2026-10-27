@@ -337,7 +337,62 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         }
     }
 
+    /// 起播记录：系统播放器的状态变化、等待原因、缓冲、访问日志（只记录，不影响播放）。
+    private var avStateObservations = [NSKeyValueObservation]()
+    private var avStateObservers = [NSObjectProtocol]()
+
+    private func observeAVState(player: AVPlayer, item: AVPlayerItem) {
+        avStateObservations.removeAll()
+        avStateObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        avStateObservers.removeAll()
+        let id = Diag.id(player)
+        avStateObservations.append(player.observe(\.timeControlStatus, options: [.initial, .new]) { player, _ in
+            let status = ["paused", "waiting", "playing"][min(player.timeControlStatus.rawValue, 2)]
+            Diag.startupStep("av_time_control", ["player": id, "status": status, "reason": player.reasonForWaitingToPlay?.rawValue ?? "-"])
+        })
+        avStateObservations.append(player.observe(\.reasonForWaitingToPlay, options: [.new]) { player, _ in
+            Diag.startupStep("av_waiting_reason", ["player": id, "reason": player.reasonForWaitingToPlay?.rawValue ?? "-"])
+        })
+        avStateObservations.append(item.observe(\.status, options: [.initial, .new]) { item, _ in
+            Diag.startupStep("av_item_status", ["player": id, "status": item.status.rawValue, "error": (item.error as NSError?)?.code ?? 0])
+        })
+        avStateObservations.append(item.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { item, _ in
+            Diag.startupStep("av_likely_keep_up", ["player": id, "value": item.isPlaybackLikelyToKeepUp])
+        })
+        avStateObservations.append(item.observe(\.isPlaybackBufferEmpty, options: [.new]) { item, _ in
+            Diag.startupStep("av_buffer_empty", ["player": id, "value": item.isPlaybackBufferEmpty])
+        })
+        avStateObservations.append(item.observe(\.loadedTimeRanges, options: [.new]) { item, _ in
+            let ranges = item.loadedTimeRanges.map { $0.timeRangeValue }
+                .map { String(format: "%.1f-%.1f", $0.start.seconds, ($0.start + $0.duration).seconds) }
+                .joined(separator: ",")
+            Diag.startupStep("av_loaded", ["player": id, "ranges": ranges])
+        })
+        avStateObservations.append(item.observe(\.presentationSize, options: [.new]) { item, _ in
+            Diag.startupStep("av_presentation_size", ["player": id, "size": "\(Int(item.presentationSize.width))x\(Int(item.presentationSize.height))"])
+        })
+        let center = NotificationCenter.default
+        avStateObservers.append(center.addObserver(forName: .AVPlayerItemNewAccessLogEntry, object: item, queue: nil) { _ in
+            guard let event = item.accessLog()?.events.last else { return }
+            Diag.startupStep("av_access_log", ["player": id, "startupTime": event.startupTime, "transferDuration": event.transferDuration,
+                                                "bytes": event.numberOfBytesTransferred, "observedBitrate": event.observedBitrate,
+                                                "indicatedBitrate": event.indicatedBitrate, "segments": event.numberOfMediaRequests,
+                                                "stalls": event.numberOfStalls])
+        })
+        avStateObservers.append(center.addObserver(forName: .AVPlayerItemNewErrorLogEntry, object: item, queue: nil) { _ in
+            guard let event = item.errorLog()?.events.last else { return }
+            Diag.startupStep("av_error_log", ["player": id, "status": event.errorStatusCode, "domain": event.errorDomain,
+                                               "comment": String((event.errorComment ?? "").replacingOccurrences(of: "https?://\\S+", with: "<url>", options: .regularExpression).prefix(120))])
+        })
+        avStateObservers.append(center.addObserver(forName: .AVPlayerItemPlaybackStalled, object: item, queue: nil) { _ in
+            Diag.startupStep("av_stalled", ["player": id])
+        })
+    }
+
     private func stopBTRMonitoring() {
+        avStateObservations.removeAll()
+        avStateObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        avStateObservers.removeAll()
         btrTimer?.invalidate(); btrTimer = nil
         if let btrJumpObserver { NotificationCenter.default.removeObserver(btrJumpObserver) }
         btrJumpObserver = nil
@@ -345,6 +400,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private func startBTRMonitoring(player: AVPlayer) {
         stopBTRMonitoring()
         guard transportMode == .accelerated, let item = player.currentItem else { return }
+        observeAVState(player: player, item: item)
         btrLastRate = Double(Settings.mediaPlayerSpeed.value)
         sampleBTR(player: player)
         let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self, weak player] _ in
@@ -586,6 +642,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         startupBegan = BTRTrace.now
         startupKind = isQualitySwitch ? "切画质" : "起播"
         startupMarks = []
+        Diag.startupStep("bplay_load_begin", ["qualitySwitch": isQualitySwitch])
         let generation = beginLoadGeneration()
         loadTask = Task { @MainActor [weak self] in
             guard let self else { return }

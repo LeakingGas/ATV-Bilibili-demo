@@ -329,7 +329,10 @@ final class BTRTrace: @unchecked Sendable {
         "proxy_failed", "proxy_rejected", "host_banned", "prewarm_begin", "playlist_start_offset", "player_kickstart"]
     /// 由 App 的闪退诊断模块注入（测试里不存在）。
     static var persistentSink: ((String) -> Void)?
+    /// 起播记录（App 注入）：每个事件都转给它，由它决定当前是否在记录起播过程。
+    static var startupSink: ((String, [String: Any]) -> Void)?
     func event(_ name: String, _ fields: [String: Any] = [:]) {
+        Self.startupSink?(name, fields)
         if Self.persistent.contains(name), let sink = Self.persistentSink {
             let compact = fields.filter { $0.key != "hosts" }.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
             sink("BTR " + name + " " + compact)
@@ -349,7 +352,7 @@ final class BTRTrace: @unchecked Sendable {
     }
     func export() -> String {
         lock.lock(); defer { lock.unlock() }
-        let header: [String: Any] = ["format":"btr-trace-1", "build":"diag13-startup",
+        let header: [String: Any] = ["format":"btr-trace-1", "build":"diag14-startup",
             "startedUTC":wallStart, "recording":active, "events":rows.count,
             "overwritten":max(0, sequence - rows.count), "maxSeconds":600]
         let data = try! JSONSerialization.data(withJSONObject:header,options:[.sortedKeys])

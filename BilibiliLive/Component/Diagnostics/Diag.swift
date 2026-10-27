@@ -128,7 +128,7 @@ enum Diag {
     private static let lock = NSLock()
     private static var eventsFD: Int32 = -1
     private static var eventsBytes = 0
-    private static let launchUptime = ProcessInfo.processInfo.systemUptime
+    fileprivate static let launchUptime = ProcessInfo.processInfo.systemUptime
     private static var observers = [NSObjectProtocol]()
     private static var watchdog: DispatchSourceTimer?
     private static var lastMainPong = ProcessInfo.processInfo.systemUptime
@@ -142,7 +142,7 @@ enum Diag {
         return caches.appendingPathComponent("diag", isDirectory: true)
     }
 
-    private static func file(_ name: String) -> URL { directory.appendingPathComponent(name) }
+    fileprivate static func file(_ name: String) -> URL { directory.appendingPathComponent(name) }
 
     static var buildDescription: String {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -208,7 +208,7 @@ enum Diag {
     }
 
     @discardableResult
-    private static func writeAll(_ fd: Int32, _ text: String) -> Int {
+    fileprivate static func writeAll(_ fd: Int32, _ text: String) -> Int {
         guard fd >= 0 else { return 0 }
         let bytes = Array(text.utf8)
         return bytes.withUnsafeBufferPointer { buffer in
@@ -298,12 +298,12 @@ enum Diag {
 
     // MARK: 上一轮
 
-    private static func read(_ name: String) -> String {
+    fileprivate static func read(_ name: String) -> String {
         guard let data = try? Data(contentsOf: file(name)) else { return "" }
         return String(decoding: data, as: UTF8.self)
     }
 
-    private static func tail(_ text: String, lines: Int) -> String {
+    fileprivate static func tail(_ text: String, lines: Int) -> String {
         let all = text.split(separator: "\n", omittingEmptySubsequences: false)
         return all.suffix(lines).joined(separator: "\n")
     }
@@ -365,6 +365,7 @@ enum Diag {
         text += "======== 本轮运行 ========\n"
         text += "---- crash.log ----\n" + demangle(read("crash.log")) + "\n"
         text += "---- events.log 末尾 ----\n" + tail(read("events.log"), lines: 2500) + "\n\n"
+        text += "======== 最近的起播记录（startups.log）========\n" + startupExport(lines: 4000) + "\n\n"
         text += "======== 应用日志末尾 ========\n"
         for path in Logger.logFilePaths.prefix(2).reversed() {
             if let data = FileManager.default.contents(atPath: path) {
@@ -520,5 +521,82 @@ extension Diag {
             if let text = firstText(in: sub, depth: depth - 1) { return text }
         }
         return nil
+    }
+}
+
+// MARK: - 起播记录
+//
+// 每次打开视频自动记录起播全过程（不用手动开始）：App 侧的各个阶段、播放列表 / 索引、
+// 系统播放器的状态变化和等待原因、BTR 下载的每一个请求。只记起播：开始播放后再多记 8 秒，
+// 最长 90 秒。写入 startups.log（落盘，跨启动保留，超过 8MB 清空重来），导出时附带最近的部分。
+
+extension Diag {
+    private static let startupLock = NSLock()
+    private static var startupFD: Int32 = -1
+    private static var startupBytes = 0
+    private static var startupSeq = 0
+    private static var startupT0 = 0.0
+    private static var startupUntil = 0.0
+
+    /// 打开一个视频时调用。
+    static func startupBegin(_ label: String) {
+        startupLock.lock()
+        if startupFD < 0 {
+            startupFD = open(file("startups.log").path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+            startupBytes = Int((try? FileManager.default.attributesOfItem(atPath: file("startups.log").path)[.size] as? Int) ?? 0)
+            BTRTrace.startupSink = { name, fields in startupEvent(name, fields) }
+        }
+        startupSeq += 1
+        startupT0 = ProcessInfo.processInfo.systemUptime
+        startupUntil = startupT0 + 90
+        let seq = startupSeq
+        startupLock.unlock()
+        mark("STARTUP S\(seq) begin \(label)")
+        startupWrite("\n==== S\(seq) \(ISO8601DateFormatter().string(from: Date())) build \(buildDescription) \(label)\n")
+        startupEvent("open", [:])
+    }
+
+    /// App 侧的阶段（不经 BTRTrace 的）。
+    static func startupStep(_ name: String, _ fields: [String: Any] = [:]) {
+        startupEvent(name, fields)
+    }
+
+    private static let skippedFieldKeys: Set<String> = ["hosts", "session", "track", "request", "attempt"]
+
+    fileprivate static func startupEvent(_ name: String, _ fields: [String: Any]) {
+        let now = ProcessInfo.processInfo.systemUptime
+        startupLock.lock()
+        let active = now <= startupUntil && startupSeq > 0
+        if active, name == "startup_mark", (fields["mark"] as? String) == "playing" {
+            startupUntil = min(startupUntil, now + 8)
+        }
+        let seq = startupSeq, t0 = startupT0
+        startupLock.unlock()
+        guard active else { return }
+        let compact = fields.filter { !skippedFieldKeys.contains($0.key) }
+            .sorted { $0.key < $1.key }
+            .map { key, value -> String in
+                if let double = value as? Double { return "\(key)=" + String(format: double.rounded() == double ? "%.0f" : "%.1f", double) }
+                return "\(key)=\(value)"
+            }
+            .joined(separator: " ")
+        let line = String(format: "%9.3f S%d +%6.0fms %@ ", now - launchUptime, seq, (now - t0) * 1000, Thread.isMainThread ? "main" : "bg  ")
+            + name + (compact.isEmpty ? "" : " " + compact) + "\n"
+        startupWrite(line)
+    }
+
+    private static func startupWrite(_ text: String) {
+        startupLock.lock()
+        defer { startupLock.unlock() }
+        guard startupFD >= 0 else { return }
+        if startupBytes > 8 * 1024 * 1024 {
+            ftruncate(startupFD, 0)
+            startupBytes = 0
+        }
+        startupBytes += writeAll(startupFD, text)
+    }
+
+    static func startupExport(lines: Int) -> String {
+        tail(read("startups.log"), lines: lines)
     }
 }

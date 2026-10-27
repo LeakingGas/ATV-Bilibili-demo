@@ -284,6 +284,10 @@ class VideoPlayerViewController: CommonPlayerViewController {
             }
         }
 
+        if playMode == .regular {
+            let info = viewModel.currentPlayInfo
+            Diag.startupBegin("aid=\(info.aid) cid=\(info.cid ?? 0) epid=\(info.epid ?? 0) season=\(info.seasonId ?? 0)")
+        }
         viewModel.load()
     }
 

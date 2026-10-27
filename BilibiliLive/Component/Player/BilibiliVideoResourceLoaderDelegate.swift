@@ -608,23 +608,34 @@ private extension BilibiliVideoResourceLoaderDelegate {
                 loadingRequest.finishLoading(with: NSError(domain: "BTRStrict", code: 2))
                 return
             }
+            BTRTrace.shared.event("loader_master")
             report(loadingRequest, content: masterPlaylist)
             return
         }
 
         if urlStr.hasPrefix(URLs.customPrefix), let index = Int(customUrl.lastPathComponent) {
             let playlist = playlists[index]
+            BTRTrace.shared.event("loader_list", ["index": index])
             report(loadingRequest, content: playlist)
             return
         }
         if urlStr.hasPrefix(URLs.customDashPrefix), let index = Int(customUrl.lastPathComponent) {
             let info = videoInfo[index]
+            let requested = BTRTrace.now
+            BTRTrace.shared.event("loader_media_begin", ["index": index, "quality": info.info.id])
             Task {
-                do { report(loadingRequest, content: try await getVideoPlayList(info: info)) }
-                catch { loadingRequest.finishLoading(with: error) }
+                do {
+                    let list = try await getVideoPlayList(info: info)
+                    BTRTrace.shared.event("loader_media_served", ["index": index, "quality": info.info.id, "elapsedMs": BTRTrace.now - requested])
+                    report(loadingRequest, content: list)
+                } catch {
+                    BTRTrace.shared.event("loader_media_failed", ["index": index, "elapsedMs": BTRTrace.now - requested])
+                    loadingRequest.finishLoading(with: error)
+                }
             }
         }
         if urlStr.hasPrefix(URLs.customSubtitlePrefix) {
+            BTRTrace.shared.event("loader_subtitle")
             let url = String(urlStr.dropFirst(URLs.customSubtitlePrefix.count))
             let req = url.removingPercentEncoding ?? url
             Task {

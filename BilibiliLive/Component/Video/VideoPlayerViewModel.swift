@@ -111,8 +111,10 @@ class VideoPlayerViewModel {
             }
         }
         do {
+            Diag.startupStep("vm_load_begin")
             let (resolvedPlayInfo, loadedData, bangumi) = try await loadVideoInfo(for: requestedPlayInfo)
             var data = loadedData
+            Diag.startupStep("vm_info_ready", ["quality": data.videoPlayURLInfo.quality, "startPos": data.playerStartPos ?? -1])
             guard !Task.isCancelled, loadGeneration == generation else { return }
 
             if playMode == .regular, !hasBuiltSequence {
@@ -132,7 +134,9 @@ class VideoPlayerViewModel {
                                               cover: data.detail?.pic ?? resolvedPlayInfo.coverURL,
                                               position: position,
                                               duration: data.videoPlayURLInfo.dash.duration)
+                    Diag.startupStep("resume_prompt_shown")
                     let choice = await resumeChooser(prompt)
+                    Diag.startupStep("resume_prompt_answered", ["choice": "\(choice)"])
                     guard !Task.isCancelled, loadGeneration == generation else { return }
                     switch choice {
                     case .resume: break
@@ -146,7 +150,9 @@ class VideoPlayerViewModel {
 
             let danmuProvider = VideoDanmuProvider(enableDanmuFilter: Settings.enableDanmuFilter,
                                                    enableDanmuRemoveDup: Settings.enableDanmuRemoveDup)
+            Diag.startupStep("vm_danmu_begin")
             await danmuProvider.initVideo(cid: data.cid, startPos: data.playerStartPos ?? 0)
+            Diag.startupStep("vm_danmu_done")
             guard !Task.isCancelled, loadGeneration == generation else { return }
 
             playInfo = resolvedPlayInfo
@@ -157,6 +163,7 @@ class VideoPlayerViewModel {
                                                playInfo: resolvedPlayInfo,
                                                danmuProvider: danmuProvider)
             guard !Task.isCancelled, loadGeneration == generation else { return }
+            Diag.startupStep("vm_plugins_ready")
             loadResult.send(.success(plugins))
         } catch is CancellationError {
             return
@@ -168,6 +175,7 @@ class VideoPlayerViewModel {
 
     private func loadVideoInfo(for playInfo: PlayInfo) async throws -> (PlayInfo, PlayerDetailData, BangumiInfo?) {
         let (resolvedPlayInfo, bangumi) = try await PlayInfoResolver.resolveWithBangumi(playInfo)
+        Diag.startupStep("vm_resolved", ["bangumi": resolvedPlayInfo.isBangumi])
         try Task.checkCancellation()
         do {
             let data = try await fetchVideoData(for: resolvedPlayInfo)
@@ -271,6 +279,7 @@ class VideoPlayerViewModel {
             let playData: VideoPlayURLInfo
             var clipInfos: [VideoPlayURLInfo.ClipInfo]?
 
+            Diag.startupStep("vm_playurl_begin")
             if playInfo.isBangumi {
                 do {
                     playData = try await WebRequest.requestPcgPlayUrl(aid: aid, cid: cid, options: playContextMode.requestOptions)
@@ -290,8 +299,11 @@ class VideoPlayerViewModel {
                 playData = try await WebRequest.requestPlayUrl(aid: aid, cid: cid, options: playContextMode.requestOptions)
             }
 
+            Diag.startupStep("vm_playurl_done")
             let info = await infoReq
+            Diag.startupStep("vm_playerinfo_done")
             let resolvedDetail = await detailReq
+            Diag.startupStep("vm_detail_done")
 
             var detail = PlayerDetailData(aid: playInfo.aid, cid: playInfo.cid!, epid: playInfo.epid, seasonId: playInfo.seasonId, subType: playInfo.subType, detail: resolvedDetail, clips: clipInfos, playerInfo: info, videoPlayURLInfo: playData)
 
