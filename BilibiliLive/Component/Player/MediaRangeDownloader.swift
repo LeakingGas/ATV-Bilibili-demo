@@ -497,10 +497,9 @@ actor MediaRangeDownloader {
             BTRTrace.shared.event("piece_scheduled",["start":piece.start,"end":piece.end,"host":URL(string:primary)?.host ?? "","readAhead":ahead,"depth":depth])
             let rescue = reader.rescue
             let state = slot.piece
-            let critical = !ahead
             slot.task = Task {
                 do {
-                    let bytes = try await self.downloadPiece(piece, state: state, critical: critical, preferred: preferred, priority: priority, delay: delay, deadline: deadline, rescue: rescue)
+                    let bytes = try await self.downloadPiece(piece, state: state, slot: slot, preferred: preferred, priority: priority, delay: delay, deadline: deadline, rescue: rescue)
                     slot.data = bytes; slot.finished = true
                     self.refill()
                     return bytes
@@ -569,6 +568,9 @@ actor MediaRangeDownloader {
             }
             let reader = Reader(cursor: cursor, requestEnd: range.end, readAhead: readAhead, generation: generation, rescue: rescue)
             readers[readerID] = reader
+            // diag14: read-ahead pieces already in flight become critical once the player asks for them
+            // (device trace: the 2nd segment's read-ahead pieces stalled 2-8 s without being hedged).
+            for slot in slots where slot.range.end >= cursor && slot.range.start <= range.end { slot.critical = true }
             evict()
             while cursor <= range.end {
                 guard deadline.valid else { throw CancellationError() }
@@ -674,7 +676,7 @@ actor MediaRangeDownloader {
         case failure(Error)
         case timer
     }
-    private func downloadPiece(_ range: MediaByteRange, state: Piece, critical: Bool, preferred: [String], priority: Int, delay: Double, deadline: BTRDeadline, rescue: RescueBudget) async throws -> Data {
+    private func downloadPiece(_ range: MediaByteRange, state: Piece, slot: Slot, preferred: [String], priority: Int, delay: Double, deadline: BTRDeadline, rescue: RescueBudget) async throws -> Data {
         let started = Self.now
         var last: Error = MediaRangeError.truncated
         // BTR's three rounds, exponential pause, 25-second retry-admission window.
@@ -699,7 +701,7 @@ actor MediaRangeDownloader {
             for start in stride(from: 0, to: ordered.count, by: width) {
                 if start > 0 { retries += 1 }
                 let pair = Array(ordered[start..<min(start + width, ordered.count)])
-                do { return try await race(range, state: state, critical: critical, pair: pair, priority: priority, delay: delay, deadline: deadline, rescue: rescue) }
+                do { return try await race(range, state: state, slot: slot, pair: pair, priority: priority, delay: delay, deadline: deadline, rescue: rescue) }
                 catch {
                     try Task.checkCancellation()
                     if !deadline.valid { throw CancellationError() }
@@ -709,13 +711,13 @@ actor MediaRangeDownloader {
         }
         throw last
     }
-    private func race(_ range: MediaByteRange, state: Piece, critical: Bool, pair: [String], priority: Int, delay: Double, deadline: BTRDeadline, rescue: RescueBudget) async throws -> Data {
+    private func race(_ range: MediaByteRange, state: Piece, slot: Slot, pair: [String], priority: Int, delay: Double, deadline: BTRDeadline, rescue: RescueBudget) async throws -> Data {
         try await withThrowingTaskGroup(of: Outcome.self) { group in
             defer { group.cancelAll() }
             group.addTask { await self.lane(range, state: state, url: pair[0], priority: priority, deadline: deadline) }
             if pair.count > 1 {
                 group.addTask {
-                    try await self.waitForHedge(range, state: state, critical: critical, delay: delay, deadline: deadline, copy: pair[1], rescue: rescue)
+                    try await self.waitForHedge(range, state: state, slot: slot, delay: delay, deadline: deadline, copy: pair[1], rescue: rescue)
                     return .timer
                 }
             }
@@ -748,10 +750,12 @@ actor MediaRangeDownloader {
             throw last
         }
     }
-    private func waitForHedge(_ range: MediaByteRange, state: Piece, critical: Bool, delay: Double,
+    private func waitForHedge(_ range: MediaByteRange, state: Piece, slot: Slot, delay: Double,
                               deadline: BTRDeadline, copy: String, rescue: RescueBudget) async throws {
-        // With no mapped playback deadline retain BTR compatibility-mode timing.
-        if deadline.presentation == nil {
+        // With no mapped playback deadline retain BTR compatibility-mode timing — except for pieces the
+        // player waits for: device trace showed prewarm pieces (scheduled before the playlist timings
+        // exist) all hedged blindly at 0.9 s, doubling every request. Those use the startup rule below.
+        if deadline.presentation == nil && !slot.critical {
             try await Task.sleep(nanoseconds: UInt64(delay * 1e9)); return
         }
         var observation = BTRHedgeObservation(seenAt: BTRPlaybackSession.now)
@@ -765,7 +769,7 @@ actor MediaRangeDownloader {
                     bytes: got, length: Int(range.length) - first.base.count, delay: delay * 1000,
                     deadline: deadline.value, copyBps: speed(copy), connectionBps: policy.connectionBps,
                     rescue: &rescue.value) { return }
-            } else if critical, let first = state.contexts.first {
+            } else if slot.critical, let first = state.contexts.first {
                 // diag14: before playback starts there is no playback deadline, so the rule above never
                 // fired and a slow connection on a piece the player waits for ran unchallenged
                 // (device trace: 1 MiB at ~150 KB/s for 7.6 s while other pieces took ~1 s).
