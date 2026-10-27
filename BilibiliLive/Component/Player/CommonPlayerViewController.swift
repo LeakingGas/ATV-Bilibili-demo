@@ -78,6 +78,65 @@ class CommonPlayerViewController: UIViewController {
         cleanUpPlayerOnExit()
     }
 
+    // MARK: 返回键
+    //
+    // 诊断日志实测：在控制栏上选过胶囊按钮 / 打开过菜单后，焦点被送回画面时，系统控制栏仍显示，
+    // 但下一次返回 AVKit 不再处理（既不收起控制栏，也不调用 shouldDismiss），
+    // 返回键一路传到 UIKit，被当作「关闭当前弹出的页面」直接把播放器关了。
+    // 这里在按下返回的那一刻记录：控制栏是否显示、焦点是否在画面上（不在按钮或菜单里）。
+    // 两者都成立时拦下这次返回，让控制栏收起（AVKit 自己收了就什么都不做），不关闭播放器。
+    private var interceptMenuPress = false
+
+    private var focusIsOnVideoSurface: Bool {
+        guard let focused = view.window?.windowScene?.focusSystem?.focusedItem as? UIView else { return true }
+        var current: UIView? = focused
+        while let item = current, item !== playerVC.view {
+            if item is UICollectionViewCell || item is UITableViewCell || NSStringFromClass(type(of: item)).contains("Menu") { return false }
+            current = item.superview
+        }
+        return true
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.type == .menu }) {
+            interceptMenuPress = transportBarVisible && focusIsOnVideoSurface && presentedViewController == nil
+            Diag.mark("PLAYER \(Diag.id(self)) menu down bar=\(transportBarVisible) intercept=\(interceptMenuPress)")
+            if interceptMenuPress { return }
+        }
+        super.pressesBegan(presses, with: event)
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.type == .menu }), interceptMenuPress {
+            interceptMenuPress = false
+            // AVKit 正常情况下已经在这一下收起了控制栏；没收起就由我们收起。
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.transportBarVisible, !self.exitRequested else { return }
+                Diag.mark("PLAYER \(Diag.id(self)) AVKit ignored back; hiding transport bar ourselves")
+                self.hideTransportBar()
+            }
+            return
+        }
+        super.pressesEnded(presses, with: event)
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.type == .menu }), interceptMenuPress {
+            interceptMenuPress = false
+            return
+        }
+        super.pressesCancelled(presses, with: event)
+    }
+
+    private func hideTransportBar() {
+        transportBarVisible = false
+        playerVC.showsPlaybackControls = false
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.exitRequested else { return }
+            self.playerVC.showsPlaybackControls = self.showsPlaybackControls
+        }
+    }
+
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
         return [playerVC.view]
     }
@@ -290,12 +349,7 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
         // 下一次返回就直接要求关闭播放器，跳过了「先收起控制栏」这一步。
         // 控制栏还显示着时，这次返回只收起控制栏，回到全屏画面。
         if transportBarVisible, playerViewController.showsPlaybackControls {
-            transportBarVisible = false
-            playerViewController.showsPlaybackControls = false
-            DispatchQueue.main.async { [weak self] in
-                guard let self, !self.exitRequested else { return }
-                playerViewController.showsPlaybackControls = self.showsPlaybackControls
-            }
+            hideTransportBar()
             return false
         }
         if let presentedViewController = UIViewController.topMostViewController() as? CommonPlayerViewController,
