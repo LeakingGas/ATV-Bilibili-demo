@@ -26,6 +26,7 @@ class CommonPlayerViewController: UIViewController {
     private(set) var exitRequested = false
 
     func exitPlayer(animated: Bool = true) {
+        guard !exitRequested else { return }
         Diag.mark("PLAYER \(Diag.id(self)) exitPlayer presented=\(presentedViewController.map { String(describing: type(of: $0)) } ?? "none")")
         exitRequested = true
         // 上面还盖着弹窗时，直接对自己 dismiss 只会关掉弹窗；从呈现者关闭整条链。
@@ -64,6 +65,14 @@ class CommonPlayerViewController: UIViewController {
         }
         observations.insert(playerObservation)
         activePlugins.forEach { $0.playerDidLoad(playerVC: playerVC) }
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // 不允许系统用返回键直接关掉播放器（诊断日志实测：AVKit 状态错乱时，返回键会绕过
+        // shouldDismiss，被 UIKit 当作「关闭弹出页面」直接关掉）。关闭一律走 exitPlayer。
+        isModalInPresentation = true
+        presentationController?.delegate = self
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -330,6 +339,22 @@ extension CommonPlayerViewController {
             guard let self, let player = playerVC.player else { return }
             activePlugins.forEach { $0.playerDidStall(player: player) }
             playerDidStall(player: player)
+        }
+    }
+}
+
+extension CommonPlayerViewController: UIAdaptivePresentationControllerDelegate {
+    func presentationControllerShouldDismiss(_ presentationController: UIPresentationController) -> Bool {
+        false
+    }
+
+    /// 系统想用返回键关掉播放器时：控制栏还显示着就先收起，否则正常退出。
+    func presentationControllerDidAttemptToDismiss(_ presentationController: UIPresentationController) {
+        Diag.mark("PLAYER \(Diag.id(self)) system tried to dismiss bar=\(transportBarVisible)")
+        if transportBarVisible {
+            hideTransportBar()
+        } else {
+            exitPlayer()
         }
     }
 }
