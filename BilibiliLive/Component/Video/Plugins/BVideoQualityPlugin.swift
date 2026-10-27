@@ -134,9 +134,11 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
         // 获取所有唯一的画质 ID 并排序
         let sortedQualityIds = groupedQualities.keys.sorted(by: >)
 
-        // 为每个画质创建子菜单
+        // 菜单结构与系统「字幕」菜单保持一致：只有平铺的选项和内嵌分组（.displayInline），
+        // 不用多层子菜单、不用灰色不可选项。实测我们原来的嵌套结构会让 AVKit 关菜单后状态错乱
+        // （之后按返回直接关掉播放器），而结构简单的系统菜单不会。
         let playing = playingStreamIndex
-        let qualitySubmenus = sortedQualityIds.map { qualityId -> UIMenu in
+        let qualitySubmenus = sortedQualityIds.map { qualityId -> UIMenuElement in
             let streams = groupedQualities[qualityId]!
 
             // 获取画质的基础名称（去掉编码和码率信息）
@@ -175,28 +177,18 @@ class BVideoQualityPlugin: NSObject, CommonPlayerPlugin {
                 }
             }
 
-            // 如果只有一个流，显示完整信息
-            let menuTitle: String
-            if streams.count == 1, let stream = streams.first {
+            // 只有一个流：直接一个选项（不再包一层子菜单）。
+            if streams.count == 1, let stream = streams.first, let action = streamActions.first {
                 let mbps = Double(stream.bandwidth) / 1_000_000.0
-                menuTitle = String(format: "%@ (%.1f Mbps)", baseName, mbps)
-            } else {
-                menuTitle = baseName
+                let codec = stream.name.range(of: "(").map { String(stream.name[$0.upperBound...]).components(separatedBy: ",").first ?? "" } ?? ""
+                return UIAction(title: String(format: "%@ · %@ %.1f Mbps", baseName, codec, mbps),
+                                state: action.state) { [weak self] _ in self?.switchQuality(to: stream) }
             }
-
-            let containsCurrent = streams.contains { $0.streamIndex != nil && $0.streamIndex == playing }
-            return UIMenu(
-                title: containsCurrent ? "✓ " + menuTitle : menuTitle,
-                options: streams.count == 1 ? [] : [.displayInline],
-                children: streamActions
-            )
+            // 多个流（不同编码 / 码率）：内嵌分组，组标题是画质名；当前流以勾选标出。
+            return UIMenu(title: baseName, options: [.displayInline], children: streamActions)
         }
 
-        // 菜单顶部显示当前实际播放的画质。
-        var children: [UIMenuElement] = qualitySubmenus
-        if let playing, let current = availableQualities.first(where: { $0.streamIndex == playing }) {
-            children.insert(UIAction(title: "当前：" + current.name, attributes: [.disabled]) { _ in }, at: 0)
-        }
+        let children: [UIMenuElement] = qualitySubmenus
         let qualityMenu = UIMenu(
             title: "画质",
             image: qualityImage,
