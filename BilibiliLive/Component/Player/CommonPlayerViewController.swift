@@ -152,13 +152,50 @@ class CommonPlayerViewController: UIViewController {
         super.pressesCancelled(presses, with: event)
     }
 
+    /// 控制栏被我们强制收起后，系统控件处于关闭状态，直到用户下一次操作才恢复。
+    /// （收起后马上恢复会让 AVKit 把控制栏又显示出来：实测「消失一下又出现」。）
+    private(set) var controlsSuppressed = false
+
     private func hideTransportBar() {
         transportBarVisible = false
+        controlsSuppressed = true
         playerVC.showsPlaybackControls = false
-        DispatchQueue.main.async { [weak self] in
-            guard let self, !self.exitRequested else { return }
-            self.playerVC.showsPlaybackControls = self.showsPlaybackControls
+        Diag.mark("PLAYER \(Diag.id(self)) controls suppressed")
+    }
+
+    private func restoreControls() {
+        guard controlsSuppressed else { return }
+        controlsSuppressed = false
+        playerVC.showsPlaybackControls = showsPlaybackControls
+        Diag.mark("PLAYER \(Diag.id(self)) controls restored")
+    }
+
+    /// 由窗口在分发前调用：控件被收起期间，遥控器按键由这里处理（此时 AVKit 不接按键，
+    /// 焦点可能无处可落，不能交给系统默认处理，否则返回键会直接退到桌面）。
+    func consumePressWhileSuppressed(_ event: UIPressesEvent) -> Bool {
+        guard controlsSuppressed, !exitRequested, presentedViewController == nil else { return false }
+        for press in event.allPresses {
+            switch press.type {
+            case .menu:
+                // 控制栏已收起：返回 = 退出播放。
+                if press.phase == .ended { exitPlayer() }
+            case .select, .playPause:
+                if press.phase == .ended {
+                    restoreControls()
+                    if let player = playerVC.player {
+                        if player.rate > 0 { player.pause() } else { player.play() }
+                    }
+                }
+            default:
+                if press.phase == .began { restoreControls() }
+            }
         }
+        return true
+    }
+
+    /// 触控板滑动：恢复系统控件（事件照常分发）。
+    func noteTouchWhileSuppressed() {
+        restoreControls()
     }
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] {

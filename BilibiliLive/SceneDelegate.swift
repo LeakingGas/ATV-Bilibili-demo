@@ -16,6 +16,16 @@ final class BLWindow: UIWindow {
             for press in presses.allPresses where press.phase == .began || press.phase == .ended {
                 Diag.mark("PRESS \(Diag.pressName(press.type)) \(press.phase == .began ? "down" : "up") focus=\(Diag.describeFocus())")
             }
+            if let player = rootViewController?.topMostViewController() as? CommonPlayerViewController,
+               player.controlsSuppressed, player.consumePressWhileSuppressed(presses)
+            {
+                return
+            }
+        } else if event.type == .touches,
+                  let player = rootViewController?.topMostViewController() as? CommonPlayerViewController,
+                  player.controlsSuppressed
+        {
+            player.noteTouchWhileSuppressed()
         }
         super.sendEvent(event)
     }
