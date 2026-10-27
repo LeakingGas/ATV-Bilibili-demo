@@ -17,6 +17,11 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private var playData: PlayerDetailData
     private let reportWatchHistory: Bool
     private let minimizeStalling: Bool
+    /// 「不等缓冲，数据到了就播」：打开视频时读取一次。
+    private let playWithoutWaiting = Settings.playWithoutWaiting
+    /// 不等缓冲模式下，播放因数据不足停住（不是用户暂停），数据一到就自动继续。
+    private var stalledAwaitingData = false
+    private var lastImmediateKick = -Double.infinity
     private let isMuted: Bool
     private let mediaWarmupManager: PlayerMediaWarmupManager?
     private var currentQualityId: Int?
@@ -401,6 +406,12 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         stopBTRMonitoring()
         guard transportMode == .accelerated, let item = player.currentItem else { return }
         observeAVState(player: player, item: item)
+        if playWithoutWaiting {
+            avStateObservers.append(NotificationCenter.default.addObserver(forName: .AVPlayerItemPlaybackStalled, object: item, queue: .main) { [weak self] _ in
+                self?.stalledAwaitingData = true
+                BTRTrace.shared.event("playback_stalled",["position":player.currentTime().seconds])
+            })
+        }
         btrLastRate = Double(Settings.mediaPlayerSpeed.value)
         sampleBTR(player: player)
         let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self, weak player] _ in
@@ -443,6 +454,25 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         BTRTrace.shared.event("player_kickstart",["ahead":ahead,"waitedMs":now - since,"position":player.currentTime().seconds])
         player.playImmediately(atRate: Float(btrLastRate))
     }
+    /// 不等缓冲模式：只要播放头前面有一点数据就立刻播，不等系统评估网速。
+    private func playIfDataArrived(player: AVPlayer, item: AVPlayerItem, ahead: Double) {
+        if player.timeControlStatus == .playing {
+            stalledAwaitingData = false
+            if item.preferredForwardBufferDuration < 15 { item.preferredForwardBufferDuration = 15 }
+            return
+        }
+        guard item.status == .readyToPlay else { return }
+        let waiting = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+        guard waiting || stalledAwaitingData else { return } // .paused 且未卡顿 = 用户暂停
+        let now = BTRTrace.now
+        guard ahead >= (stalledAwaitingData ? 1.0 : 0.3), now - lastImmediateKick >= 500 else { return }
+        lastImmediateKick = now
+        stalledAwaitingData = false
+        BTRTrace.shared.event("play_immediately",["ahead":ahead,"reason":player.reasonForWaitingToPlay?.rawValue ?? "stalled",
+                                                  "position":player.currentTime().seconds])
+        player.playImmediately(atRate: Float(btrLastRate))
+    }
+
     private func sampleBTR(player: AVPlayer, jumped: Bool = false) {
         guard let item = player.currentItem, let session = playerDelegate?.btrPlayback else { return }
         let position = player.currentTime().seconds
@@ -457,6 +487,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             if start.isFinite && finish.isFinite && start <= end + 0.05 && finish > end { end = finish }
         }
         kickStartIfBuffered(player: player, ahead: max(0, end - position))
+        if playWithoutWaiting { playIfDataArrived(player: player, item: item, ahead: max(0, end - position)) }
         if player.timeControlStatus == .playing { markStartup("playing") }
         session.update(position: position, rate: btrLastRate,
             advancing: player.timeControlStatus == .playing,
@@ -855,9 +886,15 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         // 每次 seek 都会立刻为新位置起一大批 60s 的 range 请求，下一个 seek 一来又整体取消重来，
         // 密集 seek 下网络连接层疲于开连接/取消，表现为长时间无响应。降到 15s 大幅减少这种抖动。
         playerItem.preferredForwardBufferDuration = 15
+        if playWithoutWaiting {
+            // 开播前只要求很少的缓冲，开播后再恢复到 15 秒（见 sampleBTR）。
+            playerItem.preferredForwardBufferDuration = 4
+        }
 
         let player = AVPlayer(playerItem: playerItem)
-        player.automaticallyWaitsToMinimizeStalling = minimizeStalling
+        player.automaticallyWaitsToMinimizeStalling = playWithoutWaiting ? false : minimizeStalling
+        Diag.startupStep("av_player_created", ["waitsToMinimizeStalling": player.automaticallyWaitsToMinimizeStalling,
+                                               "forwardBuffer": playerItem.preferredForwardBufferDuration])
         player.isMuted = isMuted
         guard loadGeneration == generation, !Task.isCancelled else {
             player.pause()

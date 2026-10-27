@@ -60,6 +60,10 @@ enum Settings {
     @UserDefault("Settings.preferAvc.v2", defaultValue: true)
     static var preferAvc: Bool
 
+    /// 不等缓冲：数据一到就开播 / 卡顿后数据一到就继续，不让系统播放器先评估网速、攒缓冲。
+    @UserDefault("Settings.playWithoutWaiting", defaultValue: true)
+    static var playWithoutWaiting: Bool
+
     /// BTR CDN node expansion region (cdn-resolver.js). Default overseas: this port targets overseas Apple TVs.
     @UserDefaultCodable("Settings.btrNodeRegion", defaultValue: .overseas)
     static var btrNodeRegion: BTRNodeRegion

@@ -345,7 +345,8 @@ final class BTRTrace: @unchecked Sendable {
     /// 这些事件同时写进常驻的闪退诊断流水（不依赖 BTR 记录是否开启）。
     private static let persistent: Set<String> = ["foreground_reload", "foreground_reload_failed", "foreground_playurl",
         "player_failure", "seek_requested", "quality_switch", "track_registered", "startup_mark", "stream_failed",
-        "proxy_failed", "proxy_rejected", "host_banned", "prewarm_begin", "playlist_start_offset", "player_kickstart"]
+        "proxy_failed", "proxy_rejected", "host_banned", "prewarm_begin", "playlist_start_offset", "player_kickstart",
+        "play_immediately", "playback_stalled", "startup_hedge"]
     /// 由 App 的闪退诊断模块注入（测试里不存在）。
     static var persistentSink: ((String) -> Void)?
     /// 起播记录（App 注入）：每个事件都转给它，由它决定当前是否在记录起播过程。
