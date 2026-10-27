@@ -554,14 +554,23 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         guard transportMode == .accelerated else { return }
         var seen = Set<VideoPlayURLInfo.DashInfo.DashMediaInfo>()
         let firstAudio = videoInfo.first { infoIsAudio($0.info) }?.info
-        let targets = [videoInfo.first?.info, firstAudio].compactMap { $0 }
-        for media in targets where seen.insert(media).inserted {
-            guard let downloader = proxyRegistry.downloader(for: media) else { continue }
-            await downloader.verifyAllHosts()
+        let targets = [videoInfo.first?.info, firstAudio].compactMap { $0 }.filter { seen.insert($0).inserted }
+        // Video and audio prewarm side by side (each waits for its own probe winner).
+        await withTaskGroup(of: Void.self) { group in
+            for media in targets { group.addTask { await self.prewarmTrack(media, at: seconds) } }
+        }
+    }
+
+    private func prewarmTrack(_ media: VideoPlayURLInfo.DashInfo.DashMediaInfo, at seconds: Double) async {
+        do {
+            guard let downloader = proxyRegistry.downloader(for: media) else { return }
+            // BTR startup probe: 64 KiB on every node at once opens, measures and verifies them; the
+            // startup segment then goes only to nodes that have delivered (was: unmeasured 32 KiB checks).
+            await downloader.probeHosts()
             guard let sidx = await segmentInfoCache.sidx(from: media, preferredHost: preferredHost)?.sidx,
                   sidx.timescale > 0,
                   let indexEnd = media.segment_base.index_range.components(separatedBy: "-").last.flatMap({ Int64($0) })
-            else { continue }
+            else { return }
             var offset = indexEnd + 1
             var presentation = 0.0
             for (index, segment) in sidx.segments.enumerated() {

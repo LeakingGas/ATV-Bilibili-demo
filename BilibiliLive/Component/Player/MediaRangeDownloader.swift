@@ -455,6 +455,11 @@ actor MediaRangeDownloader {
     // running in the background; each one measures and verifies its node when it lands.
     private var probeWinner: String?
     private var probeDone = 0
+    /// System player: the same probe, without VLC's fast-start hedging or head prefetch.
+    func probeHosts() async {
+        guard probeWinner == nil, probeDone == 0 else { return }
+        await startupProbe()
+    }
     private func startupProbe() async {
         let urls = Array(pool().prefix(8))
         guard !urls.isEmpty, let range = try? MediaByteRange(start: 0, end: 64 * 1024 - 1) else { return }
@@ -484,7 +489,7 @@ actor MediaRangeDownloader {
         }
         guard probeWinner == nil else { return }
         probeWinner = url
-        startHead(data)
+        if fastStart { startHead(data) }
     }
     /// The winner's 64 KiB is the file's first piece (BTR hands the probe to the player as its first
     /// ordered chunk), and the rest of the head starts downloading before VLC asks for it.
@@ -574,8 +579,9 @@ actor MediaRangeDownloader {
         slots.sort { $0.range.start < $1.range.start }
         let urls = pool()
         let measured = Dictionary(uniqueKeysWithValues: urls.map { ($0, speed($0)) })
-        // VLC fast start: only nodes that have delivered carry media pieces (BTR provenUrls).
-        let proven = fastStart ? urls.filter { (measured[$0] ?? 0) > 0 } : []
+        // Only nodes that have delivered carry media pieces (BTR provenUrls): always for VLC, and for
+        // the system player until playback starts.
+        let proven = fastStart || notPlaying ? urls.filter { (measured[$0] ?? 0) > 0 } : []
         let primaries = policy.assign(proven.isEmpty ? urls : proven, count: planned.count) { measured[$0] ?? 0 }
         let delay = policy.hedgeDelay
         for (index, piece) in planned.enumerated() {
