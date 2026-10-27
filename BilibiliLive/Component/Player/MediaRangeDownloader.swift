@@ -325,8 +325,21 @@ actor MediaRangeDownloader {
         let old = speeds[url]?.bps ?? 0
         speeds[url] = (old > 0 ? old * 0.65 + measured * 0.35 : measured, Self.now)
     }
+    // Dead nodes (device log: mirrorali / mirror08c never answered, every piece sent there waited out
+    // the 5.5 s first-byte timeout). A node whose startup probe is still unanswered long after the
+    // winner's is a suspect and gets no work until it answers; BTR's ban list drops a node after two
+    // replies without a single byte.
+    private var probeStartedAt = 0.0
+    private var probeWinnerMs = 0.0
+    private var probePending = Set<String>()
+    private var zeroByteStrikes = [String: Int]()
+    private func isSuspect(_ url: String) -> Bool {
+        guard probePending.contains(url), probeWinner != nil else { return false }
+        return BTRTrace.now - probeStartedAt > max(1000, probeWinnerMs * 3)
+    }
     private func pool() -> [String] {
-        let usable = candidates.filter { health[$0]?.until != .infinity }
+        let healthy = candidates.filter { health[$0]?.until != .infinity && !isSuspect($0) }
+        let usable = healthy.isEmpty ? candidates.filter { health[$0]?.until != .infinity } : healthy
         let base = usable.isEmpty ? candidates : usable
         let open = base.filter { (health[$0]?.until ?? 0) <= Self.now }
         let urls = open.isEmpty ? base : open
@@ -465,6 +478,8 @@ actor MediaRangeDownloader {
         guard !urls.isEmpty, let range = try? MediaByteRange(start: 0, end: 64 * 1024 - 1) else { return }
         let deadline = BTRDeadline(session: playback, generation: playback.generation, presentation: nil)
         let started = BTRTrace.now
+        probeStartedAt = started
+        probePending = Set(urls)
         for url in urls {
             Task {
                 let data = try? await self.sampleBytes(range, url: url, deadline: deadline)
@@ -479,6 +494,7 @@ actor MediaRangeDownloader {
     }
     private func probeFinished(_ url: String, data: Data?, length: Int, started: Double) {
         probeDone += 1
+        probePending.remove(url)
         let ok = data?.count == length
         BTRTrace.shared.event("fast_probe_host",["host":URL(string:url)?.host ?? "","ok":ok,"elapsedMs":BTRTrace.now - started])
         guard let data, ok else { return }
@@ -489,6 +505,7 @@ actor MediaRangeDownloader {
         }
         guard probeWinner == nil else { return }
         probeWinner = url
+        probeWinnerMs = BTRTrace.now - started
         if fastStart { startHead(data) }
     }
     /// The winner's 64 KiB is the file's first piece (BTR hands the probe to the player as its first
@@ -655,6 +672,15 @@ actor MediaRangeDownloader {
             guard deadline.valid else { throw CancellationError() }
             try Task.checkCancellation()
             streams += 1; admitted = true
+            // A request that arrives while the startup probe runs waits for its winner (~0.25 s on open
+            // connections), so its first pieces go to a node that has delivered rather than a dead one.
+            if !probePending.isEmpty, probeWinner == nil {
+                let waitStarted = BTRTrace.now
+                while probeWinner == nil, !probePending.isEmpty, BTRTrace.now - waitStarted < 800 {
+                    try await Task.sleep(nanoseconds: 10_000_000)
+                }
+                BTRTrace.shared.event("probe_wait",["waitMs":BTRTrace.now - waitStarted,"winner":probeWinner != nil])
+            }
             var cursor = range.start
             let reused = slotAt(cursor) != nil
             BTRTrace.shared.event("stream_admitted",["waitMs":BTRTrace.now-admissionStarted,"readAheadHit":reused])
@@ -798,7 +824,8 @@ actor MediaRangeDownloader {
             let first = rotated[0]
             let rest = rotated.dropFirst().sorted { speed($0) > speed($1) }
             let all = [first] + rest
-            let usable = all.filter { health[$0]?.until != .infinity }
+            let alive = all.filter { health[$0]?.until != .infinity && !isSuspect($0) }
+            let usable = alive.isEmpty ? all.filter { health[$0]?.until != .infinity } : alive
             let urls = Array((usable.isEmpty ? all : usable).prefix(8))
             let open = urls.filter { (health[$0]?.until ?? 0) <= Self.now }
             let ordered = open + urls.filter { !open.contains($0) }
@@ -860,6 +887,15 @@ actor MediaRangeDownloader {
         // With no mapped playback deadline retain BTR compatibility-mode timing — except for pieces the
         // player waits for: device trace showed prewarm pieces (scheduled before the playlist timings
         // exist) all hedged blindly at 0.9 s, doubling every request. Those use the startup rule below.
+        let hedgeWaitStarted = BTRPlaybackSession.now
+        // A first copy that has not even started receiving (stuck verifying or connecting to a node
+        // that does not answer) never reached the rules below, which watch its progress.
+        func stuck() -> Bool {
+            guard state.contexts.isEmpty, fastStart || slot.critical || deadline.value.isFinite,
+                  BTRPlaybackSession.now - hedgeWaitStarted >= 1500 else { return false }
+            BTRTrace.shared.event("stuck_hedge",["start":range.start,"end":range.end])
+            return true
+        }
         if fastStart {
             var observation = BTRHedgeObservation(seenAt: BTRPlaybackSession.now)
             // 200 ms is BTR's startup delay, but a reply takes at least one round trip (~220 ms to the
@@ -880,7 +916,7 @@ actor MediaRangeDownloader {
                             "elapsedMs":now - first.started,"slackMs":due - now,"copyBps":speed(copy)])
                         return
                     }
-                }
+                } else if stuck() { return }
                 try await Task.sleep(nanoseconds: 50_000_000)
             }
         }
@@ -911,7 +947,7 @@ actor MediaRangeDownloader {
                         "elapsedMs":now - first.started,"copyBps":speed(copy)])
                     return
                 }
-            }
+            } else if stuck() { return }
             try await Task.sleep(nanoseconds: 50_000_000)
         }
     }
@@ -1012,7 +1048,15 @@ actor MediaRangeDownloader {
             let count = (health[url]?.failures ?? 0) + 1
             // A node that refuses this signed address (synthetic BTR node) will keep refusing it.
             let permanent = status.map { [403, 404, 410].contains($0) } ?? false
-            health[url] = (count, permanent ? .infinity : Self.now + min(60, 3 * pow(2, Double(min(count, 4)))))
+            var backoff = min(60, 3 * pow(2, Double(min(count, 4))))
+            if status == nil, progress.snapshot().isEmpty {
+                // No byte at all (timeout, DNS, connection): BTR createBanList, two strikes per video.
+                let strikes = (zeroByteStrikes[url] ?? 0) + 1
+                zeroByteStrikes[url] = strikes
+                backoff = strikes >= 2 ? .infinity : 30
+                BTRTrace.shared.event("node_strike",["host":host,"strikes":strikes])
+            }
+            health[url] = (count, permanent ? .infinity : Self.now + backoff)
             throw error
         }
     }
