@@ -161,12 +161,9 @@ class CommonPlayerViewController: UIViewController {
         controlsSuppressed = true
         playerVC.showsPlaybackControls = false
         Diag.mark("PLAYER \(Diag.id(self)) controls suppressed")
-        // 系统控件重新打开后，「字幕」等系统按钮要零点几秒才重新加载出来。
-        // 等 AVKit 这次错乱的收起流程结束后在后台悄悄恢复，用户再唤出控制栏时按钮已经齐了。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            guard let self, self.controlsSuppressed, !self.exitRequested else { return }
-            self.restoreControls()
-        }
+        // 不能在后台自动恢复：诊断日志实测，系统控件一打开 AVKit 就立刻把控制栏显示出来
+        // （恢复后 20ms 内 transportBar -> visible），表现为控制栏自己蹦出来。
+        // 只在用户下一次操作时恢复；代价是那一次「字幕」按钮会晚零点几秒出现。
     }
 
     private func restoreControls() {
