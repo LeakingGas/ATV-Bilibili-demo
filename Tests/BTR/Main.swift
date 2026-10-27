@@ -340,7 +340,9 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         await warm.cancelReadAhead()
         let (warmLog,_) = try await URLSession.shared.data(from: URL(string: base+"/stats")!)
         let warmRows = (try JSONSerialization.jsonObject(with: warmLog) as! [[String: Any]]).filter { ($0["path"] as? String) == "/warm" && (($0["start"] as? Int) ?? -1) < 2*1024*1024 }
-        try require(warmRows.count == 2, "prewarm reused by player request (\(warmRows.count) requests)")
+        // Startup pieces may be smaller (diag14); what matters is that nothing was fetched twice.
+        let warmStarts = warmRows.compactMap { $0["start"] as? Int }
+        try require(!warmStarts.isEmpty && Set(warmStarts).count == warmStarts.count, "prewarm reused by player request (\(warmStarts.sorted()))")
         print("PASS: prewarmed start segment handed to the player request")
         // A consumer slower than the producer must not deadlock a 64KiB pipe.
         let pipe = MediaBytePipe(capacityBytes:65536)

@@ -276,6 +276,25 @@ struct BTRRescue {
         guard staleRemaining > 0 else { return false }; staleRemaining -= 1; return true
     }
 }
+/// diag14: hedge rule for pieces the player is waiting for before playback starts (no deadline yet).
+/// Measures speed from the first byte (not from the request, which includes connection latency) and
+/// races a copy when the piece is clearly not going to arrive soon.
+struct BTRStartupHedge {
+    var firstByteAt: Double?
+    var firstBytes = 0
+    /// now / started in milliseconds; copyBps in bytes per second (0 = unknown).
+    mutating func due(now: Double, started: Double, bytes: Int, length: Int, copyBps: Double) -> Bool {
+        if bytes == 0 { return now - started >= 1200 } // no first byte after 1.2 s
+        if firstByteAt == nil { firstByteAt = now; firstBytes = bytes; return false }
+        let transferMs = now - firstByteAt!
+        guard transferMs >= 600 else { return false }
+        let rate = Double(bytes - firstBytes) * 1000 / transferMs
+        let eta = Double(max(0, length - bytes)) * 1000 / max(1, rate)
+        guard eta >= 1500 else { return false }
+        return copyBps <= 0 || copyBps > rate * 1.5
+    }
+}
+
 struct BTRHedgeObservation {
     var seenBytes = 0
     var seenAt: Double

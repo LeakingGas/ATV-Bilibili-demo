@@ -367,17 +367,23 @@ actor MediaRangeDownloader {
         var task: Task<Data, Error>?
         var data: Data?
         var finished = false
+        /// diag14: live download state; the reader streams its verified prefix before the piece completes.
+        let piece = Piece()
+        /// diag14: the player is waiting for this piece (inside its requested / prewarmed range).
+        var critical = false
         let created = BTRPlaybackSession.now
         init(_ range: MediaByteRange) { self.range = range }
     }
     private final class Reader {
         var cursor: Int64
+        /// Where this reader started (the beginning of the player's request / prewarm).
+        let origin: Int64
         let requestEnd: Int64
         let readAhead: Bool
         let generation: Int
         let rescue: RescueBudget
         init(cursor: Int64, requestEnd: Int64, readAhead: Bool, generation: Int, rescue: RescueBudget) {
-            self.cursor = cursor; self.requestEnd = requestEnd; self.readAhead = readAhead
+            self.cursor = cursor; origin = cursor; self.requestEnd = requestEnd; self.readAhead = readAhead
             self.generation = generation; self.rescue = rescue
         }
     }
@@ -452,9 +458,15 @@ actor MediaRangeDownloader {
         else { end = min(reader.requestEnd, windowEnd) }
         var pending = slots.filter { !$0.finished }.count
         var planned = [MediaByteRange]()
+        // diag14: startup trace showed one slow connection on the first 1 MiB piece holding every later
+        // (already finished) piece for 7.6 s. Before playback the first MiB goes out in 256 KiB pieces:
+        // first bytes reach the player sooner and a slow connection only holds a small piece.
+        let notPlaying = playback.deadline(presentation: 0, generation: reader.generation).isInfinite
+        let smallHead = notPlaying && mode == .accelerated && !isAudio
         // The piece at the reader's cursor is always admitted, even when read-ahead filled `depth`.
         while position <= end, pending < depth || (planned.isEmpty && position == reader.cursor) {
-            var pieceEnd = min(end, position + pieceBytes - 1)
+            let size = smallHead && position - reader.origin < 1024 * 1024 ? 256 * 1024 : pieceBytes
+            var pieceEnd = min(end, position + size - 1)
             if position <= reader.requestEnd { pieceEnd = min(pieceEnd, reader.requestEnd) }
             if let next = slots.filter({ $0.range.start > position }).min(by: { $0.range.start < $1.range.start }) {
                 pieceEnd = min(pieceEnd, next.range.start - 1)
@@ -481,11 +493,14 @@ actor MediaRangeDownloader {
             let distance = slots.filter { $0.range.start >= reader.cursor && $0.range.start < piece.start }.count
             let priority = presentation == nil ? 220 : 50 - min(20, distance)
             let ahead = piece.start > reader.requestEnd
+            slot.critical = !ahead
             BTRTrace.shared.event("piece_scheduled",["start":piece.start,"end":piece.end,"host":URL(string:primary)?.host ?? "","readAhead":ahead,"depth":depth])
             let rescue = reader.rescue
+            let state = slot.piece
+            let critical = !ahead
             slot.task = Task {
                 do {
-                    let bytes = try await self.downloadPiece(piece, preferred: preferred, priority: priority, delay: delay, deadline: deadline, rescue: rescue)
+                    let bytes = try await self.downloadPiece(piece, state: state, critical: critical, preferred: preferred, priority: priority, delay: delay, deadline: deadline, rescue: rescue)
                     slot.data = bytes; slot.finished = true
                     self.refill()
                     return bytes
@@ -557,16 +572,44 @@ actor MediaRangeDownloader {
                 schedule(reader)
                 guard let slot = self.slotAt(cursor) else { throw MediaRangeError.truncated }
                 let waitStarted = BTRTrace.now
-                let data = try await value(of: slot)
-                guard Int64(data.count) == slot.range.length else { throw MediaRangeError.truncated }
                 let upto = min(slot.range.end, range.end)
                 let from = Int(cursor - slot.range.start), to = Int(upto - slot.range.start) + 1
-                let chunk = from == 0 && to == data.count ? data : data.subdata(in: (data.startIndex + from)..<(data.startIndex + to))
-                try await pipe.write(chunk, isCurrent: { deadline.valid })
-                delivered += Int64(chunk.count)
-                playback.ordered(chunk.count, generation: generation)
-                BTRTrace.shared.event("ordered_delivery",["start":cursor,"end":upto,"bytes":chunk.count,"waitMs":BTRTrace.now-waitStarted,
-                    "inFlight":slots.filter { !$0.finished }.count,"held":slots.filter { $0.finished }.count])
+                // diag14: hand over the piece's verified prefix as it arrives (in order) instead of
+                // waiting for the whole piece. The player gets its first bytes with the first packet
+                // and no longer times out ("No response for media file in 5 s") on a slow connection.
+                var sent = from
+                var firstByteMs = -1.0
+                while sent < to {
+                    guard deadline.valid else { throw CancellationError() }
+                    if let data = slot.data {
+                        guard Int64(data.count) == slot.range.length else { throw MediaRangeError.truncated }
+                        let chunk = sent == 0 && to == data.count ? data : data.subdata(in: (data.startIndex + sent)..<(data.startIndex + to))
+                        try await pipe.write(chunk, isCurrent: { deadline.valid })
+                        if firstByteMs < 0 { firstByteMs = BTRTrace.now - waitStarted }
+                        delivered += Int64(chunk.count)
+                        playback.ordered(chunk.count, generation: generation)
+                        sent = to
+                        break
+                    }
+                    if slot.finished {
+                        _ = try await value(of: slot) // failed piece: rethrow its error
+                        throw MediaRangeError.truncated
+                    }
+                    let prefix = slot.piece.best()
+                    let available = min(prefix.count, to)
+                    if available - sent >= 64 * 1024 || (available == to && available > sent) {
+                        let chunk = prefix.subdata(in: (prefix.startIndex + sent)..<(prefix.startIndex + available))
+                        try await pipe.write(chunk, isCurrent: { deadline.valid })
+                        if firstByteMs < 0 { firstByteMs = BTRTrace.now - waitStarted }
+                        delivered += Int64(chunk.count)
+                        playback.ordered(chunk.count, generation: generation)
+                        sent = available
+                        continue
+                    }
+                    try await Task.sleep(nanoseconds: 20_000_000)
+                }
+                BTRTrace.shared.event("ordered_delivery",["start":cursor,"end":upto,"bytes":to - from,"waitMs":BTRTrace.now-waitStarted,
+                    "firstByteMs":firstByteMs,"inFlight":slots.filter { !$0.finished }.count,"held":slots.filter { $0.finished }.count])
                 if upto == slot.range.end { remove(slot) }
                 cursor = upto + 1
             }
@@ -618,8 +661,7 @@ actor MediaRangeDownloader {
         case failure(Error)
         case timer
     }
-    private func downloadPiece(_ range: MediaByteRange, preferred: [String], priority: Int, delay: Double, deadline: BTRDeadline, rescue: RescueBudget) async throws -> Data {
-        let state = Piece()
+    private func downloadPiece(_ range: MediaByteRange, state: Piece, critical: Bool, preferred: [String], priority: Int, delay: Double, deadline: BTRDeadline, rescue: RescueBudget) async throws -> Data {
         let started = Self.now
         var last: Error = MediaRangeError.truncated
         // BTR's three rounds, exponential pause, 25-second retry-admission window.
@@ -644,7 +686,7 @@ actor MediaRangeDownloader {
             for start in stride(from: 0, to: ordered.count, by: width) {
                 if start > 0 { retries += 1 }
                 let pair = Array(ordered[start..<min(start + width, ordered.count)])
-                do { return try await race(range, state: state, pair: pair, priority: priority, delay: delay, deadline: deadline, rescue: rescue) }
+                do { return try await race(range, state: state, critical: critical, pair: pair, priority: priority, delay: delay, deadline: deadline, rescue: rescue) }
                 catch {
                     try Task.checkCancellation()
                     if !deadline.valid { throw CancellationError() }
@@ -654,13 +696,13 @@ actor MediaRangeDownloader {
         }
         throw last
     }
-    private func race(_ range: MediaByteRange, state: Piece, pair: [String], priority: Int, delay: Double, deadline: BTRDeadline, rescue: RescueBudget) async throws -> Data {
+    private func race(_ range: MediaByteRange, state: Piece, critical: Bool, pair: [String], priority: Int, delay: Double, deadline: BTRDeadline, rescue: RescueBudget) async throws -> Data {
         try await withThrowingTaskGroup(of: Outcome.self) { group in
             defer { group.cancelAll() }
             group.addTask { await self.lane(range, state: state, url: pair[0], priority: priority, deadline: deadline) }
             if pair.count > 1 {
                 group.addTask {
-                    try await self.waitForHedge(range, state: state, delay: delay, deadline: deadline, copy: pair[1], rescue: rescue)
+                    try await self.waitForHedge(range, state: state, critical: critical, delay: delay, deadline: deadline, copy: pair[1], rescue: rescue)
                     return .timer
                 }
             }
@@ -693,13 +735,14 @@ actor MediaRangeDownloader {
             throw last
         }
     }
-    private func waitForHedge(_ range: MediaByteRange, state: Piece, delay: Double,
+    private func waitForHedge(_ range: MediaByteRange, state: Piece, critical: Bool, delay: Double,
                               deadline: BTRDeadline, copy: String, rescue: RescueBudget) async throws {
         // With no mapped playback deadline retain BTR compatibility-mode timing.
         if deadline.presentation == nil {
             try await Task.sleep(nanoseconds: UInt64(delay * 1e9)); return
         }
         var observation = BTRHedgeObservation(seenAt: BTRPlaybackSession.now)
+        var startup = BTRStartupHedge()
         while true {
             try Task.checkCancellation()
             guard deadline.valid else { throw CancellationError() }
@@ -709,6 +752,19 @@ actor MediaRangeDownloader {
                     bytes: got, length: Int(range.length) - first.base.count, delay: delay * 1000,
                     deadline: deadline.value, copyBps: speed(copy), connectionBps: policy.connectionBps,
                     rescue: &rescue.value) { return }
+            } else if critical, let first = state.contexts.first {
+                // diag14: before playback starts there is no playback deadline, so the rule above never
+                // fired and a slow connection on a piece the player waits for ran unchallenged
+                // (device trace: 1 MiB at ~150 KB/s for 7.6 s while other pieces took ~1 s).
+                let now = BTRPlaybackSession.now
+                let got = first.progress.snapshot().count
+                if startup.due(now: now, started: first.started, bytes: got,
+                               length: Int(range.length) - first.base.count, copyBps: speed(copy)),
+                   rescue.value.claimProgress() {
+                    BTRTrace.shared.event("startup_hedge",["start":range.start,"end":range.end,"bytes":got,
+                        "elapsedMs":now - first.started,"copyBps":speed(copy)])
+                    return
+                }
             }
             try await Task.sleep(nanoseconds: 50_000_000)
         }
