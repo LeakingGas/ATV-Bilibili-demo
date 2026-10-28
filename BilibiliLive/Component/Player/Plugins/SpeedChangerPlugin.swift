@@ -33,12 +33,27 @@ class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
 
         currentPlaySpeed = Settings.mediaPlayerSpeed
         installBoostGesture(on: host.hostViewController.view)
+        pressObserver = NotificationCenter.default.addObserver(forName: BLWindow.remotePressBegan, object: nil, queue: .main) { [weak self] _ in
+            self?.notePress()
+        }
+    }
+
+    // 连续点按触控板（点按快进快退）时手指一直搭在触控板上，会被误认成「长按 2 倍速」：
+    // 最近 0.8 秒内有过点按就不进入 2 倍速；2 倍速中一有点按就退出。
+    private var pressObserver: NSObjectProtocol?
+    private var lastPressAt = Date.distantPast
+
+    private func notePress() {
+        lastPressAt = Date()
+        if isBoosting { endBoost() }
     }
 
     func playerWillCleanUp(host: PlayerHost) {
         endBoost()
         if let boostGesture { boostGesture.view?.removeGestureRecognizer(boostGesture) }
         boostGesture = nil
+        if let pressObserver { NotificationCenter.default.removeObserver(pressObserver) }
+        pressObserver = nil
     }
 
     // MARK: - 长按触控板 2 倍速（松手恢复）
@@ -64,6 +79,7 @@ class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
     @objc private func handleBoost(_ gesture: UILongPressGestureRecognizer) {
         switch gesture.state {
         case .began:
+            guard Date().timeIntervalSince(lastPressAt) > 0.8 else { return }
             guard let engine, engine.isPlaying else { return }
             if let player = engine.avPlayer, player.timeControlStatus != .playing { return }
             isBoosting = true

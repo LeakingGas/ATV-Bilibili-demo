@@ -8,11 +8,16 @@ import UIKit
 /// 刚启动、还没有任何元素获得焦点时，返回键直接落到窗口上（系统默认退出 App）。
 /// 这里先交给主界面：能弹出侧边栏就弹出，不能才按系统默认处理。
 final class BLWindow: UIWindow {
+    /// 遥控器有按键按下（分发前发出；2 倍速手势据此区分「点按」和「长按」）。
+    static let remotePressBegan = Notification.Name("BLWindow.remotePressBegan")
     private var menuHandled = false
 
     /// 诊断：记录每一次遥控器按键（在分发给任何界面之前）。
     override func sendEvent(_ event: UIEvent) {
         if let presses = event as? UIPressesEvent {
+            if presses.allPresses.contains(where: { $0.phase == .began }) {
+                NotificationCenter.default.post(name: Self.remotePressBegan, object: nil)
+            }
             for press in presses.allPresses where press.phase == .began || press.phase == .ended {
                 Diag.mark("PRESS \(Diag.pressName(press.type)) \(press.phase == .began ? "down" : "up") focus=\(Diag.describeFocus())")
             }

@@ -604,7 +604,7 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
         if endOverlayShown { replayBadge.setDimmed(visible, animated: true) }
     }
 
-    // 验证用：系统在用户跳转（点按快进快退、滑动进度条）时的明确通知。先只记日志。
+    // 系统在用户跳转（点按快进快退、滑动进度条后确认）时的明确通知：转给插件（VLC 模式据此跳转）。
     func playerViewController(_ playerViewController: AVPlayerViewController,
                               timeToSeekAfterUserNavigatedFrom oldTime: CMTime,
                               to targetTime: CMTime) -> CMTime
@@ -613,6 +613,7 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
         let to = targetTime.seconds.isFinite ? targetTime.seconds : -1
         Diag.mark(String(format: "PLAYER %@ user navigated %.1f -> %.1f", Diag.id(self), from, to))
         BTRTrace.shared.event("user_navigated", ["from": from, "to": to, "rate": playerViewController.player?.rate ?? 0])
+        if to >= 0 { activePlugins.forEach { $0.playerUserNavigated(to: to) } }
         return targetTime
     }
 

@@ -307,8 +307,10 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         startLoad(urlInfo: playData.videoPlayURLInfo, playerInfo: playData.playerInfo, streamIndex: shadowStreamIndex)
     }
 
-    /// VLC 模式的影子：播本地生成的黑画面（时长和视频一样），不联网、不缓冲、不会卡，
+    /// VLC 模式的影子：播本地生成的视频（时长和视频一样），不联网、不缓冲、不会卡，
     /// 只用来驱动系统播放界面（进度条、控制栏、下滑面板）。
+    /// 内容是 B 站的预览截图做成的幻灯片（拖动进度条的缩略图、长按快进快退的画面都靠它）；
+    /// 2 秒内做不出来就先用黑画面（后台继续做完缓存，下次打开同一视频就有了）。
     private func startBlankShadow() {
         let info = playData.videoPlayURLInfo
         let duration = info.timelength > 0 ? Double(info.timelength) / 1000 : Double(info.dash.duration)
@@ -317,7 +319,25 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             guard let self else { return }
             do {
                 let started = Date()
-                let item = try await BlankShadowAsset.makeItem(duration: duration)
+                let aid = self.playData.aid, cid = self.playData.cid
+                let previewTask = Task { try await PreviewShadowAsset.clipURL(aid: aid, cid: cid, duration: duration) }
+                let previewURL = await withTaskGroup(of: URL?.self) { group -> URL? in
+                    group.addTask { try? await previewTask.value }
+                    group.addTask {
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        return nil
+                    }
+                    let first = await group.next() ?? nil
+                    group.cancelAll()
+                    return first
+                }
+                let item: AVPlayerItem
+                if let previewURL {
+                    item = AVPlayerItem(asset: AVURLAsset(url: previewURL))
+                } else {
+                    item = try await BlankShadowAsset.makeItem(duration: duration)
+                }
+                Diag.startupStep("shadow_content", ["kind": previewURL == nil ? "blank" : "preview"])
                 guard self.loadGeneration == generation, !Task.isCancelled, let playerVC = self.playerVC else { return }
                 let player = AVPlayer(playerItem: item)
                 player.isMuted = true
@@ -1045,5 +1065,129 @@ enum BlankShadowAsset {
         try? FileManager.default.removeItem(at: url)
         try FileManager.default.moveItem(at: temp, to: url)
         return url
+    }
+}
+
+/// VLC 模式影子用的预览幻灯片：B 站「视频快照」接口给的预览截图（雪碧图），按时间点切开，
+/// 写成一段很小的本地视频（每张截图一个关键帧）。按 cid 缓存。
+enum PreviewShadowAsset {
+    private static let version = "v1"
+
+    static func clipURL(aid: Int, cid: Int, duration: Double) async throws -> URL {
+        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("shadow-previews", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("\(cid)-\(version).mp4")
+        if FileManager.default.fileExists(atPath: url.path) { return url }
+        cleanUp(directory)
+
+        var components = URLComponents(string: "https://api.bilibili.com/x/player/videoshot")!
+        components.queryItems = [URLQueryItem(name: "aid", value: String(aid)),
+                                 URLQueryItem(name: "cid", value: String(cid)),
+                                 URLQueryItem(name: "index", value: "1")]
+        var request = URLRequest(url: components.url!)
+        request.setValue("https://www.bilibili.com/", forHTTPHeaderField: "Referer")
+        request.timeoutInterval = 5
+        let (data, _) = try await URLSession.shared.data(for: request)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let info = root["data"] as? [String: Any],
+              let images = info["image"] as? [String], !images.isEmpty,
+              let xLen = (info["img_x_len"] as? NSNumber)?.intValue, xLen > 0,
+              let yLen = (info["img_y_len"] as? NSNumber)?.intValue, yLen > 0,
+              let width = (info["img_x_size"] as? NSNumber)?.intValue, width > 0,
+              let height = (info["img_y_size"] as? NSNumber)?.intValue, height > 0
+        else { throw "没有预览截图" }
+        var times = ((info["index"] as? [NSNumber]) ?? []).map(\.doubleValue)
+        let perSprite = xLen * yLen
+
+        // 雪碧图并行下载，按顺序放好。
+        let sprites: [CGImage] = try await withThrowingTaskGroup(of: (Int, CGImage?).self) { group in
+            for (offset, path) in images.enumerated() {
+                group.addTask {
+                    let link = path.hasPrefix("//") ? "https:" + path : path
+                    guard let spriteURL = URL(string: link) else { return (offset, nil) }
+                    let (bytes, _) = try await URLSession.shared.data(from: spriteURL)
+                    return (offset, UIImage(data: bytes)?.cgImage)
+                }
+            }
+            var result = [CGImage?](repeating: nil, count: images.count)
+            for try await (offset, image) in group { result[offset] = image }
+            return result.compactMap { $0 }
+        }
+        guard sprites.count == images.count else { throw "预览截图下载不全" }
+        let totalThumbs = sprites.count * perSprite
+        if times.count == totalThumbs + 1 { times.removeFirst() }
+        let count = min(times.count, totalThumbs)
+        guard count > 1 else { throw "预览截图太少" }
+
+        let temp = directory.appendingPathComponent("tmp-\(UUID().uuidString).mp4")
+        let writer = try AVAssetWriter(outputURL: temp, fileType: .mp4)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: width,
+            AVVideoHeightKey: height,
+            AVVideoCompressionPropertiesKey: [AVVideoMaxKeyFrameIntervalKey: 1],
+        ])
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+        ])
+        writer.add(input)
+        guard writer.startWriting() else { throw writer.error ?? "无法生成预览视频" }
+        writer.startSession(atSourceTime: .zero)
+        var lastTime = -1.0
+        for index in 0..<count {
+            try Task.checkCancellation()
+            // 第一张放在 0 秒（开头没有截图时也有画面）；时间必须递增且在视频长度内。
+            let time = index == 0 ? 0 : times[index]
+            guard time > lastTime, time < duration else { continue }
+            let sprite = sprites[index / perSprite]
+            let cell = index % perSprite
+            let rect = CGRect(x: (cell % xLen) * width, y: (cell / xLen) * height, width: width, height: height)
+            guard let thumb = sprite.cropping(to: rect), let buffer = makeBuffer(thumb, width: width, height: height) else { continue }
+            while !input.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 2_000_000) }
+            adaptor.append(buffer, withPresentationTime: CMTime(seconds: time, preferredTimescale: 600))
+            lastTime = time
+        }
+        input.markAsFinished()
+        writer.endSession(atSourceTime: CMTime(seconds: duration, preferredTimescale: 600))
+        await writer.finishWriting()
+        guard writer.status == .completed else {
+            try? FileManager.default.removeItem(at: temp)
+            throw writer.error ?? "预览视频写入失败"
+        }
+        try? FileManager.default.removeItem(at: url)
+        try FileManager.default.moveItem(at: temp, to: url)
+        return url
+    }
+
+    private static func makeBuffer(_ image: CGImage, width: Int, height: Int) -> CVPixelBuffer? {
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &buffer)
+        guard let buffer else { return nil }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+        guard let context = CGContext(data: CVPixelBufferGetBaseAddress(buffer), width: width, height: height,
+                                      bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+        else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return buffer
+    }
+
+    /// 缓存超过 300 个时删掉最旧的一半。
+    private static func cleanUp(_ directory: URL) {
+        let keys: [URLResourceKey] = [.contentModificationDateKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: keys),
+              files.count > 300 else { return }
+        let sorted = files.sorted {
+            let a = (try? $0.resourceValues(forKeys: Set(keys)).contentModificationDate) ?? .distantPast
+            let b = (try? $1.resourceValues(forKeys: Set(keys)).contentModificationDate) ?? .distantPast
+            return a < b
+        }
+        sorted.prefix(files.count / 2).forEach { try? FileManager.default.removeItem(at: $0) }
     }
 }

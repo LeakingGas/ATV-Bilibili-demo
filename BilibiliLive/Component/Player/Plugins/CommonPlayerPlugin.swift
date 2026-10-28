@@ -25,6 +25,8 @@ protocol CommonPlayerPlugin: NSObject {
     func playerDidStall(engine: PlayerEngine)
     func playerDidFail(engine: PlayerEngine)
     func playerDidCleanUp(engine: PlayerEngine)
+    /// 用户在系统界面上跳转（点按快进快退、滑动进度条后确认），参数是目标时间。
+    func playerUserNavigated(to seconds: Double)
 }
 
 extension CommonPlayerPlugin {
@@ -43,4 +45,5 @@ extension CommonPlayerPlugin {
     func playerDidStall(engine: PlayerEngine) {}
     func playerDidFail(engine: PlayerEngine) {}
     func playerDidCleanUp(engine: PlayerEngine) {}
+    func playerUserNavigated(to seconds: Double) {}
 }

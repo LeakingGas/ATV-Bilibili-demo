@@ -12,6 +12,8 @@ class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
     private weak var host: PlayerHost?
     var onPlayEnd: (() -> Void)?
     var onPlayNextWithInfo: ((PlayInfo) -> Void)?
+    /// 普通播放页：播完是否自动播下一集看设置「自动连播」（关时停在结束画面）。
+    var respectsAutoplaySetting = false
 
     let sequenceProvider: VideoSequenceProvider?
 
@@ -72,8 +74,23 @@ class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func playerDidEnd(engine: PlayerEngine) {
+        let autoNext = !respectsAutoplaySetting || Settings.continouslyPlay
         Task { [weak self] in
             guard let self else { return }
+            if !autoNext {
+                if Settings.loopPlay {
+                    // 不连播时的循环播放：重播当前这一集。
+                    await MainActor.run {
+                        engine.seek(to: 0)
+                        engine.play()
+                    }
+                    return
+                }
+                await MainActor.run { [weak self] in
+                    self?.onPlayEnd?()
+                }
+                return
+            }
             if !(await playNext()) {
                 if Settings.loopPlay {
                     await MainActor.run {

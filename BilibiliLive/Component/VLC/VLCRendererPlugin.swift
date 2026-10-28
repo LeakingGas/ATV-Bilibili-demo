@@ -2,15 +2,14 @@
 //  VLCRendererPlugin.swift
 //  BilibiliLive
 //
-//  VLC 模式：界面和操作完全是系统播放器的。系统播放器播一路静音的低码率「影子」视频
-//  （BVideoPlayPlugin 的 shadowStreamIndex），只提供时间轴、控制栏和拖动预览；
+//  VLC 模式：界面和操作完全是系统播放器的。系统播放器播一路本地生成的静音「影子」
+//  （BVideoPlayPlugin 的黑画面 / 预览图幻灯片，不联网、不缓冲、不会卡），只提供时间轴、控制栏和拖动预览；
 //  真正的画面和声音由这里的 VLC 输出，画面叠在系统播放器的画面层上、控制栏下面。
 //
-//  同步原则：以 VLC 为准，只调整看不见的影子，绝不为了同步去改 VLC 的速度、暂停或跳转。
-//  VLC 只跟着用户的操作走（暂停 / 继续、拖动 / 快进快退、选的倍速）。
-//  - VLC 还没出画面（刚进视频、拖动之后）：关闭影子的数据闸门，系统播放器停在自己的加载圈上等。
-//  - 影子和 VLC 差得多：把影子挪到 VLC 的位置（影子在下层看不见，只有进度条时间小跳一下）。
-//  - 影子的时间跳了、又不是我们挪的：是用户在系统界面上拖动 / 快进，VLC 跳到同一位置。
+//  同步原则：VLC 说了算，影子只跟随。绝不为了同步去改 VLC 的速度、暂停或跳转。
+//  - 用户的操作都来自系统界面：跳转（系统的「用户跳转」通知 + 影子的时间跳变）、暂停 / 继续、倍速，
+//    由这里转给 VLC。影子自己不会卡、不会停，所以它的状态变化只可能来自用户或我们。
+//  - VLC 实际播到哪，影子就挪到哪；VLC 在缓冲 / 跳转中，影子钉在 VLC 该在的位置上。
 //
 
 import AVKit
@@ -19,9 +18,6 @@ import UIKit
 
 final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
     var onLoadFailure: ((String) -> Void)?
-
-    /// 影子播放器的数据闸门（交给 BVideoPlayPlugin，由本地代理在交数据前检查）。
-    let gate = MediaDeliveryGate()
 
     private let vlc = VLCMediaPlayer()
     private let videoView = UIView()
@@ -52,32 +48,31 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
 
     // 同步状态
     private var mediaLoaded = false
-    /// 用户暂停了（影子速率为 0 且不是在等数据）。
+    /// 用户暂停了。
     private var userPaused = false
     private var masterEverPlayed = false
-    /// 影子开始正常播放的时间：起播阶段（影子跳到观看记录、刚开播）的时间跳变不算用户拖动。
-    private var masterPlayingSince: Date?
-    /// 上一次同步时影子的时间：时间跳变是相对它判断的（不是和 VLC 比：起播时两边本来就有差）。
-    private var prevMasterTime: Double = 0
     /// 用户在系统界面上长按左右快退 / 快进（影子速率为负或大于 2.5）：VLC 放不了倒放，先停下，
-    /// 并让下面的影子露出来（系统播放器自己的快退快进画面），松手后 VLC 跳到影子的位置。
+    /// 让下面的影子露出来（系统播放器自己的快退快进画面），松手后 VLC 跳到影子的位置。
     private var scanning = false
-    /// 上一次同步取样的时间（判断影子的时间跳变：位置变化和正常播放走的距离对不上）。
-    private var prevSampleAt = Date()
-    /// 影子快到结尾、VLC 还没播完：先让影子停在结尾前等 VLC（「播完了」以 VLC 为准）。
-    private var holdingShadowAtEnd = false
+    /// 这次打开 VLC 时的起点（VLC 出第一帧前，影子钉在这里）。
+    private var loadStartPosition: Double = 0
     /// VLC 播完时的位置（它的结尾可能比影子短一两秒）。
     private var vlcEndTime: Double?
     private var lastVLCTimeMs: Int32 = -1
     private var lastVLCAdvanceAt = Date.distantPast
     private var stalledSince: Date?
-    /// 用户拖动后 VLC 跳去的位置；VLC 在那里出画面前，影子等着。
+    /// 用户跳转后 VLC 要去的位置；VLC 在那里出画面前，影子钉在这里。
     private var vlcSeekPending: (target: Double, at: Date)?
-    /// 我们自己挪影子的时间：这段时间内影子的时间跳变不算用户操作。
-    private var ownMasterSeekAt = Date.distantPast
-    private var lastCorrectionAt = Date.distantPast
+    /// 我们最近一次挪影子：影子因此产生的时间跳变不算用户操作。
+    private var lastOwnSeek: (target: Double, at: Date)?
+    private var lastPinAt = Date.distantPast
     private var markedPlaying = false
     private var syncLogAt = Date.distantPast
+    /// 音频诊断：VLC 实际播出 / 丢掉的音频段数（判断「没声音」是不是 VLC 丢了声音）。
+    private var audioStatsAt = Date.distantPast
+    private var lastPlayedAudio = -1
+    private var lastLostAudio = -1
+    private var silentSince: Date?
 
     init(detailData: PlayerDetailData) {
         playData = detailData
@@ -85,7 +80,6 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
         vlc.delegate = self
         videoView.backgroundColor = .black
         videoView.isUserInteractionEnabled = false
-        gate.isOpen = false
         lifecycleObservers = [
             NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
                 self?.handleEnterBackground()
@@ -101,7 +95,6 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
         if let jumpObserver { NotificationCenter.default.removeObserver(jumpObserver) }
         syncTimer?.invalidate()
         delegate?.btrPlayback.invalidate()
-        gate.isOpen = true
         vlc.delegate = nil
         vlc.stop()
         Diag.mark("VLCR deinit")
@@ -114,7 +107,7 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
         var lines = ["engine: VLC (system UI + shadow clock)"]
         let names: [VLCMediaPlayerState: String] = [.stopped: "stopped", .opening: "opening", .buffering: "buffering",
                                                     .ended: "ended", .error: "error", .playing: "playing", .paused: "paused"]
-        lines.append("VLC state: \(names[vlc.state] ?? "\(vlc.state.rawValue)") time:\(String(format: "%.1f", vlcTime)) shadow:\(String(format: "%.1f", masterTime)) gate:\(gate.isOpen ? "open" : "closed")")
+        lines.append("VLC state: \(names[vlc.state] ?? "\(vlc.state.rawValue)") time:\(String(format: "%.1f", vlcTime)) shadow:\(String(format: "%.1f", masterTime))")
         if let session = delegate?.btrPlayback { lines.append("BTR\n" + session.debug) }
         if let media = delegate?.primaryVideoDescription, !media.isEmpty { lines.append("stream: " + media) }
         if !cdnProbeReport.isEmpty { lines.append(cdnProbeReport) }
@@ -151,7 +144,6 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
         guard let player = engine.avPlayer else { return }
         master = player
         masterEverPlayed = false
-        masterPlayingSince = nil
         rateObservation = player.observe(\.rate, options: [.new]) { [weak self] player, _ in
             let rate = player.rate
             DispatchQueue.main.async { self?.masterRateChanged(rate) }
@@ -179,7 +171,6 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
         syncTimer?.invalidate()
         syncTimer = nil
         rateObservation = nil
-        gate.isOpen = true
         vlc.stop()
         delegate?.btrPlayback.invalidate()
     }
@@ -214,7 +205,6 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
                 return
             } catch {
                 guard !Task.isCancelled, self.loadGeneration == generation else { return }
-                self.gate.isOpen = true
                 Diag.startupStep("vlc_load_failed", ["error": String(describing: error).prefix(160)])
                 self.onLoadFailure?(String(describing: error))
             }
@@ -258,8 +248,10 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
         lastVLCAdvanceAt = .distantPast
         vlcSeekPending = nil
         vlcEndTime = nil
-        holdingShadowAtEnd = false
+        loadStartPosition = start ?? 0
         markedPlaying = false
+        lastPlayedAudio = -1
+        lastLostAudio = -1
         vlc.media = media
         if !userPaused { vlc.play() }
         mediaLoaded = true
@@ -338,7 +330,6 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
                 BTRTrace.shared.event("vlc_scan_begin", ["rate": rate, "shadow": masterTime])
                 vlc.pause()
                 videoView.isHidden = true
-                gate.isOpen = true
             }
             return
         }
@@ -352,54 +343,49 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
         if rate >= 0.1 {
             // 用户选的倍速 / 继续播放。
             masterEverPlayed = true
-            if masterPlayingSince == nil { masterPlayingSince = Date() }
             if abs(vlc.rate - rate) > 0.01 { vlc.rate = rate }
             if userPaused {
                 userPaused = false
+                BTRTrace.shared.event("vlc_resume", ["vlc": vlcTime, "shadow": masterTime])
                 if vlcFinished {
                     startUserSeek(to: masterTime)
                 } else if mediaLoaded, !vlc.isPlaying {
                     vlc.play()
                 }
             }
-        } else if rate == 0, holdingShadowAtEnd {
-            // 我们让影子在结尾前停下等 VLC，不是用户暂停。
-            return
-        } else if rate == 0, masterEverPlayed, master.timeControlStatus == .paused {
-            // 用户暂停（影子在等数据时是 waiting，不是 paused）。
+        } else if rate == 0, masterEverPlayed {
+            // 影子播到结尾自己停下，不是用户暂停（「播完了」由 VLC 决定，见 handleVLCEnded）。
+            let duration = master.currentItem?.duration.seconds ?? 0
+            if duration.isFinite, duration > 0, masterTime >= duration - 0.5 { return }
             userPaused = true
+            BTRTrace.shared.event("vlc_pause", ["vlc": vlcTime, "shadow": masterTime])
             if vlc.isPlaying { vlc.pause() }
         }
     }
 
-    /// 影子的时间跳了：不是我们挪的，就是用户在系统界面上拖动 / 快进快退。
-    private func masterJumped() {
-        detectUserJump()
+    /// 系统的「用户跳转」通知（点按快进快退、滑动进度条后确认）：VLC 直接跳过去。
+    func playerUserNavigated(to seconds: Double) {
+        guard mediaLoaded || vlcFinished, seconds.isFinite else { return }
+        startUserSeek(to: max(0, seconds))
     }
 
-    /// 影子的位置变化和正常播放该走的距离对不上（超过 1 秒），又不是我们自己挪的 = 用户拖动 / 重播。
-    /// 同步定时器和系统的跳变通知都走这里，共用同一个「上一刻位置」，谁先看到谁处理（以前只靠通知，
-    /// 通知晚到时上一刻位置已被定时器更新，拖动就漏掉了）。
-    private func detectUserJump() {
-        let now = Date()
+    /// 影子的时间跳了。影子不联网、不会自己跳，所以除了我们自己挪的，就是别人挪的：
+    /// 用户（上面的通知没覆盖到的情况）、重播、跳过广告、投屏控制……VLC 都要跟过去。
+    private func masterJumped() {
+        // 影子还没开始播（刚装上、跳到观看记录位置）的跳变不算：VLC 自己从起点开始，影子随后会被挪过去。
+        guard mediaLoaded || vlcFinished, !scanning, masterEverPlayed else { return }
         let current = masterTime
-        let expected = prevMasterTime + Double(master?.rate ?? 0) * now.timeIntervalSince(prevSampleAt)
-        let previous = prevMasterTime
-        prevMasterTime = current
-        prevSampleAt = now
-        guard mediaLoaded || vlcFinished, !scanning else { return }
-        // 起播阶段（影子开始播放、跳到观看记录）不算；我们自己挪影子的 1 秒内不算。
-        guard now.timeIntervalSince(ownMasterSeekAt) > 1.0,
-              let since = masterPlayingSince, now.timeIntervalSince(since) > 1.5 else { return }
-        guard abs(current - expected) > 1.0 else { return }
-        BTRTrace.shared.event("shadow_jump", ["from": previous, "to": current, "vlc": vlcTime])
-        guard abs(current - vlcTime) > 0.5 || vlcFinished else { return }
-        if holdingShadowAtEnd {
-            // 等 VLC 时用户拖走了：影子是我们停的，恢复播放。
-            holdingShadowAtEnd = false
-            if !userPaused { master?.play() }
-        }
+        if let own = lastOwnSeek, Date().timeIntervalSince(own.at) < 2, abs(current - own.target) < 0.5 { return }
+        guard abs(current - expectedVLCTime) > 1.0 else { return }
+        BTRTrace.shared.event("shadow_jump", ["to": current, "vlc": vlcTime, "expected": expectedVLCTime])
         startUserSeek(to: current)
+    }
+
+    /// VLC 此刻「应该」在的位置：跳转中是目标位置，还没出第一帧是起点，其余是 VLC 的实际时间。
+    private var expectedVLCTime: Double {
+        if let pending = vlcSeekPending { return pending.target }
+        if !markedPlaying { return loadStartPosition }
+        return vlcTime
     }
 
     /// VLC 播完后媒体已经结束，跳转 / 播放都不会生效，要从目标位置重新打开。
@@ -409,7 +395,7 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
 
     private func startUserSeek(to target: Double) {
         if vlcFinished {
-            // 跳到 VLC 结尾 1 秒以内：保持播完状态，不重新打开（以前会超出 VLC 的结尾，从 0 开始放）。
+            // 跳到 VLC 结尾 1 秒以内：保持播完状态，不重新打开（会超出 VLC 的结尾，从 0 开始放）。
             if let end = vlcEndTime, target >= end - 1.0 {
                 BTRTrace.shared.event("vlc_seek_ignored_at_end", ["target": target, "vlcEnd": end])
                 return
@@ -420,81 +406,72 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
             startLoad(at: target, maxQuality: lastMaxQuality, streamIndex: lastStreamIndex)
             return
         }
+        // 同一个目标（通知和时间跳变都报了同一次跳转）只跳一次。
+        if let pending = vlcSeekPending, abs(pending.target - target) < 0.3, Date().timeIntervalSince(pending.at) < 2 { return }
         vlcSeekPending = (target, Date())
-        lastCorrectionAt = Date()
         BTRTrace.shared.event("vlc_user_seek", ["target": target, "vlc": vlcTime])
         Diag.eventWindow(String(format: "VLC seek to %.1fs", target))
         vlc.time = VLCTime(int: Int32(target * 1000))
         if !userPaused, !vlc.isPlaying { vlc.play() }
-        gate.isOpen = userPaused
+    }
+
+    /// 挪影子（我们自己的跳转，不算用户操作）。
+    private func seekShadow(to target: Double) {
+        guard let master else { return }
+        lastOwnSeek = (target, Date())
+        lastPinAt = Date()
+        master.seek(to: CMTime(seconds: max(0, target), preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
     // MARK: - 同步（只动影子）
 
     private func sync() {
         updateSystemSpinner(hide: mediaLoaded && vlcAdvancing)
-        detectUserJump()
         guard mediaLoaded else { return }
         let state = vlc.state
         if state == .ended, vlcEndTime == nil { handleVLCEnded() }
         if vlcEndTime != nil || state == .error {
-            gate.isOpen = true
             spinner.stopAnimating()
             return
         }
 
         if scanning { return }
-        // 快退快进松手后，VLC 在新位置出画面了才盖回去（之前露出的是系统播放器自己的画面）。
+        // 快退快进松手后，VLC 在新位置出画面了才盖回去（之前露出的是影子）。
         if videoView.isHidden, vlcSeekPending == nil, vlcAdvancing {
             videoView.isHidden = false
         }
 
-        // 用户拖动后：VLC 在新位置出画面前，影子等着。
+        // 跳转后 VLC 在目标附近重新走起来 = 到了。
         if let pending = vlcSeekPending {
-            let arrived = abs(vlcTime - pending.target) < 0.8 && lastVLCAdvanceAt > pending.at && vlcAdvancing
-            if arrived || Date().timeIntervalSince(pending.at) > 10 {
+            let arrived = abs(vlcTime - pending.target) < 1.5 && lastVLCAdvanceAt > pending.at && vlcAdvancing
+            if arrived || Date().timeIntervalSince(pending.at) > 15 {
                 vlcSeekPending = nil
             }
         }
+        logAudioStats()
 
-        // VLC 没在出画面（又不是用户暂停）= 影子不该往前走，关闸门。
+        // VLC 没在出画面（又不是用户暂停）：显示加载圈，影子钉在 VLC 该在的位置上。
         let vlcStalled = !userPaused && (!vlcAdvancing || vlcSeekPending != nil)
         if vlcStalled {
             if stalledSince == nil { stalledSince = Date() }
         } else {
             stalledSince = nil
         }
-        gate.isOpen = !vlcStalled
-        // 影子在系统加载圈里等时由系统显示加载圈；影子还在走而 VLC 卡住时显示我们的。
-        let showSpinner = vlcStalled && markedPlaying && master?.timeControlStatus == .playing
-            && Date().timeIntervalSince(stalledSince ?? Date()) > 0.3
+        let showSpinner = vlcStalled && markedPlaying && Date().timeIntervalSince(stalledSince ?? Date()) > 0.3
         if showSpinner { spinner.startAnimating() } else { spinner.stopAnimating() }
 
-        guard let master, master.timeControlStatus == .playing, !vlcStalled else { return }
-
-        // 影子快到结尾而 VLC 还在后面：影子先停下等 VLC 播完，避免提前显示结束画面、把 VLC 暂停。
-        let shadowDuration = master.currentItem?.duration.seconds ?? 0
-        if shadowDuration.isFinite, shadowDuration > 0, masterTime >= shadowDuration - 0.6, vlcTime < masterTime - 0.3 {
-            holdingShadowAtEnd = true
-            BTRTrace.shared.event("shadow_hold_at_end", ["shadow": masterTime, "vlc": vlcTime, "duration": shadowDuration])
-            master.pause()
+        guard master != nil else { return }
+        let expected = expectedVLCTime
+        let drift = masterTime - expected
+        if vlcStalled {
+            if abs(drift) > 0.3, Date().timeIntervalSince(lastPinAt) > 0.25 {
+                seekShadow(to: expected)
+            }
             return
         }
-
-        // 影子和 VLC 差得多：把影子挪到 VLC 的位置（只动影子，画面和声音不受影响）。
-        // 差 5 秒以上不会是同步误差，是没认出来的用户拖动：不往回拉，让 VLC 跟过去。
-        let drift = masterTime - vlcTime
-        if abs(drift) > 5, vlcSeekPending == nil {
-            BTRTrace.shared.event("shadow_drift_large", ["shadow": masterTime, "vlc": vlcTime])
-            startUserSeek(to: masterTime)
-            return
-        }
-        if abs(drift) > 1.0, Date().timeIntervalSince(lastCorrectionAt) > 3 {
-            lastCorrectionAt = Date()
-            ownMasterSeekAt = Date()
-            let target = vlcTime + 0.1
+        if abs(drift) > 0.5, Date().timeIntervalSince(lastPinAt) > 1.0 {
             BTRTrace.shared.event("shadow_correct", ["shadow": masterTime, "vlc": vlcTime, "drift": drift])
-            master.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            seekShadow(to: vlcTime + 0.05)
             return
         }
         if Date().timeIntervalSince(syncLogAt) > 5 {
@@ -503,19 +480,47 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
         }
     }
 
+    /// 每秒看一次 VLC 播出 / 丢掉的音频段数；VLC 画面在走而声音一段都没播出，记下来。
+    private func logAudioStats() {
+        guard Date().timeIntervalSince(audioStatsAt) >= 1, let media = vlc.media else { return }
+        audioStatsAt = Date()
+        let played = Int(media.numberOfPlayedAudioBuffers)
+        let lost = Int(media.numberOfLostAudioBuffers)
+        defer {
+            lastPlayedAudio = played
+            lastLostAudio = lost
+        }
+        guard lastPlayedAudio >= 0 else { return }
+        let playedDelta = played - lastPlayedAudio
+        let lostDelta = lost - lastLostAudio
+        let advancing = vlcAdvancing && !userPaused
+        if advancing, playedDelta <= 0 {
+            if silentSince == nil {
+                silentSince = Date()
+                BTRTrace.shared.event("vlc_audio_silent", ["vlc": vlcTime, "lost": lostDelta,
+                                                           "tracks": Int(vlc.numberOfAudioTracks), "track": Int(vlc.currentAudioTrackIndex)])
+            }
+        } else if let since = silentSince, playedDelta > 0 {
+            silentSince = nil
+            BTRTrace.shared.event("vlc_audio_back", ["vlc": vlcTime, "silentMs": Date().timeIntervalSince(since) * 1000])
+        }
+        if lostDelta > 0 {
+            BTRTrace.shared.event("vlc_audio_lost", ["vlc": vlcTime, "lost": lostDelta, "played": playedDelta])
+        }
+    }
+
     /// VLC 播完：通知结束画面；影子还没到结尾就直接挪到结尾（触发系统的「播完」：结束画面或下一集）。
     private func handleVLCEnded() {
         guard vlcEndTime == nil else { return }
         vlcEndTime = vlcTime
-        BTRTrace.shared.event("vlc_ended", ["vlc": vlcTime, "shadow": masterTime, "held": holdingShadowAtEnd])
-        // VLC 播完可能黑屏：露出系统播放器的最后一帧（上面会盖结束画面的毛玻璃）。
+        BTRTrace.shared.event("vlc_ended", ["vlc": vlcTime, "shadow": masterTime])
+        // VLC 播完可能黑屏：露出影子的最后一帧（上面会盖结束画面的毛玻璃）。
         videoView.isHidden = true
         container?.externalPlaybackEnded()
         guard let master else { return }
-        holdingShadowAtEnd = false
         let duration = master.currentItem?.duration.seconds ?? 0
         guard duration.isFinite, duration > 0, masterTime < duration - 0.1 else { return }
-        ownMasterSeekAt = Date()
+        lastOwnSeek = (duration - 0.05, Date())
         master.seek(to: CMTime(seconds: duration - 0.05, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { _ in
             DispatchQueue.main.async { master.play() }
         }
@@ -537,7 +542,6 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
     private func handleEnterForeground() {
         guard let position = backgroundPosition else { return }
         backgroundPosition = nil
-        gate.isOpen = false
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.refreshPlayURL()

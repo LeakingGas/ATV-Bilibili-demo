@@ -433,7 +433,7 @@ class VideoPlayerViewModel {
         let currentMedia: () -> VideoPlayURLInfo.DashInfo.DashMediaInfo?
         var extraPlugins = [CommonPlayerPlugin]()
         if engineKind == .vlc {
-            // 系统播放器只播最低码率的影子视频（静音），提供界面和时间轴；VLC 输出画面和声音。
+            // 系统播放器只播本地生成的影子（预览图幻灯片 / 黑画面，静音），提供界面和时间轴；VLC 输出画面和声音。
             let videos = data.videoPlayURLInfo.dash.video
             let shadowIndex = videos.indices.filter { (videos[$0].width ?? 0) > 0 }.min { videos[$0].bandwidth < videos[$1].bandwidth }
             let renderer = VLCRendererPlugin(detailData: data)
@@ -443,8 +443,7 @@ class VideoPlayerViewModel {
                                           minimizeStalling: true,
                                           isMuted: true,
                                           mediaWarmupManager: nil,
-                                          shadowStreamIndex: shadowIndex,
-                                          shadowGate: renderer.gate)
+                                          shadowStreamIndex: shadowIndex ?? 0)
             shadow.onLoadFailure = { [weak self] message in
                 self?.loadResult.send(.failure(message))
             }
@@ -488,6 +487,7 @@ class VideoPlayerViewModel {
         }.store(in: &cancellable)
 
         let playlist = VideoPlayListPlugin(sequenceProvider: sequenceProvider)
+        playlist.respectsAutoplaySetting = playMode == .regular
         playlist.onPlayEnd = { [weak self] in
             guard self?.playMode == .regular else { return }
             self?.onPlaybackFinished?()

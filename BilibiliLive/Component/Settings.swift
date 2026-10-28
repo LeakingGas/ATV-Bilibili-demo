@@ -100,7 +100,7 @@ enum Settings {
     @UserDefault("DLNA.enable", defaultValue: true)
     static var enableDLNA: Bool
 
-    @UserDefault("Settings.continouslyPlay", defaultValue: true)
+    @UserDefault("Settings.continouslyPlay", defaultValue: false)
     static var continouslyPlay: Bool
 
     @UserDefault("Settings.loopPlay", defaultValue: false)
