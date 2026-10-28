@@ -48,6 +48,13 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
     /// 用户暂停了（影子速率为 0 且不是在等数据）。
     private var userPaused = false
     private var masterEverPlayed = false
+    /// 影子开始正常播放的时间：起播阶段（影子跳到观看记录、刚开播）的时间跳变不算用户拖动。
+    private var masterPlayingSince: Date?
+    /// 上一次同步时影子的时间：时间跳变是相对它判断的（不是和 VLC 比：起播时两边本来就有差）。
+    private var prevMasterTime: Double = 0
+    /// 用户在系统界面上长按左右快退 / 快进（影子速率为负或大于 2.5）：VLC 放不了倒放，先停下，
+    /// 并让下面的影子露出来（系统播放器自己的快退快进画面），松手后 VLC 跳到影子的位置。
+    private var scanning = false
     private var lastVLCTimeMs: Int32 = -1
     private var lastVLCAdvanceAt = Date.distantPast
     private var stalledSince: Date?
@@ -129,6 +136,7 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
         guard let player = engine.avPlayer else { return }
         master = player
         masterEverPlayed = false
+        masterPlayingSince = nil
         rateObservation = player.observe(\.rate, options: [.new]) { [weak self] player, _ in
             let rate = player.rate
             DispatchQueue.main.async { self?.masterRateChanged(rate) }
@@ -271,9 +279,27 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
 
     private func masterRateChanged(_ rate: Float) {
         guard let master else { return }
+        if rate < 0 || rate > 2.5 {
+            if !scanning {
+                scanning = true
+                BTRTrace.shared.event("vlc_scan_begin", ["rate": rate, "shadow": masterTime])
+                vlc.pause()
+                videoView.isHidden = true
+                gate.isOpen = true
+            }
+            return
+        }
+        if scanning {
+            scanning = false
+            let target = masterTime
+            BTRTrace.shared.event("vlc_scan_end", ["rate": rate, "shadow": target])
+            if rate == 0 { userPaused = true }
+            startUserSeek(to: target)
+        }
         if rate >= 0.1 {
             // 用户选的倍速 / 继续播放。
             masterEverPlayed = true
+            if masterPlayingSince == nil { masterPlayingSince = Date() }
             if abs(vlc.rate - rate) > 0.01 { vlc.rate = rate }
             if userPaused {
                 userPaused = false
@@ -288,16 +314,26 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
 
     /// 影子的时间跳了：不是我们挪的，就是用户在系统界面上拖动 / 快进快退。
     private func masterJumped() {
-        // VLC 还没开始播之前的跳变是起播时影子跳到观看记录位置（VLC 已经从那里开始），不算。
-        guard mediaLoaded, markedPlaying, Date().timeIntervalSince(ownMasterSeekAt) > 1.0 else { return }
+        // 起播阶段的跳变（影子开始播放、跳到观看记录位置）不算：VLC 已经从那里开始了。
+        // 影子开始正常播放 1.5 秒以后、又不是我们自己挪的，才是用户拖动 / 快进快退。
+        guard mediaLoaded, !scanning, Date().timeIntervalSince(ownMasterSeekAt) > 1.0,
+              let since = masterPlayingSince, Date().timeIntervalSince(since) > 1.5 else { return }
         let target = masterTime
-        guard abs(target - vlcTime) > 1.0 else { return }
+        // 和影子自己上一刻的位置比（不和 VLC 比）。
+        guard abs(target - prevMasterTime) > 1.0 else { return }
+        prevMasterTime = target
+        guard abs(target - vlcTime) > 0.5 else { return }
+        startUserSeek(to: target)
+    }
+
+    private func startUserSeek(to target: Double) {
         vlcSeekPending = (target, Date())
+        lastCorrectionAt = Date()
         BTRTrace.shared.event("vlc_user_seek", ["target": target, "vlc": vlcTime])
         Diag.eventWindow(String(format: "VLC seek to %.1fs", target))
         vlc.time = VLCTime(int: Int32(target * 1000))
         if !userPaused, !vlc.isPlaying { vlc.play() }
-        gate.isOpen = false
+        gate.isOpen = userPaused
     }
 
     // MARK: - 同步（只动影子）
@@ -311,9 +347,16 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
             return
         }
 
+        if scanning { return }
+        // 快退快进松手后，VLC 在新位置出画面了才盖回去（之前露出的是系统播放器自己的画面）。
+        if videoView.isHidden, vlcSeekPending == nil, vlcAdvancing {
+            videoView.isHidden = false
+        }
+        defer { prevMasterTime = masterTime }
+
         // 用户拖动后：VLC 在新位置出画面前，影子等着。
         if let pending = vlcSeekPending {
-            let arrived = abs(vlcTime - pending.target) < 2 && vlcAdvancing
+            let arrived = abs(vlcTime - pending.target) < 0.8 && lastVLCAdvanceAt > pending.at && vlcAdvancing
             if arrived || Date().timeIntervalSince(pending.at) > 10 {
                 vlcSeekPending = nil
             }
