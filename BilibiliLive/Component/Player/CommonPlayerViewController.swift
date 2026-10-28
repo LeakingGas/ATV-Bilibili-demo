@@ -604,6 +604,28 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
         if endOverlayShown { replayBadge.setDimmed(visible, animated: true) }
     }
 
+    // 验证用：系统在用户跳转（点按快进快退、滑动进度条）时的明确通知。先只记日志。
+    func playerViewController(_ playerViewController: AVPlayerViewController,
+                              timeToSeekAfterUserNavigatedFrom oldTime: CMTime,
+                              to targetTime: CMTime) -> CMTime
+    {
+        let from = oldTime.seconds.isFinite ? oldTime.seconds : -1
+        let to = targetTime.seconds.isFinite ? targetTime.seconds : -1
+        Diag.mark(String(format: "PLAYER %@ user navigated %.1f -> %.1f", Diag.id(self), from, to))
+        BTRTrace.shared.event("user_navigated", ["from": from, "to": to, "rate": playerViewController.player?.rate ?? 0])
+        return targetTime
+    }
+
+    func playerViewController(_ playerViewController: AVPlayerViewController,
+                              willResumePlaybackAfterUserNavigatedFrom oldTime: CMTime,
+                              to targetTime: CMTime)
+    {
+        let from = oldTime.seconds.isFinite ? oldTime.seconds : -1
+        let to = targetTime.seconds.isFinite ? targetTime.seconds : -1
+        Diag.mark(String(format: "PLAYER %@ will resume after navigation %.1f -> %.1f", Diag.id(self), from, to))
+        BTRTrace.shared.event("user_navigated_resume", ["from": from, "to": to])
+    }
+
     @objc func playerViewControllerShouldDismiss(_ playerViewController: AVPlayerViewController) -> Bool {
         Diag.mark("PLAYER \(Diag.id(self)) shouldDismiss (back) transportBar=\(transportBarVisible)")
         // 系统的问题：在控制栏上点过胶囊按钮（或打开过菜单）后，返回键把焦点送回进度条，

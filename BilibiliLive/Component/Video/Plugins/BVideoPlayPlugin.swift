@@ -138,6 +138,14 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private func handleEnterBackground() {
         Diag.mark("BPLAY \(Diag.id(self)) enterBackground avplayer=\(Diag.id(playerVC?.player)) item=\(Diag.id(playerVC?.player?.currentItem)) mode=\(transportMode) pip=\(CommonPlayerViewController.PipRecorder.shared.playingPipViewController.count)")
         guard let player = playerVC?.player else { return }
+        if isShadow {
+            // 黑画面影子不联网，不用拆；只记观看进度。
+            let position = player.currentTime().seconds
+            if reportWatchHistory, position.isFinite, position > 0 {
+                WebRequest.reportWatchHistory(aid: playData.aid, cid: playData.cid, currentTime: Int(position), epid: playData.epid, seasonId: playData.seasonId, subType: playData.subType)
+            }
+            return
+        }
         backgroundedAt = Date()
         wasPlayingWhenBackgrounded = player.rate > 0 || player.timeControlStatus != .paused
         // 画中画还在播时不能动它。
@@ -167,6 +175,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     }
 
     private func handleEnterForeground() {
+        guard !isShadow else { return }
         Diag.mark("BPLAY \(Diag.id(self)) enterForeground saved=\(backgroundPosition.map { String(Int($0)) } ?? "nil") avplayer=\(Diag.id(playerVC?.player)) vc=\(Diag.id(playerVC))")
         guard let since = backgroundedAt, transportMode == .accelerated, let player = playerVC?.player else { return }
         backgroundedAt = nil
@@ -291,7 +300,38 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         Diag.mark("BPLAY \(Diag.id(self)) playerDidLoad aid=\(playData.aid) cid=\(playData.cid) start=\(playData.playerStartPos ?? -1)")
         self.playerVC = playerVC
         playerVC.player = nil
+        if isShadow {
+            startBlankShadow()
+            return
+        }
         startLoad(urlInfo: playData.videoPlayURLInfo, playerInfo: playData.playerInfo, streamIndex: shadowStreamIndex)
+    }
+
+    /// VLC 模式的影子：播本地生成的黑画面（时长和视频一样），不联网、不缓冲、不会卡，
+    /// 只用来驱动系统播放界面（进度条、控制栏、下滑面板）。
+    private func startBlankShadow() {
+        let info = playData.videoPlayURLInfo
+        let duration = info.timelength > 0 ? Double(info.timelength) / 1000 : Double(info.dash.duration)
+        let generation = beginLoadGeneration()
+        loadTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let started = Date()
+                let item = try await BlankShadowAsset.makeItem(duration: duration)
+                guard self.loadGeneration == generation, !Task.isCancelled, let playerVC = self.playerVC else { return }
+                let player = AVPlayer(playerItem: item)
+                player.isMuted = true
+                Diag.startupStep("blank_shadow_ready", ["duration": duration, "ms": Date().timeIntervalSince(started) * 1000])
+                playerVC.player = nil
+                guard self.loadGeneration == generation, !Task.isCancelled else { return }
+                Diag.mark("BPLAY \(Diag.id(self)) install blank shadow avplayer=\(Diag.id(player)) duration=\(Int(duration))")
+                playerVC.player = player
+            } catch {
+                guard self.loadGeneration == generation, !Task.isCancelled else { return }
+                Diag.startupStep("blank_shadow_failed", ["error": String(describing: error).prefix(160)])
+                self.onLoadFailure?("影子播放器创建失败：\(error)")
+            }
+        }
     }
 
     func playerWillStart(engine: PlayerEngine) {
@@ -946,5 +986,64 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         Diag.mark("BPLAY \(Diag.id(self)) install avplayer=\(Diag.id(player)) gen=\(generation) delegate=\(Diag.id(playerDelegate))")
         playerVC.player = player
         startBTRMonitoring(player: player)
+    }
+}
+
+/// VLC 模式影子用的黑画面：1 秒的 64×36 黑色 H.264 片段（首次生成后缓存），拉伸成视频的时长。
+enum BlankShadowAsset {
+    private static let clipName = "blank-shadow-v1.mp4"
+
+    static func makeItem(duration: Double) async throws -> AVPlayerItem {
+        let asset = AVURLAsset(url: try await clipURL())
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else { throw "黑画面没有视频轨" }
+        let clipDuration = try await asset.load(.duration)
+        let composition = AVMutableComposition()
+        guard let compositionTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+            throw "无法创建影子轨道"
+        }
+        let clipRange = CMTimeRange(start: .zero, duration: clipDuration)
+        try compositionTrack.insertTimeRange(clipRange, of: track, at: .zero)
+        compositionTrack.scaleTimeRange(clipRange, toDuration: CMTime(seconds: max(duration, 1), preferredTimescale: 600))
+        return AVPlayerItem(asset: composition)
+    }
+
+    private static func clipURL() async throws -> URL {
+        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let url = directory.appendingPathComponent(clipName)
+        if FileManager.default.fileExists(atPath: url.path) { return url }
+        let temp = directory.appendingPathComponent("blank-\(UUID().uuidString).mp4")
+        let width = 64, height = 36
+        let writer = try AVAssetWriter(outputURL: temp, fileType: .mp4)
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264,
+                                                                           AVVideoWidthKey: width,
+                                                                           AVVideoHeightKey: height])
+        input.expectsMediaDataInRealTime = false
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+        ])
+        writer.add(input)
+        guard writer.startWriting() else { throw writer.error ?? "无法生成黑画面" }
+        writer.startSession(atSourceTime: .zero)
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &buffer)
+        guard let buffer else { throw "无法创建画面缓冲" }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        if let base = CVPixelBufferGetBaseAddress(buffer) {
+            memset(base, 0, CVPixelBufferGetDataSize(buffer))
+        }
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        for second in 0..<2 {
+            while !input.isReadyForMoreMediaData { try await Task.sleep(nanoseconds: 5_000_000) }
+            adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(second), timescale: 2))
+        }
+        input.markAsFinished()
+        writer.endSession(atSourceTime: CMTime(value: 1, timescale: 1))
+        await writer.finishWriting()
+        guard writer.status == .completed else { throw writer.error ?? "黑画面写入失败" }
+        try? FileManager.default.removeItem(at: url)
+        try FileManager.default.moveItem(at: temp, to: url)
+        return url
     }
 }
