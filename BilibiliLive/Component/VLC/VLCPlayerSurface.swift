@@ -15,6 +15,7 @@ import SnapKit
 import TVVLCKit
 import UIKit
 
+@MainActor
 protocol VLCPlayerSurfaceDelegate: AnyObject {
     func vlcSurfaceRequestsExit(_ surface: VLCPlayerSurface)
     func vlcSurface(_ surface: VLCPlayerSurface, didReplaceEngine old: VLCPlayerEngine?, with new: VLCPlayerEngine?)

@@ -10,6 +10,7 @@ import AVFoundation
 import TVVLCKit
 import UIKit
 
+@MainActor
 protocol VLCPlayerEngineDelegate: AnyObject {
     /// 第一次能播（相当于 AVPlayerItem.readyToPlay）。
     func vlcEngineDidBecomeReady(_ engine: VLCPlayerEngine)
@@ -170,6 +171,21 @@ final class VLCPlayerEngine: NSObject, PlayerEngine {
         return "VLC state: \(names[player.state] ?? "\(player.state.rawValue)") playing:\(player.isPlaying) rate:\(player.rate)\nvideo:\(Int(player.videoSize.width))x\(Int(player.videoSize.height))"
     }
 
+    /// VLC 的回调在主线程；代理是主线程类型。
+    private func notify(_ body: @escaping @MainActor (VLCPlayerEngineDelegate) -> Void) {
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                if let delegate = self.delegate { body(delegate) }
+            }
+        } else {
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    if let delegate = self.delegate { body(delegate) }
+                }
+            }
+        }
+    }
+
     // MARK: 时间观察
 
     private func poll() {
@@ -205,21 +221,21 @@ extension VLCPlayerEngine: VLCMediaPlayerDelegate {
         Diag.startupStep("vlc_state", ["state": names[state] ?? "\(state.rawValue)", "time": currentTime])
         switch state {
         case .playing:
-            delegate?.vlcEngine(self, isBuffering: false)
+            notify { $0.vlcEngine(self, isBuffering: false) }
             if !isReady {
                 isReady = true
-                delegate?.vlcEngineDidBecomeReady(self)
+                notify { $0.vlcEngineDidBecomeReady(self) }
             }
-            delegate?.vlcEngineDidStart(self)
+            notify { $0.vlcEngineDidStart(self) }
         case .paused:
-            delegate?.vlcEngineDidPause(self)
+            notify { $0.vlcEngineDidPause(self) }
         case .buffering:
-            if wantsPlay, !player.isPlaying { delegate?.vlcEngine(self, isBuffering: true) }
+            if wantsPlay, !player.isPlaying { notify { $0.vlcEngine(self, isBuffering: true) } }
         case .ended:
             isEnded = true
-            delegate?.vlcEngineDidEnd(self)
+            notify { $0.vlcEngineDidEnd(self) }
         case .error:
-            delegate?.vlcEngineDidFail(self)
+            notify { $0.vlcEngineDidFail(self) }
         default:
             break
         }
@@ -231,7 +247,7 @@ extension VLCPlayerEngine: VLCMediaPlayerDelegate {
             lastTimeMs = ms
             lastTimeChangeAt = Date()
             pendingSeek = nil
-            delegate?.vlcEngine(self, isBuffering: false)
+            notify { $0.vlcEngine(self, isBuffering: false) }
             if !markedPlaying, ms > 0 {
                 markedPlaying = true
                 Diag.startupStep("startup_mark", ["mark": "playing", "kind": "VLC"])

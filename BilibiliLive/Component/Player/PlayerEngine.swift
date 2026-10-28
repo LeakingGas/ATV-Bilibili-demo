@@ -58,6 +58,7 @@ extension PlayerEngine {
     }
 }
 
+@MainActor
 protocol PlayerHost: AnyObject {
     /// 用来弹窗、挂手势、显示提示动画的视图控制器。
     var hostViewController: UIViewController { get }
