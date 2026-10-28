@@ -42,6 +42,8 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     var startOffset: Double?
     /// 当前实际播放的视频流（默认模式下为允许的最高画质）。
     var primaryMedia: VideoPlayURLInfo.DashInfo.DashMediaInfo? { videoInfo.first?.info }
+    /// VLC 模式：影子播放器取数据前要等的闸门（见 VLCRendererPlugin）。
+    var deliveryGate: MediaDeliveryGate?
     /// 拖动进度条时预览图用的流（码率最低的那条视频，见 setBilibili 末尾的 i-frame 流）。
     var thumbnailMedia: VideoPlayURLInfo.DashInfo.DashMediaInfo? { videoInfo.last { !infoIsAudio($0.info) }?.info }
     /// 按当前画质设置，默认会不会选中杜比视界（qn 126）。设置「自动」时据此决定用系统播放器还是 VLC。
@@ -790,6 +792,15 @@ private extension BilibiliVideoResourceLoaderDelegate {
         guard method == "GET" else {
             return HttpResponse.badRequest(nil)
         }
+        // VLC 模式的影子播放器：VLC 还没出画面时先不交数据，系统播放器停在自己的加载圈上等。
+        // 最多扣 4 秒（系统播放器 5 秒拿不到数据会报错）。
+        if let gate = deliveryGate, !gate.isOpen {
+            let started = Date()
+            while !gate.isOpen, Date().timeIntervalSince(started) < 4 {
+                usleep(20000)
+            }
+            BTRTrace.shared.event("shadow_gate_wait", ["waitMs": Date().timeIntervalSince(started) * 1000, "opened": gate.isOpen])
+        }
         let rangeHeader = req.headers["range"]
         // Only the player's byte-range syntax; no URL, headers or cookies are exported.
         let safeRange = (rangeHeader ?? "missing").prefix(100)
@@ -1292,5 +1303,15 @@ final class BTRTraceExport {
             }
         }
         return nil
+    }
+}
+
+/// VLC 模式下影子播放器的数据闸门：VLC 没在出画面时关闭（线程安全，代理在后台线程读取）。
+final class MediaDeliveryGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var open = true
+    var isOpen: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return open }
+        set { lock.lock(); open = newValue; lock.unlock() }
     }
 }

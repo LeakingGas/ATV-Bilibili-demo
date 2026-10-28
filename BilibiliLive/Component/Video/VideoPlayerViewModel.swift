@@ -430,17 +430,18 @@ class VideoPlayerViewModel {
             // 系统播放器只播最低码率的影子视频（静音），提供界面和时间轴；VLC 输出画面和声音。
             let videos = data.videoPlayURLInfo.dash.video
             let shadowIndex = videos.indices.filter { (videos[$0].width ?? 0) > 0 }.min { videos[$0].bandwidth < videos[$1].bandwidth }
+            let renderer = VLCRendererPlugin(detailData: data)
             let shadow = BVideoPlayPlugin(playInfo: playInfo,
                                           detailData: data,
                                           reportWatchHistory: playMode != .preview,
                                           minimizeStalling: true,
                                           isMuted: true,
                                           mediaWarmupManager: nil,
-                                          shadowStreamIndex: shadowIndex)
+                                          shadowStreamIndex: shadowIndex,
+                                          shadowGate: renderer.gate)
             shadow.onLoadFailure = { [weak self] message in
                 self?.loadResult.send(.failure(message))
             }
-            let renderer = VLCRendererPlugin(detailData: data)
             renderer.onLoadFailure = { [weak self] message in
                 self?.loadResult.send(.failure(message))
             }

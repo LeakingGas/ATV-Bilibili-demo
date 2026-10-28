@@ -27,6 +27,8 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     /// VLC 模式：本插件只播一路静音的低码率「影子」视频（这条流在 dash.video 里的位置），
     /// 给系统播放器界面提供时间轴和拖动预览，画面和声音由 VLCRendererPlugin 输出。
     private let shadowStreamIndex: Int?
+    private let shadowGate: MediaDeliveryGate?
+    private var isShadow: Bool { shadowStreamIndex != nil }
     private var currentQualityId: Int?
     private var resumeState = PlaybackResumeState()
     // 记录最近一次实际用于加载的 maxQuality/streamIndex，host 切换时原样复用，
@@ -100,9 +102,11 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
          minimizeStalling: Bool = true,
          isMuted: Bool = false,
          mediaWarmupManager: PlayerMediaWarmupManager? = nil,
-         shadowStreamIndex: Int? = nil)
+         shadowStreamIndex: Int? = nil,
+         shadowGate: MediaDeliveryGate? = nil)
     {
         self.shadowStreamIndex = shadowStreamIndex
+        self.shadowGate = shadowGate
         self.playInfo = playInfo
         playData = detailData
         self.reportWatchHistory = reportWatchHistory
@@ -480,7 +484,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         if player.timeControlStatus == .playing {
             stalledAwaitingData = false
             if player.automaticallyWaitsToMinimizeStalling { player.automaticallyWaitsToMinimizeStalling = false }
-            if item.preferredForwardBufferDuration < 15 { item.preferredForwardBufferDuration = 15 }
+            if !isShadow, item.preferredForwardBufferDuration < 15 { item.preferredForwardBufferDuration = 15 }
             return
         }
         guard item.status == .readyToPlay else { return }
@@ -773,6 +777,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         let asset = prepared.asset
         if playerDelegate !== delegate { playerDelegate?.btrPlayback.invalidate() }
         playerDelegate = delegate
+        delegate.deliveryGate = shadowGate
         markStartup("prepared")
         // diag13: start the first segment before AVPlayer asks for it, from the history position
         // when there is one (EXT-X-START makes AVPlayer request that segment directly).
@@ -914,6 +919,10 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             playerItem.preferredForwardBufferDuration = 4
         }
 
+        if isShadow {
+            // 影子只提前缓冲 2 秒：VLC 卡住时，影子最多再走两秒就停下等（见 VLCRendererPlugin）。
+            playerItem.preferredForwardBufferDuration = 2
+        }
         let player = AVPlayer(playerItem: playerItem)
         player.automaticallyWaitsToMinimizeStalling = playWithoutWaiting ? false : minimizeStalling
         Diag.startupStep("av_player_created", ["waitsToMinimizeStalling": player.automaticallyWaitsToMinimizeStalling,
