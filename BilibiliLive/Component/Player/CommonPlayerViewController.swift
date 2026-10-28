@@ -586,8 +586,8 @@ final class PlayerLoadingBackdropView: UIView {
         imageView.snp.makeConstraints { $0.edges.equalToSuperview().inset(-40) }
         addSubview(blur)
         blur.snp.makeConstraints { $0.edges.equalToSuperview() }
-        // 主界面背景毛玻璃 0.55 + 暗渐变；这里薄一些，封面更清楚。
-        blur.alpha = 0.3
+        // 主界面背景毛玻璃 0.55 + 暗渐变；这里稍薄一点。
+        blur.alpha = 0.45
         dim.backgroundColor = UIColor.black.withAlphaComponent(0.15)
         addSubview(dim)
         dim.snp.makeConstraints { $0.edges.equalToSuperview() }

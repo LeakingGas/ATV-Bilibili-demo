@@ -366,6 +366,7 @@ enum Diag {
         text += "---- crash.log ----\n" + demangle(read("crash.log")) + "\n"
         text += "---- events.log 末尾 ----\n" + tail(read("events.log"), lines: 2500) + "\n\n"
         text += "======== 最近的起播记录（startups.log）========\n" + startupExport(lines: 15000) + "\n\n"
+        text += "======== 投屏记录（dlna.log）========\n" + tail(read("dlna.log"), lines: 4000) + "\n\n"
         text += "======== 应用日志末尾 ========\n"
         for path in Logger.logFilePaths.prefix(2).reversed() {
             if let data = FileManager.default.contents(atPath: path) {
@@ -629,5 +630,38 @@ extension Diag {
 
     static func startupExport(lines: Int) -> String {
         tail(read("startups.log"), lines: lines)
+    }
+}
+
+// MARK: - 投屏记录
+//
+// 一直在记（不用手动开）：投屏服务启动 / 停止、端口绑定结果、收到的每个搜索、我们的回复、
+// 手机来取设备描述、投屏连接。带真实时间，跨启动保留，超过 2MB 清空重来。搜不到的时候事后导出就行。
+
+extension Diag {
+    private static let dlnaLock = NSLock()
+    private static var dlnaFD: Int32 = -1
+    private static var dlnaBytes = 0
+    private static let dlnaFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MM-dd HH:mm:ss.SSS"
+        return formatter
+    }()
+
+    static func dlna(_ text: String) {
+        dlnaLock.lock()
+        defer { dlnaLock.unlock() }
+        if dlnaFD < 0 {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            dlnaFD = open(file("dlna.log").path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+            dlnaBytes = Int((try? FileManager.default.attributesOfItem(atPath: file("dlna.log").path)[.size] as? Int) ?? 0)
+        }
+        guard dlnaFD >= 0 else { return }
+        if dlnaBytes > 2 * 1024 * 1024 {
+            ftruncate(dlnaFD, 0)
+            dlnaBytes = 0
+        }
+        dlnaBytes += writeAll(dlnaFD, dlnaFormatter.string(from: Date()) + " " + text + "\n")
     }
 }

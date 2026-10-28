@@ -156,9 +156,26 @@ final class VideoPlayerInfoTabsPlugin: NSObject, CommonPlayerPlugin {
 
 final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
     enum Kind: String, CaseIterable {
-        case like, coin, favorite
-        var title: String { self == .like ? "点赞" : self == .coin ? "投币" : "收藏" }
-        var image: String { self == .like ? "hand.thumbsup" : self == .coin ? "bitcoinsign.circle" : "star" }
+        case like, coin, favorite, dislike
+        /// 一键三连涉及的三项（不含点踩）。
+        static let tripleKinds: [Kind] = [.like, .coin, .favorite]
+        var title: String {
+            switch self {
+            case .like: return "点赞"
+            case .coin: return "投币"
+            case .favorite: return "收藏"
+            case .dislike: return "点踩"
+            }
+        }
+
+        var image: String {
+            switch self {
+            case .like: return "hand.thumbsup"
+            case .coin: return "bitcoinsign.circle"
+            case .favorite: return "star"
+            case .dislike: return "hand.thumbsdown"
+            }
+        }
         var identifier: UIAction.Identifier { UIAction.Identifier("btr.interaction." + rawValue) }
     }
 
@@ -168,6 +185,7 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
     private var liked = false
     private var coins = 0
     private var favorited = false
+    private var disliked = false
     private var counts: [Kind: Int]
     private var busy = Set<Kind>()
     private var focusedKind: Kind?
@@ -192,6 +210,9 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
         WebRequest.requestFavoriteStatus(aid: aid) { [weak self] value in
             DispatchQueue.main.async { self?.favorited = value; self?.onStateChange?() }
         }
+        ApiRequest.requestDislikeStatus(aid: aid) { [weak self] value in
+            DispatchQueue.main.async { self?.disliked = value; self?.onStateChange?() }
+        }
     }
 
     deinit {
@@ -203,6 +224,7 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
         case .like: return liked
         case .coin: return coins > 0
         case .favorite: return favorited
+        case .dislike: return disliked
         }
     }
 
@@ -210,7 +232,7 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
         Kind.allCases.map { kind in
             let on = isOn(kind)
             let count = counts[kind] ?? 0
-            let title = count > 0 ? "\(kind.title) \(count.numberString())" : kind.title
+            let title = count > 0 && kind != .dislike ? "\(kind.title) \(count.numberString())" : kind.title
             return UIAction(title: title, image: UIImage(systemName: kind.image + (on ? ".fill" : "")),
                             identifier: kind.identifier, state: on ? .on : .off) { [weak self] _ in
                 self?.perform(kind)
@@ -266,11 +288,11 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        focusedKind != nil
+        focusedKind.map { Kind.tripleKinds.contains($0) } ?? false
     }
 
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
-        guard gesture.state == .began, focusedKind != nil else { return }
+        guard gesture.state == .began, let focusedKind, Kind.tripleKinds.contains(focusedKind) else { return }
         suppressActionsUntil = Date().addingTimeInterval(1.5)
         triple()
     }
@@ -283,6 +305,30 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
         case .like: toggleLike()
         case .coin: askCoin()
         case .favorite: toggleFavorite()
+        case .dislike: toggleDislike()
+        }
+    }
+
+    /// 点踩：只有自己知道；B 站点踩和点赞互斥，点踩会取消点赞。
+    private func toggleDislike() {
+        busy.insert(.dislike)
+        let next = !disliked
+        let wasLiked = liked
+        disliked = next
+        if next, liked { liked = false; bump(.like, -1) }
+        onStateChange?()
+        ApiRequest.requestDislike(aid: aid, dislike: next) { [weak self] ok, message in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if !ok {
+                    self.disliked = !next
+                    if next, wasLiked { self.liked = true; self.bump(.like, 1) }
+                }
+                self.busy.remove(.dislike)
+                self.onStateChange?()
+                let text = ok ? (next ? "已点踩" : "已取消点踩") : "点踩失败" + (message.isEmpty ? "" : "：\(message)")
+                VideoInteractionAnimationView.show(in: self.playerView, kinds: ok && next ? [.dislike] : [], text: text)
+            }
         }
     }
 
@@ -293,7 +339,9 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
     private func toggleLike() {
         busy.insert(.like)
         let next = !liked
-        liked = next; bump(.like, next ? 1 : -1); onStateChange?()
+        liked = next; bump(.like, next ? 1 : -1)
+        if next { disliked = false }
+        onStateChange?()
         Task { @MainActor in
             let ok = await WebRequest.requestLike(aid: aid, like: next)
             if !ok { liked = !next; bump(.like, next ? -1 : 1) }
@@ -349,17 +397,18 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
 
     private func triple() {
         guard aid > 0 else { return }
-        VideoInteractionAnimationView.show(in: playerView, kinds: Kind.allCases, text: "一键三连中…", pending: true)
+        VideoInteractionAnimationView.show(in: playerView, kinds: Kind.tripleKinds, text: "一键三连中…", pending: true)
         Task { @MainActor in
             guard let result = await WebRequest.requestTriple(aid: aid) else {
                 VideoInteractionAnimationView.show(in: playerView, kinds: [], text: "三连失败，请稍后再试")
                 return
             }
             if result.like, !liked { liked = true; bump(.like, 1) }
+            if result.like { disliked = false }
             if result.coin, coins == 0 { coins = 2; bump(.coin, 2) }
             if result.favorite, !favorited { favorited = true; bump(.favorite, 1) }
             onStateChange?()
-            let done = Kind.allCases.filter { isOn($0) }
+            let done = Kind.tripleKinds.filter { isOn($0) }
             VideoInteractionAnimationView.show(in: playerView, kinds: done,
                                                text: done.count == 3 ? "一键三连成功！" : "三连完成 \(done.count)/3")
         }

@@ -79,6 +79,33 @@ class SettingsViewController: UIViewController {
     }()
 
     var dataSource: UICollectionViewDiffableDataSource<SectionModel, CellModel>!
+    /// 投屏一行：右侧显示实时状态，页面打开时每 2 秒刷新。
+    private var dlnaCell: CellModel?
+    private var statusTimer: Timer?
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        statusTimer?.invalidate()
+        statusTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.dlnaCell?.updateAction?()
+        }
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        statusTimer?.invalidate()
+        statusTimer = nil
+    }
+
+    private func makeDLNACell() -> CellModel {
+        let cell = CellModel(title: "投屏（DLNA）", desp: BiliBiliUpnpDMR.shared.statusText) { update in
+            Settings.enableDLNA.toggle()
+            BiliBiliUpnpDMR.shared.start()
+            update()
+        }
+        dlnaCell = cell
+        return cell
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -272,10 +299,7 @@ class SettingsViewController: UIViewController {
             }
 
             SectionModel(title: "其他") {
-                Toggle(title: "投屏（DLNA）", setting: Settings.enableDLNA, onChange: Settings.enableDLNA.toggle()) {
-                    _ in
-                    BiliBiliUpnpDMR.shared.start()
-                }
+                makeDLNACell()
                 Toggle(title: "港澳台解锁", setting: Settings.areaLimitUnlock, onChange: Settings.areaLimitUnlock.toggle())
                 TextField(title: "港澳台解析服务器", message: "为了安全考虑建议自建服务器，公共服务器可用性难保证，请多尝试几个。\n公共服务器请参考：http://985.so/mjq9u", current: Settings.areaLimitCustomServer, placeholder: "api.example.com") {
                     Settings.areaLimitCustomServer = $0 ?? ""

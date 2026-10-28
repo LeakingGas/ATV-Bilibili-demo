@@ -24,7 +24,7 @@ class BiliBiliUpnpDMR: NSObject {
 
     weak var currentPlugin: BUpnpPlugin?
 
-    private var udp: GCDAsyncUdpSocket!
+    private var udp: GCDAsyncUdpSocket?
     private var httpServer = HttpServer()
     private var connectedSockets = [GCDAsyncSocket]()
     @MainActor private var sessions = Set<NVASession>()
@@ -64,22 +64,35 @@ class BiliBiliUpnpDMR: NSObject {
 
     override private init() { super.init() }
     func start() {
-        startIfNeed()
-        NotificationCenter.default.addObserver(self, selector: #selector(didEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(willEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+        if !handlersInstalled {
+            handlersInstalled = true
+            NotificationCenter.default.addObserver(self, selector: #selector(didEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(willEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+            installHTTPHandlers()
+        }
+        startIfNeed(reason: "start")
+    }
 
+    private var handlersInstalled = false
+
+    private func installHTTPHandlers() {
         httpServer["/description.xml"] = { [weak self] req in
             Logger.debug("handel serverInfo")
+            let agent = req.headers["user-agent"] ?? "-"
+            Diag.dlna("description fetched by \(req.address ?? "?") ua=\(agent)")
+            DispatchQueue.main.async { self?.lastDescriptionFetchAt = Date() }
             return HttpResponse.ok(.text(self?.serverInfo ?? ""))
         }
 
         httpServer["/projection"] = nvasocket(uuid: bUuid, didConnect: { [weak self] session in
             Logger.info("session connected \(session)")
+            Diag.dlna("cast session connected")
             DispatchQueue.main.async {
                 self?.sessions.insert(session)
             }
         }, didDisconnect: { [weak self] session in
             Logger.info("session disconnect \(session)")
+            Diag.dlna("cast session disconnected")
             DispatchQueue.main.async {
                 self?.sessions.remove(session)
             }
@@ -126,56 +139,146 @@ class BiliBiliUpnpDMR: NSObject {
         }
     }
 
+    // MARK: - 状态（设置里显示）
+
+    /// 1900 端口是否抢到（抢到才能听见手机的搜索）。
+    private(set) var ssdpBound = false
+    private var bindError: String?
+    private(set) var lastSearchAt: Date?
+    private var lastDescriptionFetchAt: Date?
+    private var searchesSinceHeartbeat = 0
+    private var notifyFailures = 0
+    private var heartbeatAt = Date()
+    private var rebindAt = Date.distantPast
+    /// 同一来源同一类型的搜索 30 秒内只记一行，其余计数。
+    private var searchLogAt = [String: (at: Date, suppressed: Int)]()
+
+    /// 设置「投屏」一行右侧的文字。
+    var statusText: String {
+        guard Settings.enableDLNA else { return "关" }
+        guard started else { return "启动失败" }
+        guard ssdpBound else { return "1900 端口被占用" }
+        guard let lastSearchAt else { return "正常 · 还没收到搜索" }
+        let seconds = Int(Date().timeIntervalSince(lastSearchAt))
+        let ago = seconds < 60 ? "刚刚" : seconds < 3600 ? "\(seconds / 60) 分钟前" : "\(seconds / 3600) 小时前"
+        return "正常 · \(ago)收到搜索"
+    }
+
     func stop() {
+        stop(reason: "stop")
+    }
+
+    private func stop(reason: String) {
+        if started || udp != nil { Diag.dlna("stop (\(reason))") }
         boardcastTimer?.invalidate()
         boardcastTimer = nil
         udp?.close()
+        udp = nil
+        ssdpBound = false
         httpServer.stop()
         started = false
         Logger.info("dmr stopped")
     }
 
     @objc func didEnterBackground() {
-        stop()
+        stop(reason: "background")
     }
 
     @objc func willEnterForeground() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            self.startIfNeed()
+            self.startIfNeed(reason: "foreground")
         }
     }
 
-    private func startIfNeed() {
-        stop()
-        guard Settings.enableDLNA else { return }
-        ip = getIPAddress()
-        do {
-            udp = GCDAsyncUdpSocket(delegate: self, delegateQueue: udpQueue)
-            try? udp.enableBroadcast(true)
-            try? udp.enableReusePort(true)
-            try? udp.bind(toPort: ssdpPort)
-            try? udp.joinMulticastGroup(ssdpHost)
-            try? udp.beginReceiving()
-            try httpServer.start(httpPort)
-            started = true
-            Logger.info("dmr started, http: \(httpPort), ssdp: \(ssdpPort)")
-        } catch let err {
-            started = false
-            udp?.close()
-            udp = nil
-            httpServer.stop()
-            Logger.warn("dmr start fail: \(err.localizedDescription).")
+    private func startIfNeed(reason: String) {
+        stop(reason: "restart")
+        guard Settings.enableDLNA else {
+            Diag.dlna("disabled in settings (\(reason))")
             return
         }
+        ip = getIPAddress()
+        Diag.dlna("start (\(reason)) ip=\(ip ?? "nil") interfaces=\(interfaceSummary()) uuid=\(bUuid.prefix(6))")
+        do {
+            try httpServer.start(httpPort)
+        } catch {
+            started = false
+            Logger.warn("dmr start fail: \(error.localizedDescription).")
+            Diag.dlna("http server on \(httpPort) FAILED: \(error)")
+            return
+        }
+        started = true
+        openSSDPSocket()
+        Logger.info("dmr started, http: \(httpPort), ssdp: \(ssdpPort) bound=\(ssdpBound)")
+        heartbeatAt = Date()
+        searchesSinceHeartbeat = 0
         boardcastTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) {
             [weak self] _ in
-            guard let self else { return }
-            guard started else { return }
-            guard let notify = getSSDPNotify(),
-                  let data = notify.data(using: .utf8)
-            else { return }
-            udp.send(data, toHost: ssdpHost, port: ssdpPort, withTimeout: 1, tag: 0)
+            self?.tick()
         }
+    }
+
+    /// 开 1900 端口；每一步失败都记下来（以前失败了也不知道）。
+    private func openSSDPSocket() {
+        udp?.close()
+        let socket = GCDAsyncUdpSocket(delegate: self, delegateQueue: udpQueue)
+        udp = socket
+        var steps = [String]()
+        do { try socket.enableBroadcast(true) } catch { steps.append("broadcast: \(error)") }
+        do { try socket.enableReusePort(true) } catch { steps.append("reusePort: \(error)") }
+        var bound = true
+        do { try socket.bind(toPort: ssdpPort) } catch {
+            bound = false
+            steps.append("bind 1900: \(error)")
+        }
+        if bound {
+            do { try socket.joinMulticastGroup(ssdpHost) } catch { steps.append("joinMulticast: \(error)") }
+            do { try socket.beginReceiving() } catch {
+                bound = false
+                steps.append("beginReceiving: \(error)")
+            }
+        }
+        ssdpBound = bound
+        bindError = steps.isEmpty ? nil : steps.joined(separator: "; ")
+        Diag.dlna("ssdp socket " + (bound ? "OK" : "NOT LISTENING") + (steps.isEmpty ? "" : " — " + steps.joined(separator: "; ")))
+    }
+
+    private func tick() {
+        guard started else { return }
+        // IP 可能变（重新获取地址、换网）：每秒重新取，变了记一笔。
+        let current = getIPAddress()
+        if current != ip {
+            Diag.dlna("ip changed \(ip ?? "nil") -> \(current ?? "nil")")
+            ip = current
+        }
+        // 没抢到 1900：每 10 秒再试一次（占着端口的 App 可能已经退了）。
+        if !ssdpBound, Date().timeIntervalSince(rebindAt) > 10 {
+            rebindAt = Date()
+            openSSDPSocket()
+        }
+        if Date().timeIntervalSince(heartbeatAt) > 300 {
+            Diag.dlna("alive ip=\(ip ?? "nil") listening=\(ssdpBound) searches(5min)=\(searchesSinceHeartbeat) notifyFailures=\(notifyFailures)")
+            heartbeatAt = Date()
+            searchesSinceHeartbeat = 0
+            notifyFailures = 0
+        }
+        guard let notify = getSSDPNotify(), let data = notify.data(using: .utf8) else { return }
+        udp?.send(data, toHost: ssdpHost, port: ssdpPort, withTimeout: 1, tag: 0)
+    }
+
+    private func interfaceSummary() -> String {
+        var result = [String]()
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0 else { return "?" }
+        var ptr = ifaddr
+        while let interface = ptr?.pointee {
+            defer { ptr = interface.ifa_next }
+            guard let addr = interface.ifa_addr, addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            getnameinfo(addr, socklen_t(addr.pointee.sa_len), &hostname, socklen_t(hostname.count), nil, 0, NI_NUMERICHOST)
+            result.append(String(cString: interface.ifa_name) + "=" + String(cString: hostname))
+        }
+        freeifaddrs(ifaddr)
+        return result.joined(separator: ",")
     }
 
     private func getIPAddress() -> String? {
@@ -254,6 +357,7 @@ class BiliBiliUpnpDMR: NSObject {
 
     func handleEvent(frame: NVASession.NVAFrame, session: NVASession) {
         let topMost = UIViewController.topMostViewController()
+        if frame.action != "GetVolume" { Diag.dlna("cast action \(frame.action)") }
         switch frame.action {
         case "GetVolume":
             session.sendReply(content: ["volume": 30])
@@ -381,8 +485,56 @@ extension BiliBiliUpnpDMR: GCDAsyncUdpSocketDelegate {
         let str = String(data: data, encoding: .utf8)
         if str?.contains("ssdp:discover") == true {
             Logger.debug("handle ssdp discover from: \(ipAddress)")
-            let data = getSSDPResp().data(using: .utf8)!
-            sock.send(data, toAddress: address, withTimeout: -1, tag: 0)
+            let headers = Self.headers(str ?? "")
+            logSearch(from: ipAddress, st: headers["st"] ?? "-", mx: headers["mx"] ?? "-", agent: headers["user-agent"] ?? "-")
+            let response = getSSDPResp()
+            guard !response.isEmpty, let data = response.data(using: .utf8) else {
+                Diag.dlna("  no reply: no ip address")
+                return
+            }
+            sock.send(data, toAddress: address, withTimeout: -1, tag: 1)
         }
+    }
+
+    func udpSocket(_ sock: GCDAsyncUdpSocket, didNotSendDataWithTag tag: Int, dueToError error: Error?) {
+        if tag == 1 {
+            Diag.dlna("  reply send FAILED: \(String(describing: error))")
+            return
+        }
+        DispatchQueue.main.async {
+            self.notifyFailures += 1
+            if self.notifyFailures == 1 { Diag.dlna("notify send FAILED: \(String(describing: error))") }
+        }
+    }
+
+    func udpSocketDidClose(_ sock: GCDAsyncUdpSocket, withError error: Error?) {
+        guard let error else { return }
+        Diag.dlna("ssdp socket closed with error: \(error)")
+    }
+
+    private func logSearch(from ip: String, st: String, mx: String, agent: String) {
+        DispatchQueue.main.async {
+            self.lastSearchAt = Date()
+            self.searchesSinceHeartbeat += 1
+            let key = ip + "|" + st
+            if let previous = self.searchLogAt[key], Date().timeIntervalSince(previous.at) < 30 {
+                self.searchLogAt[key] = (previous.at, previous.suppressed + 1)
+                return
+            }
+            let suppressed = self.searchLogAt[key]?.suppressed ?? 0
+            self.searchLogAt[key] = (Date(), 0)
+            Diag.dlna("search from \(ip) st=\(st) mx=\(mx) ua=\(agent)" + (suppressed > 0 ? " (+\(suppressed) earlier)" : "") + " -> replied")
+        }
+    }
+
+    private static func headers(_ text: String) -> [String: String] {
+        var result = [String: String]()
+        for line in text.split(whereSeparator: \.isNewline).dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let key = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            result[key] = value
+        }
+        return result
     }
 }

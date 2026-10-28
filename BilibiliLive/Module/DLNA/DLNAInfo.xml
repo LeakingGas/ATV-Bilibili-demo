@@ -6,10 +6,10 @@
 <device>
   <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
   <UDN>uuid:{{UUID}}</UDN>
-  <friendlyName>我的小电视</friendlyName>
+  <friendlyName>Apple TV</friendlyName>
   <manufacturer>Bilibili Inc.</manufacturer>
   <manufacturerURL>https://bilibili.com/</manufacturerURL>
-  <modelDescription>云视听小电视</modelDescription>
+  <modelDescription>Apple TV 小电视</modelDescription>
   <modelName>BRAVIA 4K 2015</modelName>
   <modelNumber>1024</modelNumber>
   <modelURL>https://app.bilibili.com/</modelURL>

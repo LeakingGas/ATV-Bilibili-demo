@@ -376,6 +376,36 @@ enum ApiRequest {
         requestJSON("https://app.biliapi.net/x/v2/view/dislike", method: .post, parameters: ["aid": aid, "dislike": dislike ? 0 : 1])
     }
 
+    /// 点踩 / 取消点踩（dislike=0 点踩，1 取消），回调是否成功和错误信息。
+    static func requestDislike(aid: Int, dislike: Bool, complete: @escaping (Bool, String) -> Void) {
+        requestJSON("https://app.biliapi.net/x/v2/view/dislike", method: .post, parameters: ["aid": aid, "dislike": dislike ? 0 : 1]) { result in
+            switch result {
+            case .success:
+                Diag.mark("dislike aid=\(aid) \(dislike) ok")
+                complete(true, "")
+            case let .failure(error):
+                let message: String
+                switch error {
+                case let .statusFail(code, msg): message = "\(msg)（\(code)）"
+                default: message = "网络错误"
+                }
+                Diag.mark("dislike aid=\(aid) \(dislike) failed \(message)")
+                complete(false, message)
+            }
+        }
+    }
+
+    /// 当前账号是否点踩过（App 详情接口的 req_user.dislike）。
+    static func requestDislikeStatus(aid: Int, complete: @escaping (Bool) -> Void) {
+        requestJSON("https://app.bilibili.com/x/v2/view", parameters: ["aid": aid]) { result in
+            if case let .success(json) = result {
+                complete(json["data"]["req_user"]["dislike"].intValue == 1)
+            } else {
+                complete(false)
+            }
+        }
+    }
+
     struct BangumiInfo: Codable, Hashable {
         struct Stat: Codable, Hashable {
             let coins, danmakus, favorite, favorites: Int
