@@ -255,6 +255,7 @@ class VideoPlayerViewController: CommonPlayerViewController {
                 if let kind = self?.viewModel.engineKind {
                     self?.installSurface(kind)
                     self?.loadingBackdropWaitsForExternalFrame = kind == .vlc
+                    self?.endOverlayWaitsForExternalEnd = kind == .vlc
                 }
                 plugins.forEach { self?.addPlugin(plugin: $0) }
                 self?.neighborPreloadTask = Task { [weak self] in

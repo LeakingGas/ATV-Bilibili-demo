@@ -14,10 +14,12 @@
 //  不记录账号、Cookie、带签名的链接。
 //
 
+import CoreImage
 import Darwin
 import Foundation
 import MachO
 import os
+import SnapKit
 import UIKit
 
 // MARK: - 信号处理用的全局状态（信号处理函数里不能分配内存、不能加锁）
@@ -446,30 +448,26 @@ extension Diag {
         top.present(alert, animated: true)
     }
 
+    static let exportHint = "用手机扫码（或在同一网络的电脑浏览器输入地址）打开，点「复制全部」后粘贴到聊天，或点「下载 txt」保存文件发过来。下载完成前请让本 App 保持在前台。"
+
     static func presentDLNAExport(from presenter: UIViewController) {
-        let message: String
-        do {
-            let address = try BTRTraceExport.shared.startDLNALog()
-            message = address + "\n\n用同一网络下的手机或电脑浏览器打开这个地址，点「复制全部」后粘贴到聊天，或点「下载 txt」保存文件发过来。下载完成前请让本 App 保持在前台。"
-        } catch {
-            message = "本地下载服务启动失败（错误码 \((error as NSError).code)）。"
-        }
-        let alert = UIAlertController(title: "导出投屏日志", message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "好", style: .cancel))
-        presenter.present(alert, animated: true)
+        presentLogExport(title: "导出投屏日志", from: presenter) { try BTRTraceExport.shared.startDLNALog() }
     }
 
     static func presentExport(from presenter: UIViewController) {
-        let message: String
+        presentLogExport(title: "导出运行日志", from: presenter) { try BTRTraceExport.shared.startDiagnostics() }
+    }
+
+    /// 弹出带二维码的导出页（电视上的文字没法复制，手机扫码直接打开）。
+    static func presentLogExport(title: String, from presenter: UIViewController, start: () throws -> String) {
         do {
-            let address = try BTRTraceExport.shared.startDiagnostics()
-            message = address + "\n\n用同一网络下的手机或电脑浏览器打开这个地址，点「复制全部」后粘贴到聊天，或点「下载 txt」保存文件发过来。下载完成前请让本 App 保持在前台。"
+            let address = try start()
+            presenter.present(LogExportViewController(title: title, address: address, hint: exportHint), animated: true)
         } catch {
-            message = "本地下载服务启动失败（错误码 \((error as NSError).code)）。"
+            let alert = UIAlertController(title: title, message: "本地下载服务启动失败（错误码 \((error as NSError).code)）。", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "好", style: .cancel))
+            presenter.present(alert, animated: true)
         }
-        let alert = UIAlertController(title: "导出运行日志", message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "好", style: .cancel))
-        presenter.present(alert, animated: true)
     }
 }
 
@@ -682,5 +680,98 @@ extension Diag {
             dlnaBytes = 0
         }
         dlnaBytes += writeAll(dlnaFD, dlnaFormatter.string(from: Date()) + " " + text + "\n")
+    }
+}
+
+// MARK: - 导出页（二维码）
+
+final class LogExportViewController: UIViewController {
+    private let titleText: String
+    private let address: String
+    private let hint: String
+    private let okButton = UIButton(type: .system)
+
+    init(title: String, address: String, hint: String) {
+        titleText = title
+        self.address = address
+        self.hint = hint
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .overFullScreen
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var preferredFocusEnvironments: [UIFocusEnvironment] { [okButton] }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        let blur = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
+        view.addSubview(blur)
+        blur.snp.makeConstraints { $0.edges.equalToSuperview() }
+
+        let titleLabel = UILabel()
+        titleLabel.text = titleText
+        titleLabel.font = .systemFont(ofSize: 48, weight: .bold)
+        titleLabel.textColor = .white
+
+        let qrBackground = UIView()
+        qrBackground.backgroundColor = .white
+        qrBackground.layer.cornerRadius = 24
+        let qr = UIImageView(image: Self.qrImage(address, side: 420))
+        qr.layer.magnificationFilter = .nearest
+        qrBackground.addSubview(qr)
+        qr.snp.makeConstraints { make in
+            make.edges.equalToSuperview().inset(28)
+            make.width.height.equalTo(420)
+        }
+
+        let addressLabel = UILabel()
+        addressLabel.text = address
+        addressLabel.font = .monospacedSystemFont(ofSize: 30, weight: .medium)
+        addressLabel.textColor = .white
+        addressLabel.textAlignment = .center
+        addressLabel.numberOfLines = 0
+
+        let hintLabel = UILabel()
+        hintLabel.text = hint
+        hintLabel.font = .systemFont(ofSize: 26)
+        hintLabel.textColor = UIColor.white.withAlphaComponent(0.7)
+        hintLabel.textAlignment = .center
+        hintLabel.numberOfLines = 0
+
+        okButton.setTitle("好", for: .normal)
+        okButton.titleLabel?.font = .systemFont(ofSize: 32, weight: .semibold)
+        okButton.addAction(UIAction { [weak self] _ in self?.dismiss(animated: true) }, for: .primaryActionTriggered)
+
+        let stack = UIStackView(arrangedSubviews: [titleLabel, qrBackground, addressLabel, hintLabel, okButton])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 32
+        stack.setCustomSpacing(20, after: addressLabel)
+        stack.setCustomSpacing(44, after: hintLabel)
+        view.addSubview(stack)
+        stack.snp.makeConstraints { make in
+            make.center.equalToSuperview()
+            make.width.lessThanOrEqualTo(1100)
+        }
+        okButton.snp.makeConstraints { make in
+            make.width.equalTo(360)
+            make.height.equalTo(86)
+        }
+    }
+
+    static func qrImage(_ text: String, side: CGFloat) -> UIImage? {
+        guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(Data(text.utf8), forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let output = filter.outputImage else { return nil }
+        let scale = (side / output.extent.width).rounded(.down)
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: max(1, scale), y: max(1, scale)))
+        guard let cgImage = CIContext().createCGImage(scaled, from: scaled.extent) else { return nil }
+        return UIImage(cgImage: cgImage)
     }
 }

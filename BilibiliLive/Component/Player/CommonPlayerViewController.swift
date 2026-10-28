@@ -95,6 +95,7 @@ class CommonPlayerViewController: UIViewController {
     /// 开始加载一个视频时调用；封面可以之后拿到再调一次补上。
     func showLoadingBackdrop(cover: URL?) {
         hideEndOverlay()
+        externalEnded = false
         loadingBackdrop.show(cover: cover)
     }
 
@@ -104,65 +105,78 @@ class CommonPlayerViewController: UIViewController {
     }
 
     // MARK: - 播完：最后一帧毛玻璃 + 中间的重播按钮
+    //
+    // 毛玻璃和按钮都在画面层（系统控制栏、下滑面板之下），系统界面出来时像盖住视频一样盖住它们。
+    // 按钮不拿焦点：结束画面下系统播放器一开始播放（按确认 / 播放键）就从头重播。
 
-    /// 毛玻璃放在画面层（控制栏、下滑面板之下）；按钮放在播放器上面（能拿到焦点）。
     private let endBlur = UIVisualEffectView(effect: UIBlurEffect(style: .regular))
-    private lazy var replayOverlay = PlayerReplayOverlayView()
+    private let replayBadge = PlayerReplayBadgeView()
     private(set) var endOverlayShown = false
-    /// 按钮是否显示并拿着焦点（按下方向键后让给系统播放器，好去推荐和评论）。
-    private var replayButtonActive = false
+    /// VLC 模式：「播完了」以 VLC 为准，影子先播完时等 VLC 的通知再显示。
+    var endOverlayWaitsForExternalEnd = false
+    private var externalEnded = false
+    private var endOverlayPending = false
 
     func showEndOverlay() {
+        if endOverlayWaitsForExternalEnd, !externalEnded {
+            endOverlayPending = true
+            Diag.mark("PLAYER \(Diag.id(self)) end overlay waits for VLC end")
+            return
+        }
         guard !endOverlayShown else { return }
         endOverlayShown = true
+        endOverlayPending = false
         Diag.mark("PLAYER \(Diag.id(self)) end overlay shown")
         restoreControls()
-        if endBlur.superview == nil, let overlay = playerVC.contentOverlayView {
+        guard let overlay = playerVC.contentOverlayView else { return }
+        if endBlur.superview == nil {
             endBlur.isUserInteractionEnabled = false
             overlay.addSubview(endBlur)
             endBlur.snp.makeConstraints { $0.edges.equalToSuperview() }
+            overlay.addSubview(replayBadge)
+            replayBadge.snp.makeConstraints { make in
+                make.center.equalToSuperview()
+                make.width.height.equalTo(260)
+            }
         }
-        endBlur.superview?.bringSubviewToFront(endBlur)
+        overlay.bringSubviewToFront(endBlur)
+        overlay.bringSubviewToFront(replayBadge)
         endBlur.isHidden = false
+        replayBadge.isHidden = false
+        replayBadge.setDimmed(transportBarVisible, animated: false)
         endBlur.alpha = 0
-        UIView.animate(withDuration: 0.3) { self.endBlur.alpha = 0.5 }
-        if replayOverlay.superview == nil {
-            replayOverlay.onReplay = { [weak self] in self?.replayFromStart() }
-            replayOverlay.onLeave = { [weak self] in self?.deactivateReplayButton() }
-            replayOverlay.onMenu = { [weak self] in self?.exitPlayer() }
-            view.addSubview(replayOverlay)
-            replayOverlay.snp.makeConstraints { $0.edges.equalToSuperview() }
+        replayBadge.alpha = 0
+        UIView.animate(withDuration: 0.3) {
+            self.endBlur.alpha = 0.5
+            self.replayBadge.alpha = 1
         }
-        activateReplayButton()
     }
 
     func hideEndOverlay() {
+        endOverlayPending = false
         guard endOverlayShown else { return }
         endOverlayShown = false
-        replayButtonActive = false
         Diag.mark("PLAYER \(Diag.id(self)) end overlay hidden")
-        UIView.animate(withDuration: 0.2, animations: { self.endBlur.alpha = 0 }) { _ in
-            if !self.endOverlayShown { self.endBlur.isHidden = true }
+        UIView.animate(withDuration: 0.2, animations: {
+            self.endBlur.alpha = 0
+            self.replayBadge.alpha = 0
+        }) { _ in
+            if !self.endOverlayShown {
+                self.endBlur.isHidden = true
+                self.replayBadge.isHidden = true
+            }
         }
-        replayOverlay.isHidden = true
-        setNeedsFocusUpdate()
     }
 
-    private func activateReplayButton() {
-        guard endOverlayShown else { return }
-        replayButtonActive = true
-        view.bringSubviewToFront(replayOverlay)
-        replayOverlay.isHidden = false
-        setNeedsFocusUpdate()
-        updateFocusIfNeeded()
+    /// VLC 播完了（VLCRendererPlugin 调用）。
+    func externalPlaybackEnded() {
+        externalEnded = true
+        if endOverlayPending { showEndOverlay() }
     }
 
-    /// 在按钮上按下 / 下滑：按钮让开，焦点交给系统播放器（再按下就是推荐和评论）。
-    private func deactivateReplayButton() {
-        replayButtonActive = false
-        replayOverlay.isHidden = true
-        setNeedsFocusUpdate()
-        updateFocusIfNeeded()
+    /// VLC 又开始播了。
+    func externalPlaybackResumed() {
+        externalEnded = false
     }
 
     private func replayFromStart() {
@@ -360,7 +374,6 @@ class CommonPlayerViewController: UIViewController {
     }
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
-        if endOverlayShown, replayButtonActive { return [replayOverlay.button] }
         return installedEngineKind == .system ? [playerVC.view] : []
     }
 
@@ -587,14 +600,8 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
     {
         transportBarVisible = visible
         Diag.mark("PLAYER \(Diag.id(self)) transportBar -> \(visible ? "visible" : "hidden")")
-        // 结束画面下，系统控制栏收起、焦点回到画面（不在下滑面板里）时，把重播按钮放回来。
-        if !visible, endOverlayShown, !replayButtonActive {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-                guard let self, self.endOverlayShown, !self.replayButtonActive, !self.transportBarVisible,
-                      self.focusIsOnVideoSurface, self.presentedViewController == nil else { return }
-                self.activateReplayButton()
-            }
-        }
+        // 系统界面出来时重播按钮暗下去（被界面盖住），收起时亮起来（提示按确认重播）。
+        if endOverlayShown { replayBadge.setDimmed(visible, animated: true) }
     }
 
     @objc func playerViewControllerShouldDismiss(_ playerViewController: AVPlayerViewController) -> Bool {
@@ -720,34 +727,31 @@ final class PlayerLoadingBackdropView: UIView {
     }
 }
 
-/// 播完后屏幕中间的「重播」按钮。只有按钮能拿焦点，其余区域不挡操作。
-final class PlayerReplayOverlayView: UIView {
-    let button: UIButton
-    var onReplay: (() -> Void)?
-    /// 按下方向键 / 下滑：离开按钮。
-    var onLeave: (() -> Void)?
-    var onMenu: (() -> Void)?
+/// 播完后屏幕中间的重播标记：毛玻璃圆形 + 回转箭头（不拿焦点，按确认键重播）。
+final class PlayerReplayBadgeView: UIView {
+    private let glass = UIVisualEffectView(effect: UIBlurEffect(style: .light))
+    private let icon = UIImageView()
 
     override init(frame: CGRect) {
-        var config = UIButton.Configuration.filled()
-        config.title = "重播"
-        config.image = UIImage(systemName: "arrow.counterclockwise")
-        config.imagePadding = 14
-        config.cornerStyle = .capsule
-        config.contentInsets = NSDirectionalEdgeInsets(top: 22, leading: 48, bottom: 22, trailing: 48)
-        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
-            var attributes = attributes
-            attributes.font = .systemFont(ofSize: 34, weight: .semibold)
-            return attributes
-        }
-        button = UIButton(configuration: config)
         super.init(frame: frame)
-        addSubview(button)
-        button.snp.makeConstraints { $0.center.equalToSuperview() }
-        button.addAction(UIAction { [weak self] _ in self?.onReplay?() }, for: .primaryActionTriggered)
-        let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swipedDown))
-        swipe.direction = .down
-        addGestureRecognizer(swipe)
+        isUserInteractionEnabled = false
+        glass.clipsToBounds = true
+        glass.layer.cornerRadius = 130
+        glass.layer.borderWidth = 1
+        glass.layer.borderColor = UIColor.white.withAlphaComponent(0.25).cgColor
+        glass.alpha = 0.85
+        addSubview(glass)
+        glass.snp.makeConstraints { $0.edges.equalToSuperview() }
+        icon.image = UIImage(systemName: "arrow.counterclockwise",
+                             withConfiguration: UIImage.SymbolConfiguration(pointSize: 110, weight: .medium))
+        icon.tintColor = .white
+        icon.contentMode = .center
+        addSubview(icon)
+        icon.snp.makeConstraints { $0.center.equalToSuperview() }
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.25
+        layer.shadowRadius = 24
+        layer.shadowOffset = CGSize(width: 0, height: 10)
     }
 
     @available(*, unavailable)
@@ -755,34 +759,12 @@ final class PlayerReplayOverlayView: UIView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let view = super.hitTest(point, with: event)
-        return view === self ? nil : view
-    }
-
-    @objc private func swipedDown() {
-        onLeave?()
-    }
-
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if presses.contains(where: { $0.type == .downArrow || $0.type == .menu }) { return }
-        super.pressesBegan(presses, with: event)
-    }
-
-    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if presses.contains(where: { $0.type == .menu }) {
-            onMenu?()
-            return
+    func setDimmed(_ dimmed: Bool, animated: Bool) {
+        let apply = {
+            self.transform = dimmed ? .identity : CGAffineTransform(scaleX: 1.06, y: 1.06)
+            self.glass.alpha = dimmed ? 0.55 : 0.85
+            self.icon.alpha = dimmed ? 0.6 : 1
         }
-        if presses.contains(where: { $0.type == .downArrow }) {
-            onLeave?()
-            return
-        }
-        super.pressesEnded(presses, with: event)
-    }
-
-    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if presses.contains(where: { $0.type == .downArrow || $0.type == .menu }) { return }
-        super.pressesCancelled(presses, with: event)
+        if animated { UIView.animate(withDuration: 0.25, animations: apply) } else { apply() }
     }
 }

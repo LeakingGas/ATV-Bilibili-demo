@@ -1254,7 +1254,7 @@ final class BTRTraceExport {
         stop()
         let server = HttpServer()
         server.listenAddressIPv4 = "0.0.0.0"
-        let token = UUID().uuidString.replacingOccurrences(of:"-",with:"").prefix(12).lowercased()
+        let token = UUID().uuidString.replacingOccurrences(of:"-",with:"").prefix(6).lowercased()
         let path = "/" + token + "/btr.jsonl"
         server[path] = { _ in
             BTRTrace.shared.freeze()

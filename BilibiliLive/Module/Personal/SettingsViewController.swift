@@ -553,9 +553,9 @@ extension SettingsViewController {
         if exporter.address != nil {
             alert.addAction(UIAlertAction(title:"冻结记录并显示下载地址",style:.default) { [weak self] _ in
                 BTRTrace.shared.freeze()
-                let result = UIAlertController(title:"下载过程记录",message:(exporter.address ?? "") + "\n\n用同一网络的电脑浏览器打开此地址，保存文件后发到聊天。保持本应用前台，下载完再关闭日志服务。",preferredStyle:.alert)
-                result.addAction(UIAlertAction(title:"确定",style:.cancel))
-                self?.present(result,animated:true)
+                let result = LogExportViewController(title: "下载过程记录", address: exporter.address ?? "",
+                                                     hint: "用手机扫码（或在同一网络的电脑浏览器输入地址）下载文件后发到聊天。保持本应用前台，下载完再关闭日志服务。")
+                self?.present(result, animated: true)
             })
             alert.addAction(UIAlertAction(title:"关闭日志下载服务",style:.default) { _ in exporter.stop() })
         }
