@@ -1207,6 +1207,41 @@ final class BTRTraceExport {
     private var server: HttpServer?
     private(set) var address: String?
     private(set) var diagAddress: String?
+    private(set) var dlnaAddress: String?
+
+    /// 只开下载服务导出投屏日志。
+    func startDLNALog() throws -> String {
+        if let dlnaAddress { return dlnaAddress }
+        _ = try start(recordBTR: false)
+        return dlnaAddress ?? ""
+    }
+
+    private static func logPage(title: String, text: String, txt: String, fileName: String) -> HttpResponse {
+        let escaped = text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+        let html = """
+        <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>\(title)</title><style>
+        body{margin:0;font:15px -apple-system,system-ui,sans-serif;background:#111;color:#eee}
+        header{position:sticky;top:0;display:flex;gap:10px;align-items:center;padding:12px 16px;background:#1c1c1e;border-bottom:1px solid #333}
+        button,a.btn{font:inherit;padding:10px 18px;border-radius:999px;border:0;background:#fff;color:#000;text-decoration:none}
+        a.btn{background:#333;color:#fff}#s{color:#8e8e93}
+        pre{margin:0;padding:16px;white-space:pre-wrap;word-break:break-all;font:12px ui-monospace,Menlo,monospace}
+        </style></head><body><header><button id="c">复制全部</button><a class="btn" href="\(txt)" download="\(fileName)">下载 txt</a><span id="s"></span></header>
+        <pre id="t">\(escaped)</pre><script>
+        document.getElementById('c').onclick=async()=>{const t=document.getElementById('t').innerText,s=document.getElementById('s');
+        try{await navigator.clipboard.writeText(t);s.textContent='已复制';}catch(e){const r=document.createRange();r.selectNodeContents(document.getElementById('t'));
+        const sel=getSelection();sel.removeAllRanges();sel.addRange(r);s.textContent=document.execCommand('copy')?'已复制':'已全选，请手动复制';}};
+        </script></body></html>
+        """
+        let bytes = Data(html.utf8)
+        return HttpResponse.raw(200,"OK",["Content-Type":"text/html; charset=utf-8",
+            "Cache-Control":"no-store","Content-Length":String(bytes.count)]) { writer in
+            try writer.write(bytes)
+        }
+    }
 
     /// 只开下载服务导出闪退诊断报告（不清空、不开始 BTR 记录）。
     func startDiagnostics() throws -> String {
@@ -1241,32 +1276,17 @@ final class BTRTraceExport {
         }
         // 带「复制全部」按钮的网页，手机上也方便复制。
         let pagePath = "/" + token + "/diag"
-        server[pagePath] = { _ in
-            let escaped = Diag.exportText()
-                .replacingOccurrences(of: "&", with: "&amp;")
-                .replacingOccurrences(of: "<", with: "&lt;")
-                .replacingOccurrences(of: ">", with: "&gt;")
-            let html = """
-            <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-            <title>诊断日志</title><style>
-            body{margin:0;font:15px -apple-system,system-ui,sans-serif;background:#111;color:#eee}
-            header{position:sticky;top:0;display:flex;gap:10px;align-items:center;padding:12px 16px;background:#1c1c1e;border-bottom:1px solid #333}
-            button,a.btn{font:inherit;padding:10px 18px;border-radius:999px;border:0;background:#fff;color:#000;text-decoration:none}
-            a.btn{background:#333;color:#fff}#s{color:#8e8e93}
-            pre{margin:0;padding:16px;white-space:pre-wrap;word-break:break-all;font:12px ui-monospace,Menlo,monospace}
-            </style></head><body><header><button id="c">复制全部</button><a class="btn" href="diag.txt" download="bili-diag.txt">下载 txt</a><span id="s"></span></header>
-            <pre id="t">\(escaped)</pre><script>
-            document.getElementById('c').onclick=async()=>{const t=document.getElementById('t').innerText,s=document.getElementById('s');
-            try{await navigator.clipboard.writeText(t);s.textContent='已复制';}catch(e){const r=document.createRange();r.selectNodeContents(document.getElementById('t'));
-            const sel=getSelection();sel.removeAllRanges();sel.addRange(r);s.textContent=document.execCommand('copy')?'已复制':'已全选，请手动复制';}};
-            </script></body></html>
-            """
-            let bytes = Data(html.utf8)
-            return HttpResponse.raw(200,"OK",["Content-Type":"text/html; charset=utf-8",
+        server[pagePath] = { _ in Self.logPage(title: "运行日志", text: Diag.exportText(), txt: "diag.txt", fileName: "bili-diag.txt") }
+        // 投屏日志单独一页。
+        server["/" + token + "/dlna.txt"] = { _ in
+            let bytes = Data(Diag.dlnaExportText().utf8)
+            return HttpResponse.raw(200,"OK",["Content-Type":"text/plain; charset=utf-8",
                 "Cache-Control":"no-store","Content-Length":String(bytes.count)]) { writer in
                 try writer.write(bytes)
             }
         }
+        let dlnaPagePath = "/" + token + "/dlna"
+        server[dlnaPagePath] = { _ in Self.logPage(title: "投屏日志", text: Diag.dlnaExportText(), txt: "dlna.txt", fileName: "bili-dlna.txt") }
         do { try server.start(0,forceIPv4:true) }
         catch { server.stop(); throw error }
         let port: Int
@@ -1277,6 +1297,7 @@ final class BTRTraceExport {
         let address = base + path
         self.address = address
         diagAddress = base + pagePath
+        dlnaAddress = base + dlnaPagePath
         if recordBTR {
             BTRTrace.shared.start()
             BTRTrace.shared.event("recording_started")
@@ -1285,7 +1306,7 @@ final class BTRTraceExport {
     }
     func stop() {
         BTRTrace.shared.freeze()
-        server?.stop(); server = nil; address = nil; diagAddress = nil
+        server?.stop(); server = nil; address = nil; diagAddress = nil; dlnaAddress = nil
     }
     private static func localIPv4() -> String? {
         var list: UnsafeMutablePointer<ifaddrs>?

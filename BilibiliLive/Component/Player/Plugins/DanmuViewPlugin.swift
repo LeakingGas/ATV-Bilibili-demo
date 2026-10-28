@@ -94,6 +94,13 @@ extension DanmuViewPlugin: CommonPlayerPlugin {
         danMuView.play()
     }
 
+    /// 显示区域立刻生效：按新范围重排轨道，正在飘的清掉重新出。
+    private func applyDisplayArea() {
+        danMuView.displayArea = Settings.danmuArea.percent
+        danMuView.clean()
+        danMuView.recaculateTracks()
+    }
+
     func playerDidPause(engine: PlayerEngine) {
         danMuView.pause()
     }
@@ -112,7 +119,18 @@ extension DanmuViewPlugin: CommonPlayerPlugin {
         let danmuAILevelMenu = UIMenu(title: "弹幕屏蔽等级", options: [.displayInline, .singleSelection], children: [Int32](1...10).map { level in
             UIAction(title: "\(level)", state: level == Settings.danmuAILevel ? .on : .off) { _ in Settings.danmuAILevel = level }
         })
-        let danmuSettingMenu = UIMenu(title: "弹幕设置", image: UIImage(systemName: "keyboard.badge.ellipsis"), children: [danmuDurationMenu, danmuAILevelMenu])
+        let danmuAlphaMenu = UIMenu(title: "透明度", options: [.displayInline, .singleSelection], children: DanmuAlpha.allCases.map { alpha in
+            UIAction(title: alpha.title, state: alpha == Settings.danmuAlpha ? .on : .off) { _ in Settings.danmuAlpha = alpha }
+        })
+        // 和设置页「弹幕 → 显示区域」是同一个值；从屏幕顶部算起。
+        let danmuAreaMenu = UIMenu(title: "显示区域", options: [.displayInline, .singleSelection], children: [DanmuArea.style_0, .style_75, .style_50, .style_25].map { area in
+            UIAction(title: area.title, state: area == Settings.danmuArea ? .on : .off) { [weak self] _ in
+                Settings.danmuArea = area
+                self?.applyDisplayArea()
+            }
+        })
+        let danmuSettingMenu = UIMenu(title: "弹幕设置", image: UIImage(systemName: "keyboard.badge.ellipsis"),
+                                      children: [danmuDurationMenu, danmuAILevelMenu, danmuAlphaMenu, danmuAreaMenu])
 
         return [danmuAction, danmuSettingMenu]
     }

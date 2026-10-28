@@ -593,7 +593,7 @@ final class VideoPlayerFeedInfoViewController: UIViewController {
             return layoutSection
         case .episodes, .uploader, .related:
             let item = NSCollectionLayoutItem(layoutSize: .init(widthDimension: .fractionalWidth(1), heightDimension: .fractionalHeight(1)))
-            let group = NSCollectionLayoutGroup.horizontal(layoutSize: .init(widthDimension: .absolute(320), heightDimension: .absolute(248)), subitems: [item])
+            let group = NSCollectionLayoutGroup.horizontal(layoutSize: .init(widthDimension: .absolute(368), heightDimension: .absolute(285)), subitems: [item])
             let layoutSection = NSCollectionLayoutSection(group: group)
             layoutSection.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 48, bottom: 24, trailing: 48)
             layoutSection.interGroupSpacing = 32

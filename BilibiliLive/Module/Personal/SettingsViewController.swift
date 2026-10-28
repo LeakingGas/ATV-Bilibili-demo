@@ -307,12 +307,16 @@ class SettingsViewController: UIViewController {
             }
 
             SectionModel(title: "诊断") {
-                Navigation(title: "闪退日志", desp: "导出") { [weak self] in
+                Navigation(title: "运行日志", desp: "导出") { [weak self] in
                     guard let self else { return }
                     Diag.presentExport(from: self)
                 }
-                Navigation(title: "播放诊断日志", desp: "记录 / 导出") { [weak self] in
+                Navigation(title: "下载过程记录", desp: "记录 / 导出") { [weak self] in
                     self?.showBTRTraceMenu()
+                }
+                Navigation(title: "投屏日志", desp: "导出") { [weak self] in
+                    guard let self else { return }
+                    Diag.presentDLNAExport(from: self)
                 }
             }
         }
@@ -537,7 +541,7 @@ extension SettingsViewController {
         let exporter = BTRTraceExport.shared
         let message = exporter.address.map { "当前下载地址：\n" + $0 + "\n下载会冻结记录。请让应用保持前台。" }
             ?? "先开始记录，再播放同一视频：1080 播放后切换 4K，卡住约 15 秒后返回这里冻结导出。最多记录 10 分钟，不记录账号、签名链接或视频内容。"
-        let alert = UIAlertController(title:"播放诊断日志",message:message,preferredStyle:.alert)
+        let alert = UIAlertController(title:"下载过程记录",message:message,preferredStyle:.alert)
         alert.addAction(UIAlertAction(title:"开始新记录（清空旧记录）",style:.default) { [weak self] _ in
             do { _ = try exporter.start(); self?.showBTRTraceMenu() }
             catch {
@@ -549,7 +553,7 @@ extension SettingsViewController {
         if exporter.address != nil {
             alert.addAction(UIAlertAction(title:"冻结记录并显示下载地址",style:.default) { [weak self] _ in
                 BTRTrace.shared.freeze()
-                let result = UIAlertController(title:"下载诊断日志",message:(exporter.address ?? "") + "\n\n用同一网络的电脑浏览器打开此地址，保存文件后发到聊天。保持本应用前台，下载完再关闭日志服务。",preferredStyle:.alert)
+                let result = UIAlertController(title:"下载过程记录",message:(exporter.address ?? "") + "\n\n用同一网络的电脑浏览器打开此地址，保存文件后发到聊天。保持本应用前台，下载完再关闭日志服务。",preferredStyle:.alert)
                 result.addAction(UIAlertAction(title:"确定",style:.cancel))
                 self?.present(result,animated:true)
             })

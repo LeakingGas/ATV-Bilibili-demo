@@ -267,6 +267,9 @@ class VideoPlayerViewController: CommonPlayerViewController {
             viewModel.onExit = { [weak self] in
                 self?.exitPlayer()
             }
+            viewModel.onPlaybackFinished = { [weak self] in
+                self?.showEndOverlay()
+            }
         }
 
         if playMode == .feedFlow {

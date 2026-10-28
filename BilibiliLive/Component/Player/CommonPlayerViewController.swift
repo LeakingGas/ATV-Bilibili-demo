@@ -94,12 +94,97 @@ class CommonPlayerViewController: UIViewController {
 
     /// 开始加载一个视频时调用；封面可以之后拿到再调一次补上。
     func showLoadingBackdrop(cover: URL?) {
+        hideEndOverlay()
         loadingBackdrop.show(cover: cover)
     }
 
     /// 画面出来了，淡出加载背景。
     func loadingBackdropFrameReady() {
         loadingBackdrop.hide()
+    }
+
+    // MARK: - 播完：最后一帧毛玻璃 + 中间的重播按钮
+
+    /// 毛玻璃放在画面层（控制栏、下滑面板之下）；按钮放在播放器上面（能拿到焦点）。
+    private let endBlur = UIVisualEffectView(effect: UIBlurEffect(style: .regular))
+    private lazy var replayOverlay = PlayerReplayOverlayView()
+    private(set) var endOverlayShown = false
+    /// 按钮是否显示并拿着焦点（按下方向键后让给系统播放器，好去推荐和评论）。
+    private var replayButtonActive = false
+
+    func showEndOverlay() {
+        guard !endOverlayShown else { return }
+        endOverlayShown = true
+        Diag.mark("PLAYER \(Diag.id(self)) end overlay shown")
+        restoreControls()
+        if endBlur.superview == nil, let overlay = playerVC.contentOverlayView {
+            endBlur.isUserInteractionEnabled = false
+            overlay.addSubview(endBlur)
+            endBlur.snp.makeConstraints { $0.edges.equalToSuperview() }
+        }
+        endBlur.superview?.bringSubviewToFront(endBlur)
+        endBlur.isHidden = false
+        endBlur.alpha = 0
+        UIView.animate(withDuration: 0.3) { self.endBlur.alpha = 0.5 }
+        if replayOverlay.superview == nil {
+            replayOverlay.onReplay = { [weak self] in self?.replayFromStart() }
+            replayOverlay.onLeave = { [weak self] in self?.deactivateReplayButton() }
+            replayOverlay.onMenu = { [weak self] in self?.exitPlayer() }
+            view.addSubview(replayOverlay)
+            replayOverlay.snp.makeConstraints { $0.edges.equalToSuperview() }
+        }
+        activateReplayButton()
+    }
+
+    func hideEndOverlay() {
+        guard endOverlayShown else { return }
+        endOverlayShown = false
+        replayButtonActive = false
+        Diag.mark("PLAYER \(Diag.id(self)) end overlay hidden")
+        UIView.animate(withDuration: 0.2, animations: { self.endBlur.alpha = 0 }) { _ in
+            if !self.endOverlayShown { self.endBlur.isHidden = true }
+        }
+        replayOverlay.isHidden = true
+        setNeedsFocusUpdate()
+    }
+
+    private func activateReplayButton() {
+        guard endOverlayShown else { return }
+        replayButtonActive = true
+        view.bringSubviewToFront(replayOverlay)
+        replayOverlay.isHidden = false
+        setNeedsFocusUpdate()
+        updateFocusIfNeeded()
+    }
+
+    /// 在按钮上按下 / 下滑：按钮让开，焦点交给系统播放器（再按下就是推荐和评论）。
+    private func deactivateReplayButton() {
+        replayButtonActive = false
+        replayOverlay.isHidden = true
+        setNeedsFocusUpdate()
+        updateFocusIfNeeded()
+    }
+
+    private func replayFromStart() {
+        guard let engine = currentEngine else { return }
+        Diag.mark("PLAYER \(Diag.id(self)) replay")
+        hideEndOverlay()
+        isEnd = false
+        engine.seek(to: 0) { _ in
+            DispatchQueue.main.async { engine.play() }
+        }
+    }
+
+    /// 结束画面下又开始播了（在系统播放器上按了播放、拖回去播）：收起结束画面；还停在结尾就从头播。
+    private func handleStartWhileEnded(engine: PlayerEngine) {
+        guard endOverlayShown else { return }
+        let duration = engine.duration
+        if duration > 0, engine.currentTime >= duration - 1 {
+            replayFromStart()
+        } else {
+            isEnd = false
+            hideEndOverlay()
+        }
     }
 
     private func installAVKitSurface() {
@@ -275,6 +360,7 @@ class CommonPlayerViewController: UIViewController {
     }
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
+        if endOverlayShown, replayButtonActive { return [replayOverlay.button] }
         return installedEngineKind == .system ? [playerVC.view] : []
     }
 
@@ -427,6 +513,7 @@ extension CommonPlayerViewController {
     private func playerRateDidChange(engine: AVPlayerEngine) {
         guard currentEngine === engine else { return }
         if engine.player.rate > 0 {
+            handleStartWhileEnded(engine: engine)
             activePlugins.forEach { $0.playerDidStart(engine: engine) }
             playerDidStart(engine: engine)
         } else if engine.player.rate == 0 {
@@ -500,6 +587,14 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
     {
         transportBarVisible = visible
         Diag.mark("PLAYER \(Diag.id(self)) transportBar -> \(visible ? "visible" : "hidden")")
+        // 结束画面下，系统控制栏收起、焦点回到画面（不在下滑面板里）时，把重播按钮放回来。
+        if !visible, endOverlayShown, !replayButtonActive {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                guard let self, self.endOverlayShown, !self.replayButtonActive, !self.transportBarVisible,
+                      self.focusIsOnVideoSurface, self.presentedViewController == nil else { return }
+                self.activateReplayButton()
+            }
+        }
     }
 
     @objc func playerViewControllerShouldDismiss(_ playerViewController: AVPlayerViewController) -> Bool {
@@ -622,5 +717,72 @@ final class PlayerLoadingBackdropView: UIView {
         UIView.animate(withDuration: 0.3, animations: { self.alpha = 0 }) { finished in
             if finished, self.alpha == 0 { self.isHidden = true }
         }
+    }
+}
+
+/// 播完后屏幕中间的「重播」按钮。只有按钮能拿焦点，其余区域不挡操作。
+final class PlayerReplayOverlayView: UIView {
+    let button: UIButton
+    var onReplay: (() -> Void)?
+    /// 按下方向键 / 下滑：离开按钮。
+    var onLeave: (() -> Void)?
+    var onMenu: (() -> Void)?
+
+    override init(frame: CGRect) {
+        var config = UIButton.Configuration.filled()
+        config.title = "重播"
+        config.image = UIImage(systemName: "arrow.counterclockwise")
+        config.imagePadding = 14
+        config.cornerStyle = .capsule
+        config.contentInsets = NSDirectionalEdgeInsets(top: 22, leading: 48, bottom: 22, trailing: 48)
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = .systemFont(ofSize: 34, weight: .semibold)
+            return attributes
+        }
+        button = UIButton(configuration: config)
+        super.init(frame: frame)
+        addSubview(button)
+        button.snp.makeConstraints { $0.center.equalToSuperview() }
+        button.addAction(UIAction { [weak self] _ in self?.onReplay?() }, for: .primaryActionTriggered)
+        let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swipedDown))
+        swipe.direction = .down
+        addGestureRecognizer(swipe)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let view = super.hitTest(point, with: event)
+        return view === self ? nil : view
+    }
+
+    @objc private func swipedDown() {
+        onLeave?()
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.type == .downArrow || $0.type == .menu }) { return }
+        super.pressesBegan(presses, with: event)
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.type == .menu }) {
+            onMenu?()
+            return
+        }
+        if presses.contains(where: { $0.type == .downArrow }) {
+            onLeave?()
+            return
+        }
+        super.pressesEnded(presses, with: event)
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.type == .downArrow || $0.type == .menu }) { return }
+        super.pressesCancelled(presses, with: event)
     }
 }

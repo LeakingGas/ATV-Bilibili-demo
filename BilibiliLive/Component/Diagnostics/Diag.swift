@@ -366,7 +366,6 @@ enum Diag {
         text += "---- crash.log ----\n" + demangle(read("crash.log")) + "\n"
         text += "---- events.log 末尾 ----\n" + tail(read("events.log"), lines: 2500) + "\n\n"
         text += "======== 最近的起播记录（startups.log）========\n" + startupExport(lines: 15000) + "\n\n"
-        text += "======== 投屏记录（dlna.log）========\n" + tail(read("dlna.log"), lines: 4000) + "\n\n"
         text += "======== 应用日志末尾 ========\n"
         for path in Logger.logFilePaths.prefix(2).reversed() {
             if let data = FileManager.default.contents(atPath: path) {
@@ -438,13 +437,26 @@ extension Diag {
         clearAbnormalNotice()
         let top = root.topMostViewController()
         let alert = UIAlertController(title: "上次 App 异常退出",
-                                      message: "\(verdict)\n\n已自动保存诊断记录，可以现在导出发给开发者，也可以稍后在 设置 › 闪退诊断日志 里导出。",
+                                      message: "\(verdict)\n\n已自动保存诊断记录，可以现在导出发给开发者，也可以稍后在 设置 › 诊断 › 运行日志 里导出。",
                                       preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "导出诊断日志", style: .default) { _ in
             presentExport(from: top)
         })
         alert.addAction(UIAlertAction(title: "稍后", style: .cancel))
         top.present(alert, animated: true)
+    }
+
+    static func presentDLNAExport(from presenter: UIViewController) {
+        let message: String
+        do {
+            let address = try BTRTraceExport.shared.startDLNALog()
+            message = address + "\n\n用同一网络下的手机或电脑浏览器打开这个地址，点「复制全部」后粘贴到聊天，或点「下载 txt」保存文件发过来。下载完成前请让本 App 保持在前台。"
+        } catch {
+            message = "本地下载服务启动失败（错误码 \((error as NSError).code)）。"
+        }
+        let alert = UIAlertController(title: "导出投屏日志", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "好", style: .cancel))
+        presenter.present(alert, animated: true)
     }
 
     static func presentExport(from presenter: UIViewController) {
@@ -455,7 +467,7 @@ extension Diag {
         } catch {
             message = "本地下载服务启动失败（错误码 \((error as NSError).code)）。"
         }
-        let alert = UIAlertController(title: "导出诊断日志", message: message, preferredStyle: .alert)
+        let alert = UIAlertController(title: "导出运行日志", message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "好", style: .cancel))
         presenter.present(alert, animated: true)
     }
@@ -648,6 +660,13 @@ extension Diag {
         formatter.dateFormat = "MM-dd HH:mm:ss.SSS"
         return formatter
     }()
+
+    /// 投屏日志导出内容。
+    static func dlnaExportText() -> String {
+        let status = Thread.isMainThread ? BiliBiliUpnpDMR.shared.statusText : DispatchQueue.main.sync { BiliBiliUpnpDMR.shared.statusText }
+        return "BilibiliLive 投屏日志\n生成于 \(ISO8601DateFormatter().string(from: Date()))\n当前 build \(buildDescription)\n当前状态：\(status)\n\n"
+            + tail(read("dlna.log"), lines: 6000)
+    }
 
     static func dlna(_ text: String) {
         dlnaLock.lock()

@@ -44,6 +44,8 @@ enum ResumeChoice {
 class VideoPlayerViewModel {
     let loadResult = PassthroughSubject<Result<[CommonPlayerPlugin], String>, Never>()
     var onExit: (() -> Void)?
+    /// 播完且没有下一集：停在最后一帧，显示重播。
+    var onPlaybackFinished: (() -> Void)?
     var onPlayInfoChanged: ((PlayInfo) -> Void)?
     /// 开始加载 / 拿到详情时的封面，用来显示加载背景。
     var onLoadingCover: ((URL?) -> Void)?
@@ -488,7 +490,7 @@ class VideoPlayerViewModel {
         let playlist = VideoPlayListPlugin(sequenceProvider: sequenceProvider)
         playlist.onPlayEnd = { [weak self] in
             guard self?.playMode == .regular else { return }
-            self?.onExit?()
+            self?.onPlaybackFinished?()
         }
         playlist.onPlayNextWithInfo = {
             [weak self] info in

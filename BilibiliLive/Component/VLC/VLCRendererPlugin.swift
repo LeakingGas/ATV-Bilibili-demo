@@ -348,7 +348,11 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
             if abs(vlc.rate - rate) > 0.01 { vlc.rate = rate }
             if userPaused {
                 userPaused = false
-                if mediaLoaded, !vlc.isPlaying { vlc.play() }
+                if vlcFinished {
+                    startUserSeek(to: masterTime)
+                } else if mediaLoaded, !vlc.isPlaying {
+                    vlc.play()
+                }
             }
         } else if rate == 0, masterEverPlayed, master.timeControlStatus == .paused {
             // 用户暂停（影子在等数据时是 waiting，不是 paused）。
@@ -371,7 +375,17 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
         startUserSeek(to: target)
     }
 
+    /// VLC 播完后媒体已经结束，跳转 / 播放都不会生效，要从目标位置重新打开。
+    private var vlcFinished: Bool {
+        mediaLoaded && (vlc.state == .ended || vlc.state == .stopped)
+    }
+
     private func startUserSeek(to target: Double) {
+        if vlcFinished {
+            BTRTrace.shared.event("vlc_reopen_after_end", ["target": target])
+            startLoad(at: target, maxQuality: lastMaxQuality, streamIndex: lastStreamIndex)
+            return
+        }
         vlcSeekPending = (target, Date())
         lastCorrectionAt = Date()
         BTRTrace.shared.event("vlc_user_seek", ["target": target, "vlc": vlcTime])
@@ -390,6 +404,8 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
         if state == .ended || state == .error {
             gate.isOpen = true
             spinner.stopAnimating()
+            // VLC 播完可能黑屏：露出系统播放器的最后一帧（上面会盖结束画面的毛玻璃）。
+            if state == .ended, !videoView.isHidden { videoView.isHidden = true }
             return
         }
 
