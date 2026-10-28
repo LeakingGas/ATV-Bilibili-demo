@@ -95,7 +95,7 @@ final class VLCPlayerSurface: UIViewController, PlayerHost {
         didSet { rebuildContextualButtons() }
     }
 
-    var infoViewActions: [UIAction] = [] {
+    var infoActions: [UIAction] = [] {
         didSet { rebuildButtons() }
     }
 
@@ -597,7 +597,7 @@ final class VLCPlayerSurface: UIViewController, PlayerHost {
         guard isViewLoaded else { return }
         let focusedIndex = barButtons.firstIndex { $0.isFocused }
         barButtons.forEach { $0.removeFromSuperview() }
-        barButtons = (transportBarCustomMenuItems + infoViewActions.map { $0 as UIMenuElement }).map { element in
+        barButtons = (transportBarCustomMenuItems + infoActions.map { $0 as UIMenuElement }).map { element in
             let button = VLCBarButton(element: element)
             if let action = element as? UIAction {
                 button.addAction(UIAction { [weak self, weak button] _ in

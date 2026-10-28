@@ -58,14 +58,13 @@ extension PlayerEngine {
     }
 }
 
-@MainActor
 protocol PlayerHost: AnyObject {
     /// 用来弹窗、挂手势、显示提示动画的视图控制器。
     var hostViewController: UIViewController { get }
     /// 画面右下角的按钮（跳过广告等）。
     var contextualActions: [UIAction] { get set }
-    /// 下滑面板 / 控制栏上的附加操作（下一条）。
-    var infoViewActions: [UIAction] { get set }
+    /// 下滑面板 / 控制栏上的附加操作（下一条）。系统播放器对应 infoViewActions（可为 nil）。
+    var infoActions: [UIAction] { get set }
     /// 下滑面板的内容页（推荐和评论）。
     var customInfoViewControllers: [UIViewController] { get set }
     /// 底部控制栏的按钮和菜单（点赞、画质、播放设置、弹幕……）。
@@ -81,6 +80,11 @@ protocol PlayerHost: AnyObject {
 extension AVPlayerViewController: PlayerHost {
     var hostViewController: UIViewController { self }
     var avPlayerViewController: AVPlayerViewController? { self }
+
+    var infoActions: [UIAction] {
+        get { infoViewActions ?? [] }
+        set { infoViewActions = newValue }
+    }
 
     func applyPlaybackSpeed(_ speed: PlaySpeed) {
         player?.currentItem?.audioTimePitchAlgorithm = .timeDomain

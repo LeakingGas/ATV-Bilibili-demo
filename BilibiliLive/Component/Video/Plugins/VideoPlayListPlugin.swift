@@ -30,7 +30,7 @@ class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
             return (sequenceProvider.peekPrevious(), sequenceProvider.peekNext())
         }
         let next = menuState.1
-        var actions = playerVC.infoViewActions.filter {
+        var actions = playerVC.infoActions.filter {
             !$0.identifier.rawValue.hasPrefix(nextActionIdentifierPrefix)
         }
 
@@ -46,7 +46,7 @@ class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
             actions.append(nextAction)
         }
 
-        playerVC.infoViewActions = actions
+        playerVC.infoActions = actions
     }
 
     func addMenuItems(current: inout [UIMenuElement]) -> [UIMenuElement] {
