@@ -24,6 +24,9 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private var lastImmediateKick = -Double.infinity
     private let isMuted: Bool
     private let mediaWarmupManager: PlayerMediaWarmupManager?
+    /// VLC 模式：本插件只播一路静音的低码率「影子」视频（这条流在 dash.video 里的位置），
+    /// 给系统播放器界面提供时间轴和拖动预览，画面和声音由 VLCRendererPlugin 输出。
+    private let shadowStreamIndex: Int?
     private var currentQualityId: Int?
     private var resumeState = PlaybackResumeState()
     // 记录最近一次实际用于加载的 maxQuality/streamIndex，host 切换时原样复用，
@@ -96,8 +99,10 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
          reportWatchHistory: Bool = true,
          minimizeStalling: Bool = true,
          isMuted: Bool = false,
-         mediaWarmupManager: PlayerMediaWarmupManager? = nil)
+         mediaWarmupManager: PlayerMediaWarmupManager? = nil,
+         shadowStreamIndex: Int? = nil)
     {
+        self.shadowStreamIndex = shadowStreamIndex
         self.playInfo = playInfo
         playData = detailData
         self.reportWatchHistory = reportWatchHistory
@@ -282,7 +287,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         Diag.mark("BPLAY \(Diag.id(self)) playerDidLoad aid=\(playData.aid) cid=\(playData.cid) start=\(playData.playerStartPos ?? -1)")
         self.playerVC = playerVC
         playerVC.player = nil
-        startLoad(urlInfo: playData.videoPlayURLInfo, playerInfo: playData.playerInfo)
+        startLoad(urlInfo: playData.videoPlayURLInfo, playerInfo: playData.playerInfo, streamIndex: shadowStreamIndex)
     }
 
     func playerWillStart(engine: PlayerEngine) {
@@ -494,7 +499,8 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         guard let item = player.currentItem, let session = playerDelegate?.btrPlayback else { return }
         let position = player.currentTime().seconds
         guard position.isFinite else { return }
-        if player.rate > 0 { btrLastRate = Double(player.rate) }
+        // VLC 模式下影子播放器会被临时调到极低速率等 VLC，那不是用户的倍速。
+        if player.rate > 0.1 { btrLastRate = Double(player.rate) }
         // loadedTimeRanges may contain disconnected seek islands. Only merge ranges
         // contiguous with the playhead, never count a distant prefetched island.
         let ranges = item.loadedTimeRanges.map { $0.timeRangeValue }.sorted { $0.start.seconds < $1.start.seconds }

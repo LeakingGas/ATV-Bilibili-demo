@@ -4,9 +4,9 @@
 //
 //  Created by yicheng on 2024/5/23.
 //
-//  播放器容器：管理插件，把内核事件分发给插件。界面有两种（统一底层，见 PlayerEngine.swift）：
-//  - 系统播放器：AVPlayerViewController（返回键等系统问题的兜底逻辑都在这里）。
-//  - VLC：VLCPlayerSurface（仿照系统播放器做的界面）。
+//  播放器容器：管理插件，把内核事件分发给插件（统一底层，见 PlayerEngine.swift）。
+//  界面始终是系统播放器 AVPlayerViewController（返回键等系统问题的兜底逻辑都在这里）。
+//  VLC 模式下系统播放器播一路静音的低码率影子视频提供界面和时间轴，VLC 画面叠在上面（VLCRendererPlugin）。
 //
 
 import AVKit
@@ -29,16 +29,15 @@ class CommonPlayerViewController: UIViewController {
     /// 已请求退出（播放器上面还盖着弹窗时，本控制器的 isBeingDismissed 可能不为真）。
     private(set) var exitRequested = false
 
-    /// 进入时就装上的界面；nil 表示等加载结果出来再决定（设置里选了 VLC / 自动时）。
+    /// 进入时就装上的界面。
     var initialEngineKind: PlayerEngineKind? = .system
-    /// 当前装着的界面。
+    /// 当前装着的界面（只有系统播放器界面）。
     private(set) var installedEngineKind: PlayerEngineKind?
-    private var vlcSurface: VLCPlayerSurface?
-    /// 当前内核（系统播放器：包着 playerVC.player；VLC：VLCPlayerEngine）。
+    /// 当前内核（包着 playerVC.player）。
     private(set) var currentEngine: PlayerEngine?
 
     /// 插件看到的界面。
-    var playerHost: PlayerHost { vlcSurface ?? playerVC }
+    var playerHost: PlayerHost { playerVC }
 
     func exitPlayer(animated: Bool = true) {
         guard !exitRequested else { return }
@@ -67,30 +66,20 @@ class CommonPlayerViewController: UIViewController {
         if let initialEngineKind { installSurface(initialEngineKind) }
     }
 
-    // MARK: - 界面（系统 / VLC）
+    // MARK: - 界面
 
-    /// 装上指定的界面；已经装着别的界面时先把插件和旧界面拆掉。
+    /// 装上系统播放器界面（VLC 模式也用它，见 VLCRendererPlugin）。
     func installSurface(_ kind: PlayerEngineKind) {
-        guard installedEngineKind != kind else { return }
-        if installedEngineKind != nil {
-            Diag.mark("PLAYER \(Diag.id(self)) switch surface -> \(kind)")
-            removeAllPlugins()
-            uninstallSurface()
-        }
-        installedEngineKind = kind
-        switch kind {
-        case .system:
-            installAVKitSurface()
-        case .vlc:
-            let surface = VLCPlayerSurface()
-            surface.surfaceDelegate = self
-            addChild(surface)
-            view.addSubview(surface.view)
-            surface.view.snp.makeConstraints { $0.edges.equalToSuperview() }
-            surface.didMove(toParent: self)
-            vlcSurface = surface
-        }
+        guard installedEngineKind == nil else { return }
+        installedEngineKind = .system
+        installAVKitSurface()
         setNeedsFocusUpdate()
+    }
+
+    /// VLC 模式：画中画里只会是低码率的影子视频，关掉。
+    func setPictureInPictureAllowed(_ allowed: Bool) {
+        allowsPictureInPicturePlayback = allowed
+        playerVC.allowsPictureInPicturePlayback = allowed
     }
 
     private var avkitObserved = false
@@ -119,29 +108,6 @@ class CommonPlayerViewController: UIViewController {
         observations.insert(playerObservation)
     }
 
-    private func uninstallSurface() {
-        switch installedEngineKind {
-        case .system:
-            cleanUpObserver()
-            let player = playerVC.player
-            player?.pause()
-            player?.replaceCurrentItem(with: nil)
-            playerVC.player = nil
-            playerVC.willMove(toParent: nil)
-            playerVC.view.removeFromSuperview()
-            playerVC.removeFromParent()
-        case .vlc:
-            vlcSurface?.shutdownEngine()
-            vlcSurface?.willMove(toParent: nil)
-            vlcSurface?.view.removeFromSuperview()
-            vlcSurface?.removeFromParent()
-            vlcSurface = nil
-        case nil:
-            break
-        }
-        currentEngine = nil
-        installedEngineKind = nil
-    }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
@@ -172,7 +138,6 @@ class CommonPlayerViewController: UIViewController {
     // 返回键一路传到 UIKit，被当作「关闭当前弹出的页面」直接把播放器关了。
     // 这里在按下返回的那一刻记录：控制栏是否显示、焦点是否在画面上（不在按钮或菜单里）。
     // 两者都成立时拦下这次返回，让控制栏收起（AVKit 自己收了就什么都不做），不关闭播放器。
-    // VLC 界面自己处理返回键，不会走到这里。
     private var interceptMenuPress = false
     /// 最近一次「控制栏显示、焦点在画面上」时按下返回的时间。
     private var guardedMenuPressAt: TimeInterval?
@@ -281,7 +246,6 @@ class CommonPlayerViewController: UIViewController {
     }
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
-        if let vlcSurface { return [vlcSurface] }
         return installedEngineKind == .system ? [playerVC.view] : []
     }
 
@@ -291,11 +255,10 @@ class CommonPlayerViewController: UIViewController {
         if activePlugins.contains(where: { $0 == plugin }) {
             return
         }
-        let overlay: UIView? = vlcSurface?.contentOverlayView ?? playerVC.contentOverlayView
-        if let overlay { plugin.addViewToPlayerOverlay(container: overlay) }
+        if let overlay = playerVC.contentOverlayView { plugin.addViewToPlayerOverlay(container: overlay) }
         activePlugins.append(plugin)
         plugin.playerDidLoad(host: playerHost)
-        if !playerHost.transportBarCustomMenuItems.isEmpty || vlcSurface != nil {
+        if !playerHost.transportBarCustomMenuItems.isEmpty {
             updateMenus()
         }
     }
@@ -391,7 +354,6 @@ class CommonPlayerViewController: UIViewController {
         removeAllPlugins()
         player?.replaceCurrentItem(with: nil)
         playerVC.player = nil
-        vlcSurface?.shutdownEngine()
         currentEngine = nil
     }
 
@@ -483,57 +445,6 @@ extension CommonPlayerViewController {
             activePlugins.forEach { $0.playerDidStall(engine: engine) }
             playerDidStall(engine: engine)
         }
-    }
-}
-
-// MARK: - VLC 内核事件
-
-extension CommonPlayerViewController: VLCPlayerSurfaceDelegate {
-    func vlcSurfaceRequestsExit(_ surface: VLCPlayerSurface) {
-        exitPlayer()
-    }
-
-    func vlcSurface(_ surface: VLCPlayerSurface, didReplaceEngine old: VLCPlayerEngine?, with new: VLCPlayerEngine?) {
-        if let old {
-            activePlugins.forEach { $0.playerDidCleanUp(engine: old) }
-        }
-        currentEngine = new
-        if let new {
-            isEnd = false
-            activePlugins.forEach { $0.playerDidChange(engine: new) }
-            updateMenus()
-        }
-    }
-
-    func vlcSurfaceEngineDidBecomeReady(_ surface: VLCPlayerSurface) {
-        guard let engine = currentEngine else { return }
-        isEnd = false
-        activePlugins.forEach { $0.playerWillStart(engine: engine) }
-        playerWillStart(engine: engine)
-    }
-
-    func vlcSurfaceEngineDidStart(_ surface: VLCPlayerSurface) {
-        guard let engine = currentEngine else { return }
-        activePlugins.forEach { $0.playerDidStart(engine: engine) }
-        playerDidStart(engine: engine)
-    }
-
-    func vlcSurfaceEngineDidPause(_ surface: VLCPlayerSurface) {
-        guard let engine = currentEngine, !isEnd else { return }
-        activePlugins.forEach { $0.playerDidPause(engine: engine) }
-    }
-
-    func vlcSurfaceEngineDidEnd(_ surface: VLCPlayerSurface) {
-        guard let engine = currentEngine else { return }
-        isEnd = true
-        activePlugins.forEach { $0.playerDidEnd(engine: engine) }
-        playerDidEnd(engine: engine)
-    }
-
-    func vlcSurfaceEngineDidFail(_ surface: VLCPlayerSurface) {
-        guard let engine = currentEngine else { return }
-        activePlugins.forEach { $0.playerDidFail(engine: engine) }
-        playerDidFail(engine: engine)
     }
 }
 

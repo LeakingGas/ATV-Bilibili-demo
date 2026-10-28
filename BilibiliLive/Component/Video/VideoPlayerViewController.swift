@@ -211,10 +211,6 @@ class VideoPlayerViewController: CommonPlayerViewController {
                                          startTimeOverride: startTimeOverride)
         currentRetryKey = playInfo.sequenceKey
         super.init(nibName: nil, bundle: nil)
-        // 设置里选了 VLC / 自动：先不装界面，拿到播放地址后再决定用哪个播放器。
-        if playMode == .regular, Settings.playerEngine != .system {
-            initialEngineKind = nil
-        }
         if playMode == .preview {
             showsPlaybackControls = false
             allowsPictureInPicturePlayback = false

@@ -425,15 +425,32 @@ class VideoPlayerViewModel {
         let networkDebugInfo: () -> String
         let switchQuality: (Int, Int?) async -> Void
         let currentMedia: () -> VideoPlayURLInfo.DashInfo.DashMediaInfo?
+        var extraPlugins = [CommonPlayerPlugin]()
         if engineKind == .vlc {
-            let vlc = VLCVideoPlayPlugin(playInfo: playInfo, detailData: data, reportWatchHistory: playMode != .preview)
-            vlc.onLoadFailure = { [weak self] message in
+            // 系统播放器只播最低码率的影子视频（静音），提供界面和时间轴；VLC 输出画面和声音。
+            let videos = data.videoPlayURLInfo.dash.video
+            let shadowIndex = videos.indices.filter { (videos[$0].width ?? 0) > 0 }.min { videos[$0].bandwidth < videos[$1].bandwidth }
+            let shadow = BVideoPlayPlugin(playInfo: playInfo,
+                                          detailData: data,
+                                          reportWatchHistory: playMode != .preview,
+                                          minimizeStalling: true,
+                                          isMuted: true,
+                                          mediaWarmupManager: nil,
+                                          shadowStreamIndex: shadowIndex)
+            shadow.onLoadFailure = { [weak self] message in
                 self?.loadResult.send(.failure(message))
             }
-            playplugin = vlc
-            networkDebugInfo = { [weak vlc] in vlc?.networkDebugInfo ?? "" }
-            switchQuality = { [weak vlc] quality, index in await vlc?.switchQuality(to: quality, streamIndex: index) }
-            currentMedia = { [weak vlc] in vlc?.currentMedia }
+            let renderer = VLCRendererPlugin(detailData: data)
+            renderer.onLoadFailure = { [weak self] message in
+                self?.loadResult.send(.failure(message))
+            }
+            playplugin = shadow
+            extraPlugins.append(renderer)
+            networkDebugInfo = { [weak renderer, weak shadow] in
+                (renderer?.networkDebugInfo ?? "") + "\n--- shadow clock ---\n" + (shadow?.networkDebugInfo ?? "")
+            }
+            switchQuality = { [weak renderer] quality, index in await renderer?.switchQuality(to: quality, streamIndex: index) }
+            currentMedia = { [weak renderer] in renderer?.currentMedia }
         } else {
             let system = BVideoPlayPlugin(playInfo: playInfo,
                                           detailData: data,
@@ -475,7 +492,7 @@ class VideoPlayerViewModel {
         }
 
         // SpeedChangerPlugin creates the shared settings menu that later plugins extend.
-        var plugins: [CommonPlayerPlugin] = [playSpeed, playplugin, danmu, upnp, debug, playlist]
+        var plugins: [CommonPlayerPlugin] = [playSpeed, playplugin] + extraPlugins + [danmu, upnp, debug, playlist]
 
         if let detail = data.detail {
             let infoTabs = VideoPlayerInfoTabsPlugin(detail: detail,
@@ -510,7 +527,7 @@ class VideoPlayerViewModel {
             plugins.append(sponsor)
         }
 
-        if Settings.danmuMask, engineKind == .system {
+        if Settings.danmuMask {
             if let mask = data.playerInfo?.dm_mask,
                let video = data.videoPlayURLInfo.dash.video.first,
                mask.fps > 0
