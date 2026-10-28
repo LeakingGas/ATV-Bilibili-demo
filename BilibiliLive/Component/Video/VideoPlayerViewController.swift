@@ -232,6 +232,11 @@ class VideoPlayerViewController: CommonPlayerViewController {
         viewModel.onPlayInfoChanged = { [weak self] info in
             self?.handlePlayInfoChanged(info)
         }
+        if playMode != .preview {
+            viewModel.onLoadingCover = { [weak self] cover in
+                self?.showLoadingBackdrop(cover: cover)
+            }
+        }
         if playMode == .regular, askResume {
             viewModel.resumeChooser = { [weak self] prompt in
                 guard let self else { return .cancel }
@@ -247,7 +252,10 @@ class VideoPlayerViewController: CommonPlayerViewController {
                 Diag.mark("VPLAYER \(Diag.id(self)) load success plugins=\(plugins.count)")
                 self?.neighborPreloadTask?.cancel()
                 self?.removeAllPlugins()
-                if let kind = self?.viewModel.engineKind { self?.installSurface(kind) }
+                if let kind = self?.viewModel.engineKind {
+                    self?.installSurface(kind)
+                    self?.loadingBackdropWaitsForExternalFrame = kind == .vlc
+                }
                 plugins.forEach { self?.addPlugin(plugin: $0) }
                 self?.neighborPreloadTask = Task { [weak self] in
                     await self?.viewModel.preloadNeighborsIfNeeded()

@@ -45,6 +45,8 @@ class VideoPlayerViewModel {
     let loadResult = PassthroughSubject<Result<[CommonPlayerPlugin], String>, Never>()
     var onExit: (() -> Void)?
     var onPlayInfoChanged: ((PlayInfo) -> Void)?
+    /// 开始加载 / 拿到详情时的封面，用来显示加载背景。
+    var onLoadingCover: ((URL?) -> Void)?
     var sequenceProvider: VideoSequenceProvider?
     /// 有观看记录时询问继续还是从头；返回 nil 表示不询问（直接续播）。
     var resumeChooser: ((ResumePrompt) async -> ResumeChoice)?
@@ -99,6 +101,7 @@ class VideoPlayerViewModel {
         loadTask?.cancel()
         loadGeneration += 1
         let generation = loadGeneration
+        onLoadingCover?(requestedPlayInfo.coverURL)
         let task = Task { [weak self] in
             guard let self else { return }
             await performLoad(for: requestedPlayInfo, generation: generation)
@@ -118,6 +121,7 @@ class VideoPlayerViewModel {
             var data = loadedData
             Diag.startupStep("vm_info_ready", ["quality": data.videoPlayURLInfo.quality, "startPos": data.playerStartPos ?? -1])
             guard !Task.isCancelled, loadGeneration == generation else { return }
+            if let cover = data.detail?.pic ?? resolvedPlayInfo.coverURL { onLoadingCover?(cover) }
 
             if playMode == .regular, !hasBuiltSequence {
                 hasBuiltSequence = true

@@ -10,6 +10,7 @@
 //
 
 import AVKit
+import Kingfisher
 import UIKit
 
 class CommonPlayerViewController: UIViewController {
@@ -84,6 +85,23 @@ class CommonPlayerViewController: UIViewController {
 
     private var avkitObserved = false
 
+    // MARK: - 加载背景（封面毛玻璃，代替黑屏）
+
+    private let loadingBackdrop = PlayerLoadingBackdropView()
+    private var readyForDisplayObservation: NSKeyValueObservation?
+    /// VLC 模式：第一帧由 VLCRendererPlugin 通知，不看系统播放器（系统那路是影子）。
+    var loadingBackdropWaitsForExternalFrame = false
+
+    /// 开始加载一个视频时调用；封面可以之后拿到再调一次补上。
+    func showLoadingBackdrop(cover: URL?) {
+        loadingBackdrop.show(cover: cover)
+    }
+
+    /// 画面出来了，淡出加载背景。
+    func loadingBackdropFrameReady() {
+        loadingBackdrop.hide()
+    }
+
     private func installAVKitSurface() {
         addChild(playerVC)
         view.addSubview(playerVC.view)
@@ -92,9 +110,20 @@ class CommonPlayerViewController: UIViewController {
         playerVC.showsPlaybackControls = showsPlaybackControls
         playerVC.allowsPictureInPicturePlayback = allowsPictureInPicturePlayback
         playerVC.delegate = self
+        if loadingBackdrop.superview == nil, let overlay = playerVC.contentOverlayView {
+            // 先于插件加进去：VLC 画面插在它下面，弹幕等插件视图在它上面。
+            overlay.addSubview(loadingBackdrop)
+            loadingBackdrop.snp.makeConstraints { $0.edges.equalToSuperview() }
+        }
 
         guard !avkitObserved else { return }
         avkitObserved = true
+        readyForDisplayObservation = playerVC.observe(\.isReadyForDisplay, options: [.new]) { [weak self] vc, _ in
+            DispatchQueue.main.async {
+                guard let self, vc.isReadyForDisplay, !self.loadingBackdropWaitsForExternalFrame else { return }
+                self.loadingBackdrop.hide()
+            }
+        }
         let playerObservation = playerVC.observe(\.player, options: [.old, .new]) { [weak self] vc, obs in
             Logger.debug("player changed: \(String(describing: obs.oldValue)) -> \(String(describing: obs.newValue))")
             Diag.mark("PLAYER \(Diag.id(self)) avplayer \(Diag.id(obs.oldValue ?? nil)) -> \(Diag.id(obs.newValue ?? nil)) plugins=\(self?.activePlugins.count ?? -1)")
@@ -537,5 +566,61 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
     class PipRecorder {
         static let shared = PipRecorder()
         var playingPipViewController = [CommonPlayerViewController]()
+    }
+}
+
+/// 播放器加载时的背景：视频封面铺满，叠一层比主界面薄的毛玻璃。
+final class PlayerLoadingBackdropView: UIView {
+    private let imageView = UIImageView()
+    private let blur = UIVisualEffectView(effect: UIBlurEffect(style: .regular))
+    private let dim = UIView()
+    private var currentURL: URL?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        backgroundColor = UIColor(white: 0.08, alpha: 1)
+        imageView.contentMode = .scaleAspectFill
+        imageView.clipsToBounds = true
+        addSubview(imageView)
+        imageView.snp.makeConstraints { $0.edges.equalToSuperview().inset(-40) }
+        addSubview(blur)
+        blur.snp.makeConstraints { $0.edges.equalToSuperview() }
+        // 主界面背景毛玻璃 0.55 + 暗渐变；这里薄一些，封面更清楚。
+        blur.alpha = 0.3
+        dim.backgroundColor = UIColor.black.withAlphaComponent(0.15)
+        addSubview(dim)
+        dim.snp.makeConstraints { $0.edges.equalToSuperview() }
+        alpha = 0
+        isHidden = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func show(cover: URL?) {
+        layer.removeAllAnimations()
+        isHidden = false
+        alpha = 1
+        superview?.bringSubviewToFront(self)
+        if let cover {
+            guard cover != currentURL else { return }
+            currentURL = cover
+            imageView.kf.setImage(with: cover, options: [.processor(DownsamplingImageProcessor(size: CGSize(width: 960, height: 540))),
+                                                         .scaleFactor(UIScreen.main.scale), .transition(.fade(0.2))])
+        } else if currentURL != nil {
+            currentURL = nil
+            imageView.kf.cancelDownloadTask()
+            imageView.image = nil
+        }
+    }
+
+    func hide() {
+        guard !isHidden, alpha > 0 else { return }
+        UIView.animate(withDuration: 0.3, animations: { self.alpha = 0 }) { finished in
+            if finished, self.alpha == 0 { self.isHidden = true }
+        }
     }
 }

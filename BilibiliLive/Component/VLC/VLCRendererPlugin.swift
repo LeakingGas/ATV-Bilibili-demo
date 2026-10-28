@@ -27,6 +27,13 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
     private let videoView = UIView()
     private let spinner = UIActivityIndicatorView(style: .large)
     private weak var master: AVPlayer?
+    private weak var container: CommonPlayerViewController?
+    private weak var hostView: UIView?
+    /// 系统播放器自己的加载圈（影子在等数据时转）。VLC 正常出画面时把它藏起来。
+    private var systemSpinners = [WeakView]()
+    private var systemSpinnerScanAt = Date.distantPast
+    private var systemSpinnerHidden = false
+    private var loggedSpinnerScan = false
     private var rateObservation: NSKeyValueObservation?
     private var jumpObserver: NSObjectProtocol?
 
@@ -123,7 +130,9 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
 
     func playerDidLoad(host: PlayerHost) {
         Diag.startupStep("player_engine", ["kind": "VLC"])
-        (host.hostViewController.parent as? CommonPlayerViewController)?.setPictureInPictureAllowed(false)
+        container = host.hostViewController.parent as? CommonPlayerViewController
+        container?.setPictureInPictureAllowed(false)
+        hostView = host.hostViewController.view
         vlc.rate = Settings.mediaPlayerSpeed.value
         let start = playData.playerStartPos.map { Double($0) }.flatMap { $0 > 0 ? $0 : nil }
         startLoad(at: start, maxQuality: nil, streamIndex: nil)
@@ -156,6 +165,8 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func playerWillCleanUp(host: PlayerHost) {
+        systemSpinners.forEach { $0.view?.alpha = 1 }
+        systemSpinners = []
         loadTask?.cancel()
         loadTask = nil
         loadGeneration += 1
@@ -273,6 +284,40 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
     }
 
     /// 最近 0.6 秒内 VLC 的时间在走 = 画面在动。
+    /// 找到系统界面里的加载圈（排除我们自己的），VLC 出画面时用透明度藏起来。
+    /// 不用 isHidden：系统 startAnimating 会把 isHidden 改回去，透明度它不动。
+    private func updateSystemSpinner(hide: Bool) {
+        guard let hostView else { return }
+        if Date().timeIntervalSince(systemSpinnerScanAt) > 1 {
+            systemSpinnerScanAt = Date()
+            var found = [WeakView]()
+            func walk(_ view: UIView) {
+                if view === videoView { return }
+                if view is UIActivityIndicatorView || String(describing: type(of: view)).contains("ActivityIndicator") {
+                    found.append(WeakView(view))
+                    return
+                }
+                view.subviews.forEach(walk)
+            }
+            walk(hostView)
+            if !found.isEmpty, !loggedSpinnerScan {
+                loggedSpinnerScan = true
+                Diag.startupStep("system_spinner_found", ["count": found.count,
+                                                          "types": found.compactMap { $0.view.map { String(describing: type(of: $0)) } }.joined(separator: ",")])
+            }
+            // 新找到的先按当前状态处理，之前藏过、已经不在的不管。
+            systemSpinners = found
+            systemSpinnerHidden = !hide
+        }
+        guard hide != systemSpinnerHidden else {
+            // 系统可能自己把透明度改回去，藏着的时候每次都再压一下。
+            if hide { systemSpinners.forEach { if let v = $0.view, v.alpha != 0 { v.alpha = 0 } } }
+            return
+        }
+        systemSpinnerHidden = hide
+        systemSpinners.forEach { $0.view?.alpha = hide ? 0 : 1 }
+    }
+
     private var vlcAdvancing: Bool {
         Date().timeIntervalSince(lastVLCAdvanceAt) < 0.6
     }
@@ -339,6 +384,7 @@ final class VLCRendererPlugin: NSObject, CommonPlayerPlugin {
     // MARK: - 同步（只动影子）
 
     private func sync() {
+        updateSystemSpinner(hide: mediaLoaded && vlcAdvancing)
         guard mediaLoaded else { return }
         let state = vlc.state
         if state == .ended || state == .error {
@@ -471,6 +517,13 @@ extension VLCRendererPlugin: VLCMediaPlayerDelegate {
         if !markedPlaying, ms > 0, lastVLCAdvanceAt != .distantPast {
             markedPlaying = true
             Diag.startupStep("startup_mark", ["mark": "playing", "kind": "VLC"])
+            container?.loadingBackdropFrameReady()
         }
     }
+}
+
+/// 弱引用一个视图（系统界面里的视图我们不持有）。
+private struct WeakView {
+    weak var view: UIView?
+    init(_ view: UIView) { self.view = view }
 }

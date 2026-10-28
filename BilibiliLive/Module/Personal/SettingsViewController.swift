@@ -119,41 +119,28 @@ class SettingsViewController: UIViewController {
     private func setupData() {
         createSnapshot {
             SectionModel(title: "账号") {
-                Navigation(title: "账号切换", desp: AccountManager.shared.activeAccount?.profile.username ?? "") { [weak self] in
+                Navigation(title: "切换账号", desp: AccountManager.shared.activeAccount?.profile.username ?? "") { [weak self] in
                     let controller = AccountSwitcherViewController()
                     controller.modalPresentationStyle = .overFullScreen
                     self?.present(controller, animated: true)
                 }
-                Navigation(title: "登出", desp: "") { [weak self] in
+                Navigation(title: "退出登录", desp: "") { [weak self] in
                     self?.confirmLogout()
                 }
             }
 
-            SectionModel(title: "通用") {
-                Toggle(title: "启用投屏", setting: Settings.enableDLNA, onChange: Settings.enableDLNA.toggle()) {
-                    _ in
-                    BiliBiliUpnpDMR.shared.start()
-                }
-
-                Toggle(title: "热门个性化推荐", setting: Settings.requestHotWithoutCookie, onChange: Settings.requestHotWithoutCookie.toggle())
-            }
-
-            SectionModel(title: "界面") {
-                Navigation(title: "自定义菜单栏", desp: "") { [weak self] in
+            SectionModel(title: "首页与推荐") {
+                Navigation(title: "侧边栏菜单", desp: "") { [weak self] in
                     let controller = TabBarCustomizationViewController()
                     self?.present(controller, animated: true)
                 }
-
-                Actions(title: "视频每行显示个数", message: "重启app生效",
+                Actions(title: "每行视频数", message: "重启app生效",
                         current: Settings.displayStyle.desp,
                         options: FeedDisplayStyle.allCases.filter({ !$0.hideInSetting }),
                         optionString: FeedDisplayStyle.allCases.filter({ !$0.hideInSetting }).map({ $0.desp }))
                 {
                     Settings.displayStyle = $0
                 }
-            }
-
-            SectionModel(title: "推荐") {
                 Actions(title: "推荐来源", message: RecommendSource.allCases.map { "\($0.title)：\($0.detail)" }.joined(separator: "\n"),
                         current: Settings.recommendSource.title,
                         options: RecommendSource.allCases,
@@ -161,23 +148,21 @@ class SettingsViewController: UIViewController {
                 {
                     Settings.recommendSource = $0
                 }
-                Toggle(title: "使用沉浸式浏览模式",
+                Toggle(title: "热门个性化推荐", setting: Settings.requestHotWithoutCookie, onChange: Settings.requestHotWithoutCookie.toggle())
+                Toggle(title: "沉浸式浏览",
                        setting: Settings.recommendFeedFlowEnabled,
                        onChange: Settings.recommendFeedFlowEnabled.toggle())
-                Actions(title: "沉浸式视频时长上限", message: "用于筛选沉浸式推荐中的短视频",
+                Actions(title: "沉浸式时长上限", message: "用于筛选沉浸式推荐中的短视频",
                         current: Settings.featuredDurationLimit.title,
                         options: FeaturedDurationLimit.allCases,
                         optionString: FeaturedDurationLimit.allCases.map { $0.title })
                 {
                     Settings.featuredDurationLimit = $0
                 }
-                Toggle(title: "沉浸式推荐内容安全过滤",
+                Toggle(title: "沉浸式内容过滤",
                        setting: Settings.featuredContentSafetyFilterEnabled,
                        onChange: Settings.featuredContentSafetyFilterEnabled.toggle())
-            }
-
-            SectionModel(title: "关注页面") {
-                Toggle(title: "关注刷视频模式",
+                Toggle(title: "关注页刷视频模式",
                        setting: Settings.followsFeedFlowEnabled,
                        onChange: Settings.followsFeedFlowEnabled.toggle())
                 { _ in
@@ -185,23 +170,7 @@ class SettingsViewController: UIViewController {
                 }
             }
 
-            SectionModel(title: "音视频") {
-                Actions(title: "最高画质", message: "4k以上需要大会员",
-                        current: Settings.mediaQuality.desp,
-                        options: MediaQualityEnum.allCases,
-                        optionString: MediaQualityEnum.allCases.map({ $0.desp }))
-                {
-                    Settings.mediaQuality = $0
-                }
-                Actions(title: "默认播放速度", message: "默认设置为1.0",
-                        current: Settings.mediaPlayerSpeed.name,
-                        options: PlaySpeed.blDefaults,
-                        optionString: PlaySpeed.blDefaults.map({ $0.name }))
-                {
-                    Settings.mediaPlayerSpeed = $0
-                }
-                Toggle(title: "AVC 优先（同画质码率更高）", setting: Settings.preferAvc, onChange: Settings.preferAvc.toggle())
-                Toggle(title: "不等缓冲，数据到了就播", setting: Settings.playWithoutWaiting, onChange: Settings.playWithoutWaiting.toggle())
+            SectionModel(title: "播放") {
                 Actions(title: "播放器", message: "VLC 起播更快；杜比视界只能用系统播放器。「自动」：会播杜比视界时用系统播放器，其余用 VLC",
                         current: Settings.playerEngine.title,
                         options: PlayerEngineChoice.allCases,
@@ -209,32 +178,26 @@ class SettingsViewController: UIViewController {
                 {
                     Settings.playerEngine = $0
                 }
-                CellModel(title: "BTR CDN 并行", desp: "始终开启", action: nil)
-                Actions(title: "BTR 节点", message: "同一视频地址分发到多个CDN节点并行下载；海外用户选海外节点",
-                        current: Settings.btrNodeRegion.title,
-                        options: BTRNodeRegion.allCases,
-                        optionString: BTRNodeRegion.allCases.map({ $0.title }))
+                Actions(title: "最高画质", message: "4k以上需要大会员",
+                        current: Settings.mediaQuality.desp,
+                        options: MediaQualityEnum.allCases,
+                        optionString: MediaQualityEnum.allCases.map({ $0.desp }))
                 {
-                    Settings.btrNodeRegion = $0
+                    Settings.mediaQuality = $0
                 }
-                Navigation(title: "闪退诊断日志", desp: "导出") { [weak self] in
-                    guard let self else { return }
-                    Diag.presentExport(from: self)
+                Toggle(title: "优先 AVC 编码", setting: Settings.preferAvc, onChange: Settings.preferAvc.toggle())
+                Actions(title: "默认倍速", message: "默认设置为1.0",
+                        current: Settings.mediaPlayerSpeed.name,
+                        options: PlaySpeed.blDefaults,
+                        optionString: PlaySpeed.blDefaults.map({ $0.name }))
+                {
+                    Settings.mediaPlayerSpeed = $0
                 }
-                Navigation(title: "BTR 诊断日志", desp: "记录 / 导出") { [weak self] in
-                    self?.showBTRTraceMenu()
-                }
-                Toggle(title: "无损音频和杜比全景声", setting: Settings.losslessAudio, onChange: Settings.losslessAudio.toggle())
-                Toggle(title: "匹配视频内容", setting: Settings.contentMatch, onChange: Settings.contentMatch.toggle())
-                Toggle(title: "仅在HDR视频匹配视频内容", setting: Settings.contentMatchOnlyInHDR, onChange: Settings.contentMatchOnlyInHDR.toggle())
-            }
-
-            SectionModel(title: "进度控制") {
-                Toggle(title: "从上次退出的位置继续播放", setting: Settings.continuePlay, onChange: Settings.continuePlay.toggle())
-                Toggle(title: "进入视频时询问继续或从头播放", setting: Settings.resumePrompt, onChange: Settings.resumePrompt.toggle())
-                Toggle(title: "自动跳过片头片尾", setting: Settings.autoSkip, onChange: Settings.autoSkip.toggle())
-                Toggle(title: "连续播放", setting: Settings.continouslyPlay, onChange: Settings.continouslyPlay.toggle())
-                Actions(title: "空降助手广告屏蔽", message: "",
+                Toggle(title: "从上次位置继续", setting: Settings.continuePlay, onChange: Settings.continuePlay.toggle())
+                Toggle(title: "进入时询问续播", setting: Settings.resumePrompt, onChange: Settings.resumePrompt.toggle())
+                Toggle(title: "自动连播", setting: Settings.continouslyPlay, onChange: Settings.continouslyPlay.toggle())
+                Toggle(title: "跳过片头片尾", setting: Settings.autoSkip, onChange: Settings.autoSkip.toggle())
+                Actions(title: "空降助手", message: "SponsorBlock：跳过视频里的广告、赞助片段",
                         current: Settings.enableSponsorBlock.title,
                         options: SponsorBlockType.allCases,
                         optionString: SponsorBlockType.allCases.map({ $0.title }))
@@ -243,8 +206,14 @@ class SettingsViewController: UIViewController {
                 }
             }
 
+            SectionModel(title: "画面与声音") {
+                Toggle(title: "无损音频与全景声", setting: Settings.losslessAudio, onChange: Settings.losslessAudio.toggle())
+                Toggle(title: "自动匹配帧率和动态范围", setting: Settings.contentMatch, onChange: Settings.contentMatch.toggle())
+                Toggle(title: "仅 HDR 视频匹配", setting: Settings.contentMatchOnlyInHDR, onChange: Settings.contentMatchOnlyInHDR.toggle())
+            }
+
             SectionModel(title: "弹幕") {
-                Toggle(title: "用户自定义弹幕屏蔽", setting: Settings.enableDanmuFilter, onChange: Settings.enableDanmuFilter.toggle()) {
+                Toggle(title: "自定义屏蔽", setting: Settings.enableDanmuFilter, onChange: Settings.enableDanmuFilter.toggle()) {
                     enable in
                     if enable {
                         Task {
@@ -256,58 +225,75 @@ class SettingsViewController: UIViewController {
                     }
                 }
                 Toggle(title: "移除重复弹幕", setting: Settings.enableDanmuRemoveDup, onChange: Settings.enableDanmuRemoveDup.toggle())
-                Actions(title: "弹幕大小", message: "默认为36", current: Settings.danmuSize.title, options: DanmuSize.allCases, optionString: DanmuSize.allCases.map({ $0.title })) {
+                Actions(title: "字号", message: "默认为36", current: Settings.danmuSize.title, options: DanmuSize.allCases, optionString: DanmuSize.allCases.map({ $0.title })) {
                     Settings.danmuSize = $0
                 }
-                Actions(title: "弹幕显示区域", message: "设置弹幕显示区域",
+                Actions(title: "显示区域", message: "设置弹幕显示区域",
                         current: Settings.danmuArea.title,
                         options: DanmuArea.allCases,
                         optionString: DanmuArea.allCases.map({ $0.title }))
                 {
                     Settings.danmuArea = $0
                 }
-                Toggle(title: "智能防档弹幕", setting: Settings.danmuMask, onChange: Settings.danmuMask.toggle())
-                Toggle(title: "按需本地运算智能防档弹幕(Exp)", setting: Settings.vnMask, onChange: Settings.vnMask.toggle())
-
-                // 添加弹幕透明度设置
-                Actions(title: "弹幕透明度", message: "调整弹幕的透明度",
+                Actions(title: "透明度", message: "调整弹幕的透明度",
                         current: Settings.danmuAlpha.title,
                         options: DanmuAlpha.allCases,
                         optionString: DanmuAlpha.allCases.map({ $0.title }))
                 { value in
                     Settings.danmuAlpha = value
                 }
-
-                // 添加弹幕描边宽度设置
-                Actions(title: "弹幕描边宽度", message: "调整弹幕描边的粗细",
+                Actions(title: "描边粗细", message: "调整弹幕描边的粗细",
                         current: Settings.danmuStrokeWidth.title,
                         options: DanmuStrokeWidth.allCases,
                         optionString: DanmuStrokeWidth.allCases.map({ $0.title }))
                 { value in
                     Settings.danmuStrokeWidth = value
                 }
-
-                // 添加弹幕描边透明度设置
-                Actions(title: "弹幕描边透明度", message: "调整弹幕描边的透明度",
+                Actions(title: "描边透明度", message: "调整弹幕描边的透明度",
                         current: Settings.danmuStrokeAlpha.title,
                         options: DanmuStrokeAlpha.allCases,
                         optionString: DanmuStrokeAlpha.allCases.map({ $0.title }))
                 { value in
                     Settings.danmuStrokeAlpha = value
                 }
+                Toggle(title: "智能防挡", setting: Settings.danmuMask, onChange: Settings.danmuMask.toggle())
+                Toggle(title: "本地防挡（实验）", setting: Settings.vnMask, onChange: Settings.vnMask.toggle())
             }
 
-            SectionModel(title: "港澳台解锁") {
-                Toggle(title: "解锁港澳台番剧限制", setting: Settings.areaLimitUnlock, onChange: Settings.areaLimitUnlock.toggle())
-                TextField(title: "设置港澳台解析服务器", message: "为了安全考虑建议自建服务器，公共服务器可用性难保证，请多尝试几个。\n公共服务器请参考：http://985.so/mjq9u", current: Settings.areaLimitCustomServer, placeholder: "api.example.com") {
+            SectionModel(title: "网络加速") {
+                Actions(title: "加速节点", message: "同一视频地址分发到多个CDN节点并行下载；海外用户选海外节点",
+                        current: Settings.btrNodeRegion.title,
+                        options: BTRNodeRegion.allCases,
+                        optionString: BTRNodeRegion.allCases.map({ $0.title }))
+                {
+                    Settings.btrNodeRegion = $0
+                }
+                Toggle(title: "边下边播", setting: Settings.playWithoutWaiting, onChange: Settings.playWithoutWaiting.toggle())
+            }
+
+            SectionModel(title: "其他") {
+                Toggle(title: "投屏（DLNA）", setting: Settings.enableDLNA, onChange: Settings.enableDLNA.toggle()) {
+                    _ in
+                    BiliBiliUpnpDMR.shared.start()
+                }
+                Toggle(title: "港澳台解锁", setting: Settings.areaLimitUnlock, onChange: Settings.areaLimitUnlock.toggle())
+                TextField(title: "港澳台解析服务器", message: "为了安全考虑建议自建服务器，公共服务器可用性难保证，请多尝试几个。\n公共服务器请参考：http://985.so/mjq9u", current: Settings.areaLimitCustomServer, placeholder: "api.example.com") {
                     Settings.areaLimitCustomServer = $0 ?? ""
+                }
+            }
+
+            SectionModel(title: "诊断") {
+                Navigation(title: "闪退日志", desp: "导出") { [weak self] in
+                    guard let self else { return }
+                    Diag.presentExport(from: self)
+                }
+                Navigation(title: "播放诊断日志", desp: "记录 / 导出") { [weak self] in
+                    self?.showBTRTraceMenu()
                 }
             }
         }
     }
-}
 
-extension SettingsViewController {
     func Toggle(title: String, setting: @autoclosure @escaping () -> Bool,
                 onChange: @autoclosure @escaping () -> Void,
                 extraAction: ((Bool) -> Void)? = nil) -> CellModel
@@ -527,7 +513,7 @@ extension SettingsViewController {
         let exporter = BTRTraceExport.shared
         let message = exporter.address.map { "当前下载地址：\n" + $0 + "\n下载会冻结记录。请让应用保持前台。" }
             ?? "先开始记录，再播放同一视频：1080 播放后切换 4K，卡住约 15 秒后返回这里冻结导出。最多记录 10 分钟，不记录账号、签名链接或视频内容。"
-        let alert = UIAlertController(title:"BTR 诊断日志",message:message,preferredStyle:.alert)
+        let alert = UIAlertController(title:"播放诊断日志",message:message,preferredStyle:.alert)
         alert.addAction(UIAlertAction(title:"开始新记录（清空旧记录）",style:.default) { [weak self] _ in
             do { _ = try exporter.start(); self?.showBTRTraceMenu() }
             catch {
