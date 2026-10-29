@@ -20,6 +20,8 @@ struct PlayerDetailData {
     var clips: [VideoPlayURLInfo.ClipInfo]?
     var playerInfo: PlayerInfo?
     var videoPlayURLInfo: VideoPlayURLInfo
+    /// 视频详情还没回来：起播不等它，回来后再补上依赖详情的插件（标题、简介 / 评论面板、空降助手、选集）。
+    var pendingDetail: Task<VideoDetail?, Never>?
 
     var isBangumi: Bool {
         return epid ?? 0 > 0 || seasonId ?? 0 > 0
@@ -43,6 +45,9 @@ enum ResumeChoice {
 @MainActor
 class VideoPlayerViewModel {
     let loadResult = PassthroughSubject<Result<[CommonPlayerPlugin], String>, Never>()
+    /// 播放器已经开始准备之后才能创建的插件（视频详情晚到）。
+    let latePlugins = PassthroughSubject<[CommonPlayerPlugin], Never>()
+    private weak var playlistPlugin: VideoPlayListPlugin?
     var onExit: (() -> Void)?
     /// 播完且没有下一集：停在最后一帧，显示重播。
     var onPlaybackFinished: (() -> Void)?
@@ -121,11 +126,23 @@ class VideoPlayerViewModel {
             Diag.startupStep("vm_load_begin")
             let (resolvedPlayInfo, loadedData, bangumi) = try await loadVideoInfo(for: requestedPlayInfo)
             var data = loadedData
-            Diag.startupStep("vm_info_ready", ["quality": data.videoPlayURLInfo.quality, "startPos": data.playerStartPos ?? -1])
+            var pendingDetail = data.pendingDetail
+            data.pendingDetail = nil
+            Diag.startupStep("vm_info_ready", ["quality": data.videoPlayURLInfo.quality, "startPos": data.playerStartPos ?? -1,
+                                               "detailPending": pendingDetail != nil])
             guard !Task.isCancelled, loadGeneration == generation else { return }
+            // 要问「继续 / 从头」时用户反正要等，先把详情等回来（询问框要标题和封面）。
+            if let pending = pendingDetail, playMode == .regular, !hasHandledResumeChoice, startTimeOverride == nil,
+               Settings.resumePrompt, (data.playerStartPos ?? 0) >= 10
+            {
+                data.detail = await pending.value
+                pendingDetail = nil
+                Diag.startupStep("vm_detail_done", ["forPrompt": true])
+                guard !Task.isCancelled, loadGeneration == generation else { return }
+            }
             if let cover = data.detail?.pic ?? resolvedPlayInfo.coverURL { onLoadingCover?(cover) }
 
-            if playMode == .regular, !hasBuiltSequence {
+            if playMode == .regular, !hasBuiltSequence, pendingDetail == nil {
                 hasBuiltSequence = true
                 if sequenceProvider == nil {
                     sequenceProvider = Self.makeSequence(playInfo: resolvedPlayInfo, detail: data.detail, bangumi: bangumi)
@@ -179,6 +196,31 @@ class VideoPlayerViewModel {
             guard !Task.isCancelled, loadGeneration == generation else { return }
             Diag.startupStep("vm_plugins_ready")
             loadResult.send(.success(plugins))
+
+            // 详情晚到：补上依赖它的插件。
+            if let pendingDetail, playMode != .preview {
+                let detail = await pendingDetail.value
+                guard !Task.isCancelled, loadGeneration == generation else { return }
+                Diag.startupStep("vm_detail_late", ["ok": detail != nil])
+                guard let detail else { return }
+                data.detail = detail
+                videoDetail = detail
+                var late = [CommonPlayerPlugin]()
+                if playMode == .regular, !hasBuiltSequence {
+                    hasBuiltSequence = true
+                    if sequenceProvider == nil,
+                       let sequence = Self.makeSequence(playInfo: resolvedPlayInfo, detail: detail, bangumi: bangumi)
+                    {
+                        sequenceProvider = sequence
+                        if let playlistPlugin {
+                            playlistPlugin.sequenceProvider = sequence
+                            late.append(playlistPlugin)
+                        }
+                    }
+                }
+                late += detailPlugins(data, playInfo: resolvedPlayInfo)
+                latePlugins.send(late)
+            }
         } catch is CancellationError {
             return
         } catch let err {
@@ -288,7 +330,9 @@ class VideoPlayerViewModel {
         let aid = playInfo.aid
         let cid = playInfo.cid!
         async let infoReq = try? WebRequest.requestPlayerInfo(aid: aid, cid: cid)
-        async let detailReq = fetchVideoDetail(aid: aid, existing: existingVideoDetail)
+        let detailTask = Task { [weak self] () -> VideoDetail? in
+            await self?.fetchVideoDetail(aid: aid, existing: existingVideoDetail)
+        }
         do {
             let playData: VideoPlayURLInfo
             var clipInfos: [VideoPlayURLInfo.ClipInfo]?
@@ -316,10 +360,19 @@ class VideoPlayerViewModel {
             Diag.startupStep("vm_playurl_done")
             let info = await infoReq
             Diag.startupStep("vm_playerinfo_done")
-            let resolvedDetail = await detailReq
-            Diag.startupStep("vm_detail_done")
+            // 详情（标题、简介、UP 主）起播用不上：已经回来就用，没回来不等，晚到再补插件。
+            // 设备日志：播放地址 0.45 秒到，详情 1.15 秒才回，播放器白等了 0.7 秒。
+            let quickDetail: VideoDetail?? = await withTaskGroup(of: VideoDetail??.self) { group in
+                group.addTask { await detailTask.value }
+                group.addTask { try? await Task.sleep(nanoseconds: 30_000_000); return .none }
+                let first = await group.next() ?? .none
+                group.cancelAll()
+                return first
+            }
+            Diag.startupStep(quickDetail == nil ? "vm_detail_deferred" : "vm_detail_done")
 
-            var detail = PlayerDetailData(aid: playInfo.aid, cid: playInfo.cid!, epid: playInfo.epid, seasonId: playInfo.seasonId, subType: playInfo.subType, detail: resolvedDetail, clips: clipInfos, playerInfo: info, videoPlayURLInfo: playData)
+            var detail = PlayerDetailData(aid: playInfo.aid, cid: playInfo.cid!, epid: playInfo.epid, seasonId: playInfo.seasonId, subType: playInfo.subType, detail: quickDetail ?? nil, clips: clipInfos, playerInfo: info, videoPlayURLInfo: playData)
+            if quickDetail == nil { detail.pendingDetail = detailTask }
 
             let last_play_cid = playInfo.lastPlayCid ?? info?.last_play_cid ?? 0
             let playTimeInSecond = playInfo.playTimeInSecond ?? info?.playTimeInSecond ?? 0
@@ -481,7 +534,7 @@ class VideoPlayerViewModel {
         }
 
         let danmu = DanmuViewPlugin(provider: danmuProvider)
-        let upnp = BUpnpPlugin(duration: data.detail?.View.duration)
+        let upnp = BUpnpPlugin(duration: data.detail?.View.duration ?? data.videoPlayURLInfo.dash.duration)
         let debug = DebugPlugin()
         debug.additionDebugInfo = networkDebugInfo
         let playSpeed = SpeedChangerPlugin()
@@ -490,6 +543,7 @@ class VideoPlayerViewModel {
         }.store(in: &cancellable)
 
         let playlist = VideoPlayListPlugin(sequenceProvider: sequenceProvider)
+        playlistPlugin = playlist
         playlist.respectsAutoplaySetting = playMode == .regular
         playlist.onPlayEnd = { [weak self] in
             guard self?.playMode == .regular else { return }
@@ -503,19 +557,6 @@ class VideoPlayerViewModel {
 
         // SpeedChangerPlugin creates the shared settings menu that later plugins extend.
         var plugins: [CommonPlayerPlugin] = [playSpeed, playplugin] + extraPlugins + [danmu, upnp, debug, playlist]
-
-        if let detail = data.detail {
-            let infoTabs = VideoPlayerInfoTabsPlugin(detail: detail,
-                                                     currentPlayInfo: playInfo,
-                                                     sequenceProvider: sequenceProvider)
-            infoTabs.onSelectDiscovery = { [weak self] info in
-                self?.playTemporaryOverride(info)
-            }
-            infoTabs.onSelectEpisode = { [weak self] info in
-                self?.playSequenceItem(info)
-            }
-            plugins.append(infoTabs)
-        }
 
         // 添加画质选择器插件
         let qualitySelector = BVideoQualityPlugin(detailData: data) { qualityId, streamIndex in
@@ -532,11 +573,6 @@ class VideoPlayerViewModel {
             plugins.append(clip)
         }
 
-        if Settings.enableSponsorBlock != .none, let bvid = data.detail?.View.bvid, let duration = data.detail?.View.duration {
-            let sponsor = SponsorSkipPlugin(bvid: bvid, duration: duration)
-            plugins.append(sponsor)
-        }
-
         if Settings.danmuMask {
             if let mask = data.playerInfo?.dm_mask,
                let video = data.videoPlayURLInfo.dash.video.first,
@@ -550,8 +586,31 @@ class VideoPlayerViewModel {
             }
         }
 
+        plugins += detailPlugins(data, playInfo: playInfo)
+        return plugins
+    }
+
+    /// 依赖视频详情的插件（详情没回来时为空，回来后由 latePlugins 补上）。
+    private func detailPlugins(_ data: PlayerDetailData, playInfo: PlayInfo) -> [CommonPlayerPlugin] {
+        guard let detail = data.detail else { return [] }
+        var plugins = [CommonPlayerPlugin]()
+        let infoTabs = VideoPlayerInfoTabsPlugin(detail: detail,
+                                                 currentPlayInfo: playInfo,
+                                                 sequenceProvider: sequenceProvider)
+        infoTabs.onSelectDiscovery = { [weak self] info in
+            self?.playTemporaryOverride(info)
+        }
+        infoTabs.onSelectEpisode = { [weak self] info in
+            self?.playSequenceItem(info)
+        }
+        plugins.append(infoTabs)
+
+        if Settings.enableSponsorBlock != .none, let bvid = detail.View.bvid {
+            plugins.append(SponsorSkipPlugin(bvid: bvid, duration: detail.View.duration))
+        }
+
         // 默认视频标题作主标题 up主用户名作副标题
-        if let detail = data.detail {
+        do {
             var title = detail.title
             var subTitle = detail.ownerName
             // 分页播放时则以分页标题作主标题 up主用户名+视频标题作副标题

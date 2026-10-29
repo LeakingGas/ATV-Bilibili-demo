@@ -441,6 +441,23 @@ class CommonPlayerViewController: UIViewController {
         }
     }
 
+    /// 播放器已经在准备 / 播放之后才加的插件（例如视频详情晚到）：补发它们错过的事件。
+    /// 已经加过的插件（例如晚到选集的播放列表）只补发事件，不重复添加。
+    func addLatePlugins(_ plugins: [CommonPlayerPlugin]) {
+        let engine = currentEngine
+        let ready = (engine as? AVPlayerEngine)?.player.currentItem?.status == .readyToPlay
+        let playing = ((engine as? AVPlayerEngine)?.player.rate ?? 0) > 0
+        for plugin in plugins {
+            addPlugin(plugin: plugin)
+            guard let engine else { continue }
+            plugin.playerDidChange(engine: engine)
+            if ready { plugin.playerWillStart(engine: engine) }
+            if playing { plugin.playerDidStart(engine: engine) }
+        }
+        updateMenus()
+        Diag.mark("PLAYER \(Diag.id(self)) late plugins n=\(plugins.count) engine=\(engine != nil) ready=\(ready) playing=\(playing)")
+    }
+
     func removePlugin(plugin: CommonPlayerPlugin) {
         let removingPlugins = activePlugins.filter { $0 == plugin }
         removingPlugins.forEach { $0.playerWillCleanUp(host: playerHost) }

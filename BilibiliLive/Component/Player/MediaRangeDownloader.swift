@@ -567,15 +567,17 @@ actor MediaRangeDownloader {
         while let existing = slotAt(position) { position = existing.range.end + 1 }
         // Memory bound: never schedule more than aheadBytes past the delivery cursor.
         let windowEnd = reader.cursor + aheadBytes - 1
-        let end: Int64
-        if reader.readAhead, let total { end = min(total - 1, windowEnd) }
-        else { end = min(reader.requestEnd, windowEnd) }
-        var pending = slots.filter { !$0.finished }.count
-        var planned = [MediaByteRange]()
         // diag14: startup trace showed one slow connection on the first 1 MiB piece holding every later
         // (already finished) piece for 7.6 s. Before playback the first MiB goes out in 256 KiB pieces:
         // first bytes reach the player sooner and a slow connection only holds a small piece.
         let notPlaying = playback.deadline(presentation: 0, generation: reader.generation).isInfinite
+        let end: Int64
+        // 起播前不预读：设备日志（1080P、第一段 1.5 MB）里第一段的 256 KB 只有 88 KB/s，
+        // 同时有 9 个 1 MB 预读块挤在同一个节点上。开始播放前只下播放器正在等的数据。
+        if reader.readAhead, let total, !notPlaying { end = min(total - 1, windowEnd) }
+        else { end = min(reader.requestEnd, windowEnd) }
+        var pending = slots.filter { !$0.finished }.count
+        var planned = [MediaByteRange]()
         let smallHead = notPlaying && mode == .accelerated && !isAudio
         // The piece at the reader's cursor is always admitted, even when read-ahead filled `depth`.
         while position <= end, pending < depth || (planned.isEmpty && position == reader.cursor) {
@@ -611,7 +613,7 @@ actor MediaRangeDownloader {
             let priority = presentation == nil ? 220 : 50 - min(20, distance)
             let ahead = piece.start > reader.requestEnd
             slot.critical = !ahead
-            BTRTrace.shared.event("piece_scheduled",["start":piece.start,"end":piece.end,"host":URL(string:primary)?.host ?? "","readAhead":ahead,"depth":depth])
+            BTRTrace.shared.event("piece_scheduled",["start":piece.start,"end":piece.end,"host":URL(string:primary)?.host ?? "","readAhead":ahead,"depth":depth,"beforePlay":notPlaying])
             let rescue = reader.rescue
             let state = slot.piece
             slot.task = Task {

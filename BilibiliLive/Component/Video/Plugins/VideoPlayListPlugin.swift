@@ -15,7 +15,7 @@ class VideoPlayListPlugin: NSObject, CommonPlayerPlugin {
     /// 普通播放页：播完是否自动播下一集看设置「自动连播」（关时停在结束画面）。
     var respectsAutoplaySetting = false
 
-    let sequenceProvider: VideoSequenceProvider?
+    var sequenceProvider: VideoSequenceProvider?
 
     init(sequenceProvider: VideoSequenceProvider?) {
         self.sequenceProvider = sequenceProvider

@@ -264,6 +264,10 @@ class VideoPlayerViewController: CommonPlayerViewController {
             }
         }.store(in: &cancelable)
 
+        viewModel.latePlugins.receive(on: DispatchQueue.main).sink { [weak self] plugins in
+            self?.addLatePlugins(plugins)
+        }.store(in: &cancelable)
+
         if playMode == .regular {
             viewModel.onExit = { [weak self] in
                 self?.exitPlayer()
