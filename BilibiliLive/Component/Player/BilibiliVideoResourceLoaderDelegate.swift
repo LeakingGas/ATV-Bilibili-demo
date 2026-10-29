@@ -142,6 +142,10 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
 
     private func reset() {
         playlists.removeAll()
+        variantDecls.removeAll()
+        hdrVariants.removeAll()
+        hdrProbeTask?.cancel()
+        hdrProbeTask = nil
         audioRenditionIndex = 0
         hasAudioInMasterListAdded = false
         proxyAvailable = false
@@ -184,10 +188,8 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         // TODO: Need update all codecs with https://developer.apple.com/documentation/http_live_streaming/http_live_streaming_hls_authoring_specification_for_apple_devices/hls_authoring_specification_for_apple_devices_appendixes
         var framerate = info.frame_rate ?? "25"
         if isHDR10 {
+            // 帧率如实声明（以前超过 30 帧会被写成 30，和实际内容对不上，系统播放器不接受这条流）。
             videoRange = "PQ"
-            if let value = Double(framerate), value <= 30 {} else {
-                framerate = "30"
-            }
         }
         if codecs == "dvh1.08.07" || codecs == "dvh1.08.03" {
             supplementCodesc = codecs + "/db4h"
@@ -207,16 +209,92 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
             framerate = "60"
         }
 
-        if supplementCodesc.count > 0 {
-            supplementCodesc = ",SUPPLEMENTAL-CODECS=\"\(supplementCodesc)\""
+        // 杜比视界：实际配置要从视频文件开头读（见 probeHDRVariants），播放列表在交给系统播放器时才定稿。
+        let variantIndex = videoInfo.count
+        if isHDR || info.codecs.hasPrefix("dvh") || info.codecs.hasPrefix("dvhe") {
+            hdrVariants[variantIndex] = HDRVariant(media: info, codecs: codecs, supplemental: supplementCodesc, videoRange: videoRange)
         }
         let content = """
-        #EXT-X-STREAM-INF:AUDIO="audio"\(subtitlePlaceHolder),CODECS="\(codecs)"\(supplementCodesc),RESOLUTION=\(info.width ?? 0)x\(info.height ?? 0),FRAME-RATE=\(framerate),BANDWIDTH=\(Self.peakBandwidth(forAverage: info.bandwidth)),AVERAGE-BANDWIDTH=\(info.bandwidth),VIDEO-RANGE=\(videoRange)
+        #EXT-X-STREAM-INF:AUDIO="audio"\(subtitlePlaceHolder),CODECS="\(Self.marker(variantIndex, "CODECS"))"\(Self.marker(variantIndex, "SUPP")),RESOLUTION=\(info.width ?? 0)x\(info.height ?? 0),FRAME-RATE=\(framerate),BANDWIDTH=\(Self.peakBandwidth(forAverage: info.bandwidth)),AVERAGE-BANDWIDTH=\(info.bandwidth),VIDEO-RANGE=\(Self.marker(variantIndex, "RANGE"))
         \(URLs.customDashPrefix)\(videoInfo.count)?codec=\(info.codecs)&rate=\(info.frame_rate ?? framerate)&width=\(info.width ?? 0)&host=\(URL(string: url)?.host ?? "none")&range=\(info.id)
 
         """
         masterPlaylist.append(content)
+        variantDecls[variantIndex] = (codecs, supplementCodesc, videoRange)
         videoInfo.append(PlaybackInfo(info: info, url: url, duration: duration))
+    }
+
+    // MARK: - HDR / 杜比视界声明
+
+    struct HDRVariant {
+        let media: VideoPlayURLInfo.DashInfo.DashMediaInfo
+        let codecs: String
+        let supplemental: String
+        let videoRange: String
+    }
+
+    /// 每条视频流在播放列表里的 CODECS / SUPPLEMENTAL-CODECS / VIDEO-RANGE（交出前替换占位符）。
+    private var variantDecls = [Int: (codecs: String, supplemental: String, range: String)]()
+    private var hdrVariants = [Int: HDRVariant]()
+    private var hdrProbeTask: Task<Void, Never>?
+
+    private static func marker(_ index: Int, _ field: String) -> String { "{{BTR-\(field)-\(index)}}" }
+
+    /// 从视频文件开头的格式说明（init 段里的 dvcC / dvvC）读出真实的杜比视界配置，按苹果的规范声明：
+    /// 档次 5 → CODECS=dvh1.05.xx；档次 8 → 基础层 HEVC + SUPPLEMENTAL-CODECS=dvh1.08.xx/db1p|db2g|db4h。
+    /// 读不到时保留按编码名推断的声明，并在日志里写明。
+    private func probeHDRVariants() async {
+        for (index, variant) in hdrVariants.sorted(by: { $0.key < $1.key }) {
+            let media = variant.media
+            var fields: [String: Any] = ["index": index, "quality": media.id, "codecs": media.codecs,
+                                         "frameRate": media.frame_rate ?? "-", "size": "\(media.width ?? 0)x\(media.height ?? 0)"]
+            guard let bytes = await Self.downloadInit(media) else {
+                fields["init"] = "download_failed"
+                BTRTrace.shared.event("hdr_probe", fields)
+                continue
+            }
+            let config = DolbyVisionConfig.parse(initSegment: bytes)
+            fields["init"] = bytes.count
+            fields["sampleEntry"] = config.sampleEntry ?? "-"
+            if let dv = config.dolby {
+                fields["dvProfile"] = dv.profile
+                fields["dvLevel"] = dv.level
+                fields["dvCompat"] = dv.compatibilityID
+                if let decl = dv.declaration(baseCodecs: variant.codecs, sampleEntry: config.sampleEntry) {
+                    variantDecls[index] = decl
+                    fields["declared"] = "\(decl.codecs) \(decl.supplemental) \(decl.range)"
+                }
+            } else {
+                fields["dolby"] = "none"
+            }
+            BTRTrace.shared.event("hdr_probe", fields)
+        }
+    }
+
+    private static func downloadInit(_ media: VideoPlayURLInfo.DashInfo.DashMediaInfo) async -> Data? {
+        let range = media.segment_base.initialization
+        guard !range.isEmpty else { return nil }
+        for link in media.playableURLs.prefix(3) {
+            guard let url = URL(string: link) else { continue }
+            var request = URLRequest(url: url)
+            request.setValue("bytes=\(range)", forHTTPHeaderField: "Range")
+            request.setValue("https://www.bilibili.com/", forHTTPHeaderField: "Referer")
+            request.timeoutInterval = 3
+            if let result = try? await URLSession.shared.data(for: request), !result.0.isEmpty { return result.0 }
+        }
+        return nil
+    }
+
+    /// 定稿后的主播放列表（替换占位符）。
+    private func renderedMasterPlaylist() -> String {
+        var text = masterPlaylist
+        for (index, decl) in variantDecls {
+            text = text.replacingOccurrences(of: Self.marker(index, "CODECS"), with: decl.codecs)
+            text = text.replacingOccurrences(of: Self.marker(index, "SUPP"),
+                                             with: decl.supplemental.isEmpty ? "" : ",SUPPLEMENTAL-CODECS=\"\(decl.supplemental)\"")
+            text = text.replacingOccurrences(of: Self.marker(index, "RANGE"), with: decl.range)
+        }
+        return text
     }
 
     private func collectCDNCandidates(from video: VideoPlayURLInfo.DashInfo.DashMediaInfo?) {
@@ -553,6 +631,9 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
 
 
         masterPlaylist.append("\n#EXT-X-ENDLIST\n")
+        if !hdrVariants.isEmpty {
+            hdrProbeTask = Task { [weak self] in await self?.probeHDRVariants() }
+        }
 
         Logger.debug("masterPlaylist: \(masterPlaylist)")
     }
@@ -655,7 +736,17 @@ private extension BilibiliVideoResourceLoaderDelegate {
                 return
             }
             BTRTrace.shared.event("loader_master")
-            report(loadingRequest, content: masterPlaylist)
+            guard let probe = hdrProbeTask else {
+                report(loadingRequest, content: renderedMasterPlaylist())
+                return
+            }
+            Task {
+                await probe.value
+                let text = self.renderedMasterPlaylist()
+                // HDR / 杜比视界：把交给系统播放器的主播放列表原文记下来（看声明对不对）。
+                BTRTrace.shared.event("hdr_master", ["text": text.replacingOccurrences(of: "\n", with: " | ")])
+                self.report(loadingRequest, content: text)
+            }
             return
         }
 
@@ -1334,5 +1425,79 @@ final class MediaDeliveryGate: @unchecked Sendable {
     var isOpen: Bool {
         get { lock.lock(); defer { lock.unlock() }; return open }
         set { lock.lock(); open = newValue; lock.unlock() }
+    }
+}
+
+
+/// 视频文件开头（init 段）里的杜比视界配置。
+struct DolbyVisionConfig {
+    struct Dolby {
+        let profile: Int
+        let level: Int
+        let compatibilityID: Int
+
+        /// 按苹果 HLS 规范声明。
+        func declaration(baseCodecs: String, sampleEntry: String?) -> (codecs: String, supplemental: String, range: String)? {
+            let levelText = String(format: "%02d", level)
+            switch profile {
+            case 5:
+                return ("dvh1.05.\(levelText)", "", "PQ")
+            case 8:
+                let range: String
+                switch compatibilityID {
+                case 1: range = "PQ"
+                case 2: range = "SDR"
+                case 4: range = "HLG"
+                default: return nil
+                }
+                // 文件里的样本入口本身就是杜比（dvh1 / dvhe）：直接按杜比编码声明。
+                if let sampleEntry, sampleEntry.hasPrefix("dv") {
+                    return ("\(sampleEntry).08.\(levelText)", "", range)
+                }
+                // 样本入口是 HEVC：基础层用 HEVC 编码串声明，杜比层放 SUPPLEMENTAL-CODECS。
+                let base = baseCodecs.hasPrefix("hvc1") || baseCodecs.hasPrefix("hev1") ? baseCodecs : "hvc1.2.4.L150"
+                switch compatibilityID {
+                case 1: return (base, "dvh1.08.\(levelText)/db1p", "PQ")
+                case 2: return (base, "dvh1.08.\(levelText)/db2g", "SDR")
+                case 4: return (base, "dvh1.08.\(levelText)/db4h", "HLG")
+                default: return nil
+                }
+            default:
+                return nil
+            }
+        }
+    }
+
+    var sampleEntry: String?
+    var dolby: Dolby?
+
+    static func parse(initSegment data: Data) -> DolbyVisionConfig {
+        var config = DolbyVisionConfig()
+        let bytes = [UInt8](data)
+        func fourCC(at offset: Int) -> String? {
+            guard offset + 4 <= bytes.count else { return nil }
+            return String(bytes: bytes[offset..<offset + 4], encoding: .ascii)
+        }
+        // 只需要两样东西：视频样本入口的类型（hvc1 / hev1 / dvh1 / dvhe），和 dvcC / dvvC 配置盒。
+        // 它们的类型码前面 4 字节是盒子长度，直接按类型码定位。
+        for offset in 4..<max(4, bytes.count - 4) {
+            guard let type = fourCC(at: offset) else { continue }
+            if config.sampleEntry == nil, ["hvc1", "hev1", "dvh1", "dvhe"].contains(type) {
+                let size = Int(bytes[offset - 4]) << 24 | Int(bytes[offset - 3]) << 16 | Int(bytes[offset - 2]) << 8 | Int(bytes[offset - 1])
+                // 样本入口盒至少 86 字节，排除碰巧出现在别处的同名字节。
+                if size >= 86, offset - 4 + size <= bytes.count { config.sampleEntry = type }
+            }
+            if config.dolby == nil, type == "dvcC" || type == "dvvC" {
+                let payload = offset + 4
+                guard payload + 5 <= bytes.count else { continue }
+                // dv_version_major(8) dv_version_minor(8) profile(7) level(6) rpu(1) el(1) bl(1) compat_id(4)
+                let b2 = Int(bytes[payload + 2]), b3 = Int(bytes[payload + 3]), b4 = Int(bytes[payload + 4])
+                let profile = b2 >> 1
+                let level = ((b2 & 0x01) << 5) | (b3 >> 3)
+                let compat = b4 >> 4
+                config.dolby = Dolby(profile: profile, level: level, compatibilityID: compat)
+            }
+        }
+        return config
     }
 }
