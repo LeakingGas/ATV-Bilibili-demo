@@ -413,18 +413,31 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     /// 和 Infuse 一样：电视还在 SDR 模式时系统播放器会直接拒绝 HDR10 流，所以先请求切换显示模式，
     /// 等切换完成再加载。只在 Apple TV 和本 App 都开着「匹配动态范围」时做。
     @MainActor
-    private func switchDisplayForHDR10IfNeeded(asset: AVURLAsset) async {
-        guard !isShadow, let delegate = playerDelegate, delegate.isHDR,
-              let manager = playerVC?.view.window?.avDisplayManager ?? UIApplication.shared.connectedScenes
-              .compactMap({ ($0 as? UIWindowScene)?.windows.first }).first?.avDisplayManager
-        else { return }
-        guard let need = await delegate.hdr10DisplayNeed() else { return }
-        guard manager.isDisplayCriteriaMatchingEnabled, Settings.contentMatch else {
-            BTRTrace.shared.event("hdr10_display_switch", ["result": "matching_off", "system": manager.isDisplayCriteriaMatchingEnabled])
+    private func switchDisplayForHDRIfNeeded(asset: AVURLAsset) async {
+        guard !isShadow, let delegate = playerDelegate, delegate.isHDR else { return }
+        let (need, reason) = await delegate.displayNeed()
+        guard let need else {
+            BTRTrace.shared.event("hdr_display_switch", ["result": "not_needed", "reason": reason])
             return
         }
-        guard let criteria = await Self.hdr10Criteria(need: need, asset: asset) else {
-            BTRTrace.shared.event("hdr10_display_switch", ["result": "no_criteria"])
+        var fields: [String: Any] = ["kind": need.kind.rawValue, "frameRate": need.frameRate, "size": "\(need.width)x\(need.height)"]
+        guard let manager = playerVC?.view.window?.avDisplayManager ?? UIApplication.shared.connectedScenes
+            .compactMap({ ($0 as? UIWindowScene)?.windows.first }).first?.avDisplayManager
+        else {
+            fields["result"] = "no_display_manager"
+            BTRTrace.shared.event("hdr_display_switch", fields)
+            return
+        }
+        guard manager.isDisplayCriteriaMatchingEnabled, Settings.contentMatch else {
+            fields["result"] = "matching_off"
+            fields["system"] = manager.isDisplayCriteriaMatchingEnabled
+            fields["app"] = Settings.contentMatch
+            BTRTrace.shared.event("hdr_display_switch", fields)
+            return
+        }
+        guard let criteria = await Self.displayCriteria(need: need, asset: asset) else {
+            fields["result"] = "no_criteria"
+            BTRTrace.shared.event("hdr_display_switch", fields)
             return
         }
         let started = Date()
@@ -440,19 +453,26 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         while began, manager.isDisplayModeSwitchInProgress, Date().timeIntervalSince(started) < 9 {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
-        BTRTrace.shared.event("hdr10_display_switch", ["result": began ? "switched" : "no_switch_needed",
-                                                       "frameRate": need.frameRate, "waitMs": Date().timeIntervalSince(started) * 1000])
+        fields["result"] = began ? "switched" : "no_switch_needed"
+        fields["waitMs"] = Date().timeIntervalSince(started) * 1000
+        BTRTrace.shared.event("hdr_display_switch", fields)
     }
 
-    private static func hdr10Criteria(need: (frameRate: Float, width: Int, height: Int), asset: AVURLAsset) async -> AVDisplayCriteria? {
+    private static func displayCriteria(need: BilibiliVideoResourceLoaderDelegate.DisplayNeed, asset: AVURLAsset) async -> AVDisplayCriteria? {
         if #available(tvOS 17.0, *) {
             var description: CMFormatDescription?
-            let extensions: [CFString: Any] = [
+            var extensions: [CFString: Any] = [
                 kCMFormatDescriptionExtension_ColorPrimaries: kCMFormatDescriptionColorPrimaries_ITU_R_2020,
                 kCMFormatDescriptionExtension_TransferFunction: kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ,
                 kCMFormatDescriptionExtension_YCbCrMatrix: kCMFormatDescriptionYCbCrMatrix_ITU_R_2020,
             ]
-            CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault, codecType: kCMVideoCodecType_HEVC,
+            var codec = kCMVideoCodecType_HEVC
+            if need.kind == .dolbyVision, let box = need.dolbyBox {
+                // 杜比视界：编码类型 dvh1，带上视频自己的 dvcC / dvvC 配置盒，系统据此决定切成杜比视界模式。
+                codec = 0x6476_6831 // 'dvh1'
+                extensions[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms] = [box.type: box.payload] as CFDictionary
+            }
+            CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault, codecType: codec,
                                            width: Int32(need.width), height: Int32(need.height),
                                            extensions: extensions as CFDictionary, formatDescriptionOut: &description)
             guard let description else { return nil }
@@ -1089,7 +1109,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
               !Task.isCancelled,
               let playerVC
         else { return }
-        await switchDisplayForHDR10IfNeeded(asset: asset)
+        await switchDisplayForHDRIfNeeded(asset: asset)
         guard loadGeneration == generation, !Task.isCancelled else { return }
         let playerItem = AVPlayerItem(asset: asset)
 

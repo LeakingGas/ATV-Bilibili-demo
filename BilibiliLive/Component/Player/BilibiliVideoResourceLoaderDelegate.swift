@@ -236,6 +236,8 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     /// 每条视频流在播放列表里的 CODECS / SUPPLEMENTAL-CODECS / VIDEO-RANGE（交出前替换占位符）。
     private var variantDecls = [Int: (codecs: String, supplemental: String, range: String)]()
     private var hdrVariants = [Int: HDRVariant]()
+    /// 各视频流 init 段里的杜比视界配置盒（类型 dvcC / dvvC + 内容），切换电视显示模式时交给系统。
+    private var dolbyBoxes = [Int: (type: String, payload: Data)]()
     private var hdrProbeTask: Task<Void, Never>?
 
     /// 「HDR 诊断」：依次换几种主播放列表写法，看系统播放器肯不肯加载（只用于诊断）。
@@ -265,6 +267,7 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
                 continue
             }
             let config = DolbyVisionConfig.parse(initSegment: bytes)
+            if let box = config.box { dolbyBoxes[index] = box }
             fields["init"] = bytes.count
             fields["sampleEntry"] = config.sampleEntry ?? "-"
             if let dv = config.dolby {
@@ -296,16 +299,36 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         return nil
     }
 
-    /// 纯 HDR10（PQ、不是杜比视界）时返回主视频流的参数：系统播放器在电视还是 SDR 模式时会直接拒绝 PQ 流
-    /// （设备日志：AVFoundation -11868「没有能在当前显示设备上播放的版本」），要先把电视切到 HDR10 再加载。
-    func hdr10DisplayNeed() async -> (frameRate: Float, width: Int, height: Int)? {
+    /// 加载前要不要先切电视的显示模式。
+    struct DisplayNeed {
+        enum Kind: String { case hdr10, dolbyVision }
+        let kind: Kind
+        let frameRate: Float
+        let width: Int
+        let height: Int
+        /// 杜比视界：init 段里的配置盒（dvcC / dvvC）。
+        let dolbyBox: (type: String, payload: Data)?
+    }
+
+    /// 系统播放器在电视还是 SDR 模式时不肯加载没有兼容层的 HDR 流：
+    /// - 纯 HDR10（PQ）：直接报错 -11868「没有能在当前显示设备上播放的版本」（设备日志）；
+    /// - 杜比视界 Profile 5 等以杜比编码声明的流（dvh1 / dvhe）：一直停在「未知」不报错（设备日志 48 秒无进展）。
+    /// 要先把电视切到对应模式再加载。返回 nil 表示不需要；原因写进 reason。
+    func displayNeed() async -> (need: DisplayNeed?, reason: String) {
         await hdrProbeTask?.value
         guard let first = videoInfo.indices.first(where: { variantDecls[$0] != nil }),
-              let decl = variantDecls[first], decl.range == "PQ", decl.supplemental.isEmpty,
-              !decl.codecs.hasPrefix("dvh") else { return nil }
+              let decl = variantDecls[first] else { return (nil, "sdr") }
         let media = videoInfo[first].info
         let rate = Float(media.frame_rate ?? "") ?? 60
-        return (rate, media.width ?? 3840, media.height ?? 2160)
+        let width = media.width ?? 3840, height = media.height ?? 2160
+        if decl.codecs.hasPrefix("dvh") {
+            guard let box = dolbyBoxes[first] else { return (nil, "dolby_no_config_box") }
+            return (DisplayNeed(kind: .dolbyVision, frameRate: rate, width: width, height: height, dolbyBox: box), "dolby \(decl.codecs)")
+        }
+        // 带兼容层的杜比视界（SUPPLEMENTAL-CODECS）系统可以先按基础层播放，不用切。
+        guard decl.supplemental.isEmpty else { return (nil, "dolby_with_base_layer") }
+        guard decl.range == "PQ" else { return (nil, "range \(decl.range)") }
+        return (DisplayNeed(kind: .hdr10, frameRate: rate, width: width, height: height, dolbyBox: nil), "hdr10")
     }
 
     /// 定稿后的主播放列表（替换占位符）。
@@ -1539,6 +1562,8 @@ struct DolbyVisionConfig {
 
     var sampleEntry: String?
     var dolby: Dolby?
+    /// 配置盒本身（类型 + 内容，不含长度和类型头），用来生成杜比视界的显示要求。
+    var box: (type: String, payload: Data)?
 
     static func parse(initSegment data: Data) -> DolbyVisionConfig {
         var config = DolbyVisionConfig()
@@ -1565,6 +1590,10 @@ struct DolbyVisionConfig {
                 let level = ((b2 & 0x01) << 5) | (b3 >> 3)
                 let compat = b4 >> 4
                 config.dolby = Dolby(profile: profile, level: level, compatibilityID: compat)
+                let size = Int(bytes[offset - 4]) << 24 | Int(bytes[offset - 3]) << 16 | Int(bytes[offset - 2]) << 8 | Int(bytes[offset - 1])
+                if size > 8, offset - 4 + size <= bytes.count {
+                    config.box = (type, Data(bytes[payload..<(offset - 4 + size)]))
+                }
             }
         }
         return config
