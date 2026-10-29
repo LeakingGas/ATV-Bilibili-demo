@@ -68,7 +68,7 @@ class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
         // Resting a finger on the touch surface (no click); a click keeps AVKit's own behaviour.
         gesture.allowedPressTypes = []
         gesture.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirect.rawValue)]
-        gesture.minimumPressDuration = 0.6
+        gesture.minimumPressDuration = 1.0
         gesture.allowableMovement = 60
         gesture.cancelsTouchesInView = false
         gesture.delegate = self

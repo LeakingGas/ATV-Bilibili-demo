@@ -1077,6 +1077,7 @@ final class UploaderMenuController {
             let space = UpSpaceViewController()
             space.mid = mid
             Diag.mark("UPSPACE present mid=\(mid) presenter=\(type(of: presenter)) waitMs=\(Int(Date().timeIntervalSince(started) * 1000))")
+            player?.showControlsOnReturn = true
             presenter.present(space, animated: true) {
                 Diag.mark("UPSPACE presented=\(presenter.presentedViewController === space)")
             }

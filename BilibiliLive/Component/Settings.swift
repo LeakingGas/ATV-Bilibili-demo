@@ -60,15 +60,11 @@ enum Settings {
     @UserDefault("Settings.preferAvc.v2", defaultValue: true)
     static var preferAvc: Bool
 
-    /// 不等缓冲：数据一到就开播 / 卡顿后数据一到就继续，不让系统播放器先评估网速、攒缓冲。
     /// 诊断导出地址固定（端口 8765、无随机路径）还是每次随机。
     @UserDefault("Settings.fixedExportAddress", defaultValue: false)
     static var fixedExportAddress: Bool
 
-    /// 小块播放（实验）：把视频的每段切成约 1 秒的小块交给系统播放器。
-    @UserDefault("Settings.chunkedVideo", defaultValue: false)
-    static var chunkedVideo: Bool
-
+    /// 不等缓冲：数据一到就开播 / 卡顿后数据一到就继续，不让系统播放器先评估网速、攒缓冲。
     @UserDefault("Settings.playWithoutWaiting", defaultValue: false)
     static var playWithoutWaiting: Bool
 

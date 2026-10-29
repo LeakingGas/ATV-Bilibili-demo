@@ -11,6 +11,10 @@ final class BLWindow: UIWindow {
     /// 遥控器有按键按下（分发前发出；2 倍速手势据此区分「点按」和「长按」）。
     static let remotePressBegan = Notification.Name("BLWindow.remotePressBegan")
     private var menuHandled = false
+    /// 「按下」被播放器代接（没交给系统）的按键：它后面的「松开 / 取消」也必须代接。
+    /// 系统收到没见过「按下」的「松开」会直接抛异常闪退（Found untracked presses that are not in the began phase）。
+    private var takenPresses = Set<ObjectIdentifier>()
+    private weak var takingPlayer: CommonPlayerViewController?
 
     /// 诊断：记录每一次遥控器按键（在分发给任何界面之前）。
     override func sendEvent(_ event: UIEvent) {
@@ -21,14 +25,33 @@ final class BLWindow: UIWindow {
             for press in presses.allPresses where press.phase == .began || press.phase == .ended {
                 Diag.mark("PRESS \(Diag.pressName(press.type)) \(press.phase == .began ? "down" : "up") focus=\(Diag.describeFocus())")
             }
-            if let player = rootViewController?.topMostViewController() as? CommonPlayerViewController,
+            // 按下时代接了的键：后续阶段一律代接，不交给系统。
+            let taken = presses.allPresses.filter { takenPresses.contains(ObjectIdentifier($0)) }
+            if !taken.isEmpty {
+                _ = takingPlayer?.consumePressWhileSuppressed(presses)
+                for press in taken where press.phase == .ended || press.phase == .cancelled {
+                    takenPresses.remove(ObjectIdentifier(press))
+                }
+                return
+            }
+            let player = rootViewController?.topMostViewController() as? CommonPlayerViewController
+            // 只在「按下」时决定要不要代接；按下交给了系统的键，后续阶段也交给系统。
+            if let player, presses.allPresses.contains(where: { $0.phase == .began }),
                player.controlsSuppressed, player.consumePressWhileSuppressed(presses)
             {
+                if takenPresses.count > 16 { takenPresses.removeAll() }
+                for press in presses.allPresses where press.phase == .began {
+                    takenPresses.insert(ObjectIdentifier(press))
+                }
+                takingPlayer = player
                 return
+            }
+            if let player, presses.allPresses.contains(where: { $0.phase == .began }) {
+                player.restoreTransportBar(reason: "press")
             }
         } else if event.type == .touches,
                   let player = rootViewController?.topMostViewController() as? CommonPlayerViewController,
-                  player.controlsSuppressed
+                  player.controlsSuppressed || player.transportBarExcluded
         {
             player.noteTouchWhileSuppressed()
         }

@@ -250,6 +250,7 @@ class CommonPlayerViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         Diag.mark("PLAYER \(Diag.id(self)) viewDidAppear")
+        if showControlsOnReturn { showControlsAfterReturn() }
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -370,29 +371,66 @@ class CommonPlayerViewController: UIViewController {
         return true
     }
 
-    /// 触控板滑动：恢复系统控件（事件照常分发）。
+    /// 触控板滑动：恢复系统控件 / 进度条（事件照常分发）。
     /// 长按 2 倍速期间和松手后片刻不算（手指一直搭在触控板上，松手也是一次触摸）。
     func noteTouchWhileSuppressed() {
         guard !boostActive, Date().timeIntervalSince(boostEndedAt) > 0.6 else { return }
         restoreControls()
+        restoreTransportBar(reason: "touch")
     }
 
     // MARK: 长按 2 倍速：不显示控制栏
+    //
+    // 不关系统控件（关掉后系统不接按键，要我们代接，容易出错），
+    // 只让控制界面暂时「不包含进度条」：按键仍由系统处理。
 
     private(set) var boostActive = false
     private var boostEndedAt = Date.distantPast
+    /// 进度条被 2 倍速暂时去掉了（松手后保持，等用户下一次操作再放回来）。
+    private(set) var transportBarExcluded = false
 
     /// 长按 2 倍速开始：控制栏已经出来就收起，整个 2 倍速期间不让它出来。
     func beginBoostUI() {
         boostActive = true
-        hideTransportBar()
+        Diag.mark("PLAYER \(Diag.id(self)) boost begin bar=\(transportBarVisible) suppressed=\(controlsSuppressed)")
+        guard !transportBarExcluded else { return }
+        transportBarExcluded = true
+        playerVC.playbackControlsIncludeTransportBar = false
+        Diag.mark("PLAYER \(Diag.id(self)) transport bar excluded")
     }
 
-    /// 松手：保持收起，等用户下一次操作再恢复（和按返回收起控制栏后一样）。
+    /// 松手：保持不显示，等用户下一次操作再放回进度条。
     func endBoostUI() {
         guard boostActive else { return }
         boostActive = false
         boostEndedAt = Date()
+        Diag.mark("PLAYER \(Diag.id(self)) boost end bar=\(transportBarVisible)")
+    }
+
+    /// 用户的下一次操作（按键 / 触控板）：放回进度条。
+    func restoreTransportBar(reason: String) {
+        guard transportBarExcluded, !boostActive else { return }
+        transportBarExcluded = false
+        playerVC.playbackControlsIncludeTransportBar = true
+        Diag.mark("PLAYER \(Diag.id(self)) transport bar included (\(reason)) bar=\(transportBarVisible)")
+    }
+
+    // MARK: 从别的页面（UP 主主页）回到播放器时亮一下控制栏
+
+    /// 由打开别的页面的一方设置；回到播放器时显示一次控制栏。
+    var showControlsOnReturn = false
+
+    private func showControlsAfterReturn() {
+        showControlsOnReturn = false
+        restoreTransportBar(reason: "return")
+        if controlsSuppressed {
+            // 恢复系统控件时 AVKit 会把控制栏显示出来（日志实测）。
+            restoreControls()
+        } else {
+            playerVC.showsPlaybackControls = false
+            playerVC.showsPlaybackControls = showsPlaybackControls
+        }
+        Diag.mark("PLAYER \(Diag.id(self)) show controls after return")
     }
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] {

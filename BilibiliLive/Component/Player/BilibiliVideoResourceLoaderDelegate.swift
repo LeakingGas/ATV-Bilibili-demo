@@ -237,9 +237,6 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     private var variantDecls = [Int: (codecs: String, supplemental: String, range: String)]()
     private var hdrVariants = [Int: HDRVariant]()
     private var hdrProbeTask: Task<Void, Never>?
-    /// 小块播放：各段目录（moof）的解析缓存。
-    fileprivate let fragmentLock = NSLock()
-    fileprivate var fragmentIndexes = [String: FragmentIndex]()
 
     /// 「HDR 诊断」：依次换几种主播放列表写法，看系统播放器肯不肯加载（只用于诊断）。
     enum HDRDiagnosticMode: String, CaseIterable {
@@ -314,10 +311,6 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     /// 定稿后的主播放列表（替换占位符）。
     private func renderedMasterPlaylist() -> String {
         var text = masterPlaylist
-        if Settings.chunkedVideo {
-            // 小块不是每块都从关键帧开始。
-            text = text.replacingOccurrences(of: "#EXT-X-INDEPENDENT-SEGMENTS\n", with: "")
-        }
         for (index, decl) in variantDecls {
             var codecs = decl.codecs
             if hdrDiagnosticMode == .appleCodec, hdrVariants[index] != nil {
@@ -387,7 +380,7 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         // 首选 CDN 挂掉时 segment 会整体切到探测成功的备用 URL
         let segment = sidxResult.sidx
         let segmentURL = sidxResult.url
-        // 分段统计：每段多长、多大（评估「切小块」能省多少）。
+        // 分段统计：每段多长、多大（第一段大小直接影响出画面的时间）。
         if segment.timescale > 0, !segment.segments.isEmpty {
             let durations = segment.segments.map { Double($0.duration) / Double(segment.timescale) }
             let sizes = segment.segments.map { Double($0.size) / 1_048_576 }
@@ -412,36 +405,6 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         guard let mediaURL = mediaTransportURL(for: info.info) else {
             updateAccelerationText("BTR ONLY error: proxy-unavailable")
             throw NSError(domain: "BTRStrict", code: 2, userInfo: [NSLocalizedDescriptionKey: "BTR代理不可用；直连已禁用"])
-        }
-        // 小块播放（实验）：只对主视频流（不含音频、缩略图流）。先确认这条流的段能切，切不了就照常整段。
-        if Settings.chunkedVideo, variantDecls[index] != nil, httpPort > 0,
-           let mediaID = proxyRegistry.id(for: info.info),
-           let downloader = proxyRegistry.downloader(for: info.info),
-           let first = segment.segments.first, segment.timescale > 0 {
-            let firstOffset = offset + 1
-            let probeStarted = BTRTrace.now
-            let supported = await Self.runBlocking {
-                (try? self.fragmentIndex(mediaID: mediaID, downloader: downloader, offset: firstOffset,
-                                         size: Int(first.size), duration: Int(first.duration))) != nil
-            }
-            BTRTrace.shared.event("chunk_probe", ["quality": info.info.id, "supported": supported, "elapsedMs": BTRTrace.now - probeStarted])
-            if supported {
-                if let downloader = proxyRegistry.downloader(for: info.info) {
-                    var timings = [BTRSegmentTiming]()
-                    var presentation = 0.0
-                    var cursor = firstOffset
-                    for seg in segment.segments {
-                        if seg.size > 0, let range = try? MediaByteRange(start: Int64(cursor), end: Int64(cursor + seg.size - 1)) {
-                            timings.append(BTRSegmentTiming(range: range, start: presentation))
-                        }
-                        presentation += Double(seg.duration) / Double(segment.timescale)
-                        cursor += seg.size
-                    }
-                    await downloader.setTimings(timings)
-                }
-                return chunkedPlaylist(segment: segment, firstOffset: firstOffset, mediaURL: mediaURL, mediaID: mediaID,
-                                       moovOffset: moovOffset, moovEnd: moovIdx, quality: info.info.id)
-            }
         }
         var playList = """
         #EXTM3U
@@ -886,191 +849,6 @@ private extension BilibiliVideoResourceLoaderDelegate {
         Logger.debug("handle loading \(customUrl)")
     }
 
-    // MARK: - 小块播放
-
-    /// 每块大约 1 秒。
-    private static let chunkSeconds = 1.0
-    private func chunkedPlaylist(segment: SidxParseUtil.Sidx, firstOffset: Int, mediaURL: String, mediaID: String,
-                                 moovOffset: String, moovEnd: Int, quality: Int) -> String {
-        var lines = [String]()
-        var cursor = firstOffset
-        var maxPart = 1.0
-        var partCount = 0
-        for seg in segment.segments {
-            let seconds = Double(seg.duration) / Double(segment.timescale)
-            let parts = max(1, Int((seconds / Self.chunkSeconds).rounded()))
-            let partSeconds = seconds / Double(parts)
-            maxPart = max(maxPart, partSeconds)
-            for part in 0..<parts {
-                lines.append("#EXTINF:\(String(format: "%.6f", partSeconds)),")
-                lines.append("http://127.0.0.1:\(httpPort)/part/\(mediaID)?o=\(cursor)&s=\(seg.size)&d=\(seg.duration)&k=\(parts)&j=\(part)")
-            }
-            partCount += parts
-            cursor += seg.size
-        }
-        BTRTrace.shared.event("chunked_playlist", ["quality": quality, "segments": segment.segments.count, "parts": partCount])
-        var playList = """
-        #EXTM3U
-        #EXT-X-VERSION:7
-        #EXT-X-TARGETDURATION:\(Int(maxPart.rounded(.up)))
-        #EXT-X-MEDIA-SEQUENCE:1
-        #EXT-X-PLAYLIST-TYPE:VOD
-        #EXT-X-MAP:URI="\(mediaURL)",BYTERANGE="\(moovEnd + 1)@\(moovOffset)"
-
-        """
-        if let startOffset, startOffset > 0 {
-            playList.append("#EXT-X-START:TIME-OFFSET=\(String(format: "%.3f", startOffset)),PRECISE=YES\n")
-        }
-        playList.append(lines.joined(separator: "\n"))
-        playList.append("\n#EXT-X-ENDLIST")
-        return playList
-    }
-
-    /// 在后台线程跑一段会阻塞的代码（等下载用），不占用 Swift 并发的线程。
-    private static func runBlocking<T>(_ work: @escaping () -> T) async -> T {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async { continuation.resume(returning: work()) }
-        }
-    }
-
-    /// 经 BTR 下载一段字节（阻塞，只在代理线程 / 后台线程调用）。
-    private static func fetchBlocking(_ downloader: MediaRangeDownloader, _ range: MediaByteRange) throws -> Data {
-        let pipe = MediaBytePipe()
-        let task = Task { await downloader.stream(range: range, to: pipe) }
-        var data = Data()
-        do {
-            while let chunk = try pipe.readSync(maxLength: 256 * 1024, timeout: 30) { data.append(chunk) }
-        } catch {
-            task.cancel()
-            throw error
-        }
-        return data
-    }
-
-    /// 一段的目录（moof）解析结果，按「流 + 位置」缓存。
-    private func fragmentIndex(mediaID: String, downloader: MediaRangeDownloader, offset: Int, size: Int, duration: Int) throws -> FragmentIndex {
-        let key = "\(mediaID)-\(offset)"
-        fragmentLock.lock()
-        if let cached = fragmentIndexes[key] { fragmentLock.unlock(); return cached }
-        fragmentLock.unlock()
-        var want = min(size, 64 * 1024)
-        for _ in 0..<4 {
-            let prefix = try Self.fetchBlocking(downloader, MediaByteRange(start: Int64(offset), end: Int64(offset + want - 1)))
-            switch FragmentIndex.parse(prefix, fragmentDuration: duration, fragmentSize: size) {
-            case let .index(index):
-                fragmentLock.lock()
-                if fragmentIndexes.count > 400 { fragmentIndexes.removeAll() }
-                fragmentIndexes[key] = index
-                fragmentLock.unlock()
-                return index
-            case let .needBytes(count):
-                guard count > want, want < size else { throw NSError(domain: "Chunk", code: 1) }
-                want = min(size, count)
-            case let .failure(reason):
-                BTRTrace.shared.event("chunk_parse_failed", ["reason": reason, "offset": offset])
-                throw NSError(domain: "Chunk", code: 2, userInfo: [NSLocalizedDescriptionKey: reason])
-            }
-        }
-        throw NSError(domain: "Chunk", code: 3)
-    }
-
-    /// 一小块 = 新的 moof + mdat 头（从目录算出，立刻能发）+ 这几帧原样的数据（边下边发）。
-    /// 不等整块下完再回：系统播放器 1 秒收不到第一个字节就放弃这个请求（-12889）。
-    /// 系统挂断后写入失败，立刻取消这次下载，不再占网速。
-    private func handlePartRequest(_ req: HttpRequest) -> HttpResponse {
-        let query = Dictionary(req.queryParams, uniquingKeysWith: { first, _ in first })
-        guard let mediaID = req.params[":id"],
-              let offset = query["o"].flatMap(Int.init), let size = query["s"].flatMap(Int.init),
-              let duration = query["d"].flatMap(Int.init), let parts = query["k"].flatMap(Int.init),
-              let part = query["j"].flatMap(Int.init),
-              let entry = proxyRegistry.snapshot(for: mediaID)
-        else { return HttpResponse.badRequest(nil) }
-        let started = BTRTrace.now
-        let index: FragmentIndex
-        do {
-            index = try fragmentIndex(mediaID: mediaID, downloader: entry.downloader, offset: offset, size: size, duration: duration)
-        } catch {
-            BTRTrace.shared.event("part_failed", ["offset": offset, "part": part, "stage": "index",
-                                                  "error": String(describing: error).prefix(120)])
-            return HttpResponse.raw(502, "Bad Gateway", nil, nil)
-        }
-        let samples = index.sampleRange(part: part, of: parts)
-        let bytes = index.byteRange(of: samples)
-        let header = index.partHeader(samples, sequence: UInt32(part + 1))
-        let total = header.count + bytes.count
-
-        // 要发的范围（整块，或系统带 Range 时的一段），在「头 + 数据」拼起来的坐标里。
-        var sendStart = 0
-        var sendEnd = total - 1
-        var status = 200
-        var headers = ["Content-Type": "video/mp4", "Accept-Ranges": "bytes"]
-        if let rangeHeader = req.headers["range"] {
-            guard case let .single(range) = MediaRangeParsing.parse(header: rangeHeader, fileLength: Int64(total)) else {
-                return HttpResponse.raw(416, "Range Not Satisfiable", ["Content-Range": "bytes */\(total)"], nil)
-            }
-            sendStart = Int(range.start)
-            sendEnd = Int(range.end)
-            status = 206
-            headers["Content-Range"] = "bytes \(sendStart)-\(sendEnd)/\(total)"
-        }
-        headers["Content-Length"] = String(sendEnd - sendStart + 1)
-        let indexMs = BTRTrace.now - started
-        let downloader = entry.downloader
-
-        return HttpResponse.raw(status, status == 206 ? "Partial Content" : "OK", headers) { writer in
-            var written = 0
-            var firstByteMs: Double?
-            // 头部分
-            if sendStart < header.count {
-                let slice = header.subdata(in: sendStart..<min(header.count, sendEnd + 1))
-                do {
-                    try writer.write(slice)
-                } catch {
-                    BTRTrace.shared.event("part_failed", ["offset": offset, "part": part, "stage": "write", "written": written,
-                                                          "error": String(describing: error).prefix(120)])
-                    throw error
-                }
-                written += slice.count
-                firstByteMs = BTRTrace.now - started
-            }
-            // 数据部分：这一段原样的字节，边下边写。
-            let dataStart = max(sendStart, header.count) - header.count
-            let dataEnd = sendEnd - header.count
-            if dataEnd >= dataStart {
-                let pipe = MediaBytePipe()
-                let streamTask: Task<Void, Never>
-                do {
-                    let range = try MediaByteRange(start: Int64(offset + bytes.lowerBound + dataStart),
-                                                   end: Int64(offset + bytes.lowerBound + dataEnd))
-                    streamTask = Task { await downloader.stream(range: range, to: pipe) }
-                } catch {
-                    BTRTrace.shared.event("part_failed", ["offset": offset, "part": part, "stage": "range",
-                                                          "error": String(describing: error).prefix(120)])
-                    throw error
-                }
-                var dataWritten = 0
-                do {
-                    while let chunk = try pipe.readSync(maxLength: 256 * 1024, timeout: 30) {
-                        try writer.write(chunk)
-                        if firstByteMs == nil { firstByteMs = BTRTrace.now - started }
-                        written += chunk.count
-                        dataWritten += chunk.count
-                    }
-                    guard dataWritten == dataEnd - dataStart + 1 else { throw NSError(domain: "Chunk", code: 4) }
-                } catch {
-                    streamTask.cancel()
-                    BTRTrace.shared.event("part_failed", ["offset": offset, "part": part, "stage": "data", "written": written,
-                                                          "elapsedMs": BTRTrace.now - started,
-                                                          "error": String(describing: error).prefix(120)])
-                    throw error
-                }
-            }
-            BTRTrace.shared.event("part_served", ["offset": offset, "part": part, "parts": parts, "bytes": written,
-                                                  "samples": samples.count, "indexMs": indexMs,
-                                                  "firstByteMs": firstByteMs ?? -1, "elapsedMs": BTRTrace.now - started])
-        }
-    }
-
     func bindHttpServer() {
         httpServer["/subtitle"] = { [weak self] req in
             if let url = req.queryParams.first(where: { $0.0 == "u" })?.1 {
@@ -1086,10 +864,6 @@ private extension BilibiliVideoResourceLoaderDelegate {
         httpServer["/media/:id"] = { [weak self] req in
             guard let self else { return HttpResponse.internalServerError(nil) }
             return self.handleMediaProxyRequest(req)
-        }
-        httpServer["/part/:id"] = { [weak self] req in
-            guard let self else { return HttpResponse.internalServerError(nil) }
-            return self.handlePartRequest(req)
         }
     }
 
