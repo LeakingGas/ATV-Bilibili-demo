@@ -5,6 +5,13 @@
 
 import UIKit
 
+/// 在系统处理之前先看返回键的界面（例如评论区：返回先收起展开的评论）。
+/// 由窗口沿焦点所在视图的响应链往上找。
+protocol BackPressInterceptor: AnyObject {
+    /// 返回 true：这次返回由它处理了，不再交给系统。
+    func interceptBackPress() -> Bool
+}
+
 /// 刚启动、还没有任何元素获得焦点时，返回键直接落到窗口上（系统默认退出 App）。
 /// 这里先交给主界面：能弹出侧边栏就弹出，不能才按系统默认处理。
 final class BLWindow: UIWindow {
@@ -15,6 +22,8 @@ final class BLWindow: UIWindow {
     /// 系统收到没见过「按下」的「松开」会直接抛异常闪退（Found untracked presses that are not in the began phase）。
     private var takenPresses = Set<ObjectIdentifier>()
     private weak var takingPlayer: CommonPlayerViewController?
+    /// 被 BackPressInterceptor 处理了的返回键：后续阶段同样不交给系统。
+    private var interceptedBackPresses = Set<ObjectIdentifier>()
 
     /// 诊断：记录每一次遥控器按键（在分发给任何界面之前）。
     override func sendEvent(_ event: UIEvent) {
@@ -24,6 +33,21 @@ final class BLWindow: UIWindow {
             }
             for press in presses.allPresses where press.phase == .began || press.phase == .ended {
                 Diag.mark("PRESS \(Diag.pressName(press.type)) \(press.phase == .began ? "down" : "up") focus=\(Diag.describeFocus())")
+            }
+            // 返回键先给焦点所在的界面看一眼（在系统的手势识别之前）。
+            let backTaken = presses.allPresses.filter { interceptedBackPresses.contains(ObjectIdentifier($0)) }
+            if !backTaken.isEmpty {
+                for press in backTaken where press.phase == .ended || press.phase == .cancelled {
+                    interceptedBackPresses.remove(ObjectIdentifier(press))
+                }
+                return
+            }
+            if let back = presses.allPresses.first(where: { $0.type == .menu && $0.phase == .began }),
+               let interceptor = backInterceptorUnderFocus(), interceptor.interceptBackPress()
+            {
+                if interceptedBackPresses.count > 16 { interceptedBackPresses.removeAll() }
+                interceptedBackPresses.insert(ObjectIdentifier(back))
+                return
             }
             // 按下时代接了的键：后续阶段一律代接，不交给系统。
             let taken = presses.allPresses.filter { takenPresses.contains(ObjectIdentifier($0)) }
@@ -58,6 +82,15 @@ final class BLWindow: UIWindow {
             }
         }
         super.sendEvent(event)
+    }
+
+    private func backInterceptorUnderFocus() -> BackPressInterceptor? {
+        var responder: UIResponder? = windowScene?.focusSystem?.focusedItem as? UIView
+        while let current = responder {
+            if let interceptor = current as? BackPressInterceptor { return interceptor }
+            responder = current.next
+        }
+        return nil
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {

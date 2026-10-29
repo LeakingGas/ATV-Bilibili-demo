@@ -824,12 +824,17 @@ private extension BilibiliVideoResourceLoaderDelegate {
             BTRTrace.shared.event("loader_subtitle")
             let url = String(urlStr.dropFirst(URLs.customSubtitlePrefix.count))
             let req = url.removingPercentEncoding ?? url
+            let started = BTRTrace.now
             Task {
                 do {
                     if subtitles[req] == nil {
                         let content = try await WebRequest.requestSubtitle(url: URL(string: req)!)
                         let vtt = BVideoUrlUtils.convertToVTT(subtitle: content)
                         subtitles[req] = vtt
+                        // 诊断：下载、转换的结果（只记开头，换行写成 ⏎）。
+                        BTRTrace.shared.event("subtitle_fetched", ["cues": content.count, "bytes": vtt.utf8.count,
+                                                                   "elapsedMs": BTRTrace.now - started,
+                                                                   "head": String(vtt.prefix(160)).replacingOccurrences(of: "\n", with: "⏎")])
                     }
                     let port = try self.httpServer.port()
                     let url = "http://127.0.0.1:\(port)/subtitle?u=" + url
@@ -839,8 +844,11 @@ private extension BilibiliVideoResourceLoaderDelegate {
                     loadingRequest.redirect = redirectRequest
                     loadingRequest.response = redirectResponse
                     loadingRequest.finishLoading()
+                    BTRTrace.shared.event("subtitle_redirect", ["port": port, "cached": subtitles[req] != nil])
                     return
                 } catch let err {
+                    BTRTrace.shared.event("subtitle_failed", ["elapsedMs": BTRTrace.now - started,
+                                                              "error": String(describing: err).prefix(200)])
                     loadingRequest.finishLoading(with: err)
                 }
             }
@@ -854,8 +862,12 @@ private extension BilibiliVideoResourceLoaderDelegate {
             if let url = req.queryParams.first(where: { $0.0 == "u" })?.1 {
                 let req = url.removingPercentEncoding ?? url
                 if let content = self?.subtitles[req] {
+                    BTRTrace.shared.event("subtitle_served", ["status": 200, "bytes": content.utf8.count])
                     return HttpResponse.ok(.text(content))
                 }
+                BTRTrace.shared.event("subtitle_served", ["status": 404, "known": self?.subtitles.count ?? -1])
+            } else {
+                BTRTrace.shared.event("subtitle_served", ["status": 404, "reason": "no-u"])
             }
             return HttpResponse.notFound()
         }

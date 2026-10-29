@@ -544,8 +544,6 @@ final class VideoPlayerFeedInfoViewController: UIViewController {
     private var roots = [Replys.Reply]()
     private var fetchedChildren = [Int: [Replys.Reply]]()
     private var expanded = Set<Int>()
-    /// 按下返回时决定要收起的评论（松开时收起）。
-    fileprivate var pendingCollapseRoot: Int?
     /// 收起后焦点要回到的评论。
     fileprivate var focusAfterCollapse: IndexPath?
     private var loadingRoots = Set<Int>()
@@ -836,7 +834,7 @@ extension VideoPlayerFeedInfoViewController: UICollectionViewDelegate {
 
 // MARK: - 返回键：焦点在已展开的评论（或它的回复）上时，先收起这条评论
 
-extension VideoPlayerFeedInfoViewController {
+extension VideoPlayerFeedInfoViewController: BackPressInterceptor {
     /// 焦点所在的评论属于哪条已展开的一级评论。
     private func expandedRootUnderFocus() -> Int? {
         guard let focused = view.window?.windowScene?.focusSystem?.focusedItem as? UICollectionViewCell,
@@ -851,30 +849,15 @@ extension VideoPlayerFeedInfoViewController {
         }
     }
 
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if presses.contains(where: { $0.type == .menu }) {
-            pendingCollapseRoot = expandedRootUnderFocus()
-            Diag.mark("COMMENTS back down collapse=\(pendingCollapseRoot.map(String.init) ?? "none")")
-            if pendingCollapseRoot != nil { return }
+    /// 返回键（窗口在分发给任何界面之前调用）：焦点在已展开的评论上就收起它，这次返回不再交给系统。
+    /// 不能在这里的 pressesBegan 里拦：系统面板的手势同时收到返回键，会直接关掉面板（日志实测）。
+    func interceptBackPress() -> Bool {
+        guard let root = expandedRootUnderFocus() else {
+            Diag.mark("COMMENTS back pass (no expanded comment under focus)")
+            return false
         }
-        super.pressesBegan(presses, with: event)
-    }
-
-    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if presses.contains(where: { $0.type == .menu }), let root = pendingCollapseRoot {
-            pendingCollapseRoot = nil
-            collapse(root: root)
-            return
-        }
-        super.pressesEnded(presses, with: event)
-    }
-
-    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        if presses.contains(where: { $0.type == .menu }), pendingCollapseRoot != nil {
-            pendingCollapseRoot = nil
-            return
-        }
-        super.pressesCancelled(presses, with: event)
+        collapse(root: root)
+        return true
     }
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
