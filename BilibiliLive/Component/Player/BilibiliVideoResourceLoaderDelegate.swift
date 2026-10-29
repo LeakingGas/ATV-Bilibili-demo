@@ -1382,8 +1382,10 @@ final class BTRTraceExport {
         stop()
         let server = HttpServer()
         server.listenAddressIPv4 = "0.0.0.0"
-        let token = UUID().uuidString.replacingOccurrences(of:"-",with:"").prefix(6).lowercased()
-        let path = "/" + token + "/btr.jsonl"
+        // 地址：随机（带 6 位随机路径、随机端口，同一网络的其他人猜不到）或固定（端口 8765、无随机路径，方便电脑存书签）。
+        let fixed = Settings.fixedExportAddress
+        let prefix = fixed ? "" : "/" + UUID().uuidString.replacingOccurrences(of:"-",with:"").prefix(6).lowercased()
+        let path = prefix + "/btr.jsonl"
         server[path] = { _ in
             BTRTrace.shared.freeze()
             let bytes = Data(BTRTrace.shared.export().utf8)
@@ -1393,7 +1395,7 @@ final class BTRTraceExport {
                 try writer.write(bytes)
             }
         }
-        let diagPath = "/" + token + "/diag.txt"
+        let diagPath = prefix + "/diag.txt"
         // 纯文本直接在浏览器里显示（不再强制下载）。
         server[diagPath] = { _ in
             let bytes = Data(Diag.exportText().utf8)
@@ -1403,20 +1405,26 @@ final class BTRTraceExport {
             }
         }
         // 带「复制全部」按钮的网页，手机上也方便复制。
-        let pagePath = "/" + token + "/diag"
+        let pagePath = prefix + "/diag"
         server[pagePath] = { _ in Self.logPage(title: "运行日志", text: Diag.exportText(), txt: "diag.txt", fileName: "bili-diag.txt") }
         // 投屏日志单独一页。
-        server["/" + token + "/dlna.txt"] = { _ in
+        server[prefix + "/dlna.txt"] = { _ in
             let bytes = Data(Diag.dlnaExportText().utf8)
             return HttpResponse.raw(200,"OK",["Content-Type":"text/plain; charset=utf-8",
                 "Cache-Control":"no-store","Content-Length":String(bytes.count)]) { writer in
                 try writer.write(bytes)
             }
         }
-        let dlnaPagePath = "/" + token + "/dlna"
+        let dlnaPagePath = prefix + "/dlna"
         server[dlnaPagePath] = { _ in Self.logPage(title: "投屏日志", text: Diag.dlnaExportText(), txt: "dlna.txt", fileName: "bili-dlna.txt") }
-        do { try server.start(0,forceIPv4:true) }
-        catch { server.stop(); throw error }
+        do {
+            if fixed {
+                // 固定端口被占用时退回随机端口（地址照常显示在导出页上）。
+                do { try server.start(8765, forceIPv4: true) } catch { try server.start(0, forceIPv4: true) }
+            } else {
+                try server.start(0, forceIPv4: true)
+            }
+        } catch { server.stop(); throw error }
         let port: Int
         do { port = Int(try server.port()) }
         catch { server.stop(); throw error }

@@ -320,6 +320,14 @@ class SettingsViewController: UIViewController {
                     guard let self else { return }
                     Diag.presentDLNAExport(from: self)
                 }
+                Actions(title: "导出地址", message: "固定：每次都是 http://电视IP:8765/diag，可以在电脑上存书签（同一网络的人知道地址也能打开）。\n随机：每次换端口和路径，别人猜不到。",
+                        current: Settings.fixedExportAddress ? "固定" : "随机",
+                        options: [true, false],
+                        optionString: ["固定", "随机"])
+                {
+                    Settings.fixedExportAddress = $0
+                    BTRTraceExport.shared.stop()
+                }
             }
         }
     }
