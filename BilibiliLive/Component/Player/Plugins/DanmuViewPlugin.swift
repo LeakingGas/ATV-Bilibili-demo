@@ -37,6 +37,11 @@ class DanmuViewPlugin: NSObject {
 
     private let danmuProvider: DanmuProviderProtocol
     private var timeObserver: PlayerTimeObservation?
+    private weak var container: CommonPlayerViewController?
+
+    func playerDidLoad(host: PlayerHost) {
+        container = host.hostViewController.parent as? CommonPlayerViewController
+    }
     private var cancellable = Set<AnyCancellable>()
 
     private func shoot(_ model: DanmakuCellModel) {
@@ -106,13 +111,13 @@ extension DanmuViewPlugin: CommonPlayerPlugin {
     }
 
     func addMenuItems(current: inout [UIMenuElement]) -> [UIMenuElement] {
-        let danmuImage = UIImage(systemName: "list.bullet.rectangle.fill")
-        let danmuImageDisable = UIImage(systemName: "list.bullet.rectangle")
-        let danmuAction = UIAction(title: "Show Danmu", image: danMuView.isHidden ? danmuImageDisable : danmuImage) {
-            action in
+        // 弹幕开关并进「弹幕设置」菜单的第一项；按钮图标表示当前开 / 关。
+        let showing = Defaults.shared.showDanmu
+        let danmuAction = UIAction(title: "显示弹幕", state: showing ? .on : .off) { [weak self] _ in
             Defaults.shared.showDanmu.toggle()
-            action.image = Defaults.shared.showDanmu ? danmuImage : danmuImageDisable
+            self?.container?.updateMenus()
         }
+        let toggleMenu = UIMenu(title: "", options: .displayInline, children: [danmuAction])
         let danmuDurationMenu = UIMenu(title: "弹幕展示时长", options: [.displayInline, .singleSelection], children: [4, 6, 8].map { dur in
             UIAction(title: "\(dur) 秒", state: dur == Settings.danmuDuration ? .on : .off) { _ in Settings.danmuDuration = dur }
         })
@@ -129,9 +134,10 @@ extension DanmuViewPlugin: CommonPlayerPlugin {
                 self?.applyDisplayArea()
             }
         })
-        let danmuSettingMenu = UIMenu(title: "弹幕设置", image: UIImage(systemName: "keyboard.badge.ellipsis"),
-                                      children: [danmuDurationMenu, danmuAILevelMenu, danmuAlphaMenu, danmuAreaMenu])
+        let danmuSettingMenu = UIMenu(title: "弹幕设置",
+                                      image: UIImage(systemName: showing ? "list.bullet.rectangle.fill" : "list.bullet.rectangle"),
+                                      children: [toggleMenu, danmuDurationMenu, danmuAILevelMenu, danmuAlphaMenu, danmuAreaMenu])
 
-        return [danmuAction, danmuSettingMenu]
+        return [danmuSettingMenu]
     }
 }

@@ -228,8 +228,9 @@ final class VideoInteractionController: NSObject, UIGestureRecognizerDelegate {
         }
     }
 
+    /// 控制栏上只放点赞、点踩（投币、收藏的按钮去掉了；在点赞上长按仍是一键三连）。
     func menuItems() -> [UIAction] {
-        Kind.allCases.map { kind in
+        [Kind.like, .dislike].map { kind in
             let on = isOn(kind)
             let count = counts[kind] ?? 0
             let title = count > 0 && kind != .dislike ? "\(kind.title) \(count.numberString())" : kind.title

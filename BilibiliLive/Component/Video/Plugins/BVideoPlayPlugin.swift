@@ -388,14 +388,79 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         { [weak self] _ in
             self?.probeCDN()
         }
+        var actions: [UIMenuElement] = [action]
+        if playerDelegate?.isHDR == true {
+            let diag = UIAction(title: isRunningHDRDiag ? "HDR 诊断中…" : "HDR 诊断", image: UIImage(systemName: "stethoscope")) { [weak self] _ in
+                Task { @MainActor [weak self] in await self?.runHDRDiagnostics() }
+            }
+            actions.append(diag)
+        }
         if let setting = current.compactMap({ $0 as? UIMenu })
             .first(where: { $0.identifier == UIMenu.Identifier(rawValue: "setting") }),
             let index = current.firstIndex(of: setting)
         {
-            current[index] = setting.replacingChildren(setting.children + [action])
+            current[index] = setting.replacingChildren(setting.children + actions)
             return []
         }
         return []
+    }
+
+    // MARK: - HDR 诊断（临时）
+
+    private var pendingHDRDiagMode: BilibiliVideoResourceLoaderDelegate.HDRDiagnosticMode = .none
+    private var isRunningHDRDiag = false
+
+    /// 依次用几种主播放列表写法重新加载当前视频，每种最多等 6 秒，记下系统播放器肯不肯开始加载，最后恢复原样。
+    @MainActor
+    private func runHDRDiagnostics() async {
+        guard !isRunningHDRDiag, !isShadow else { return }
+        isRunningHDRDiag = true
+        defer {
+            isRunningHDRDiag = false
+            pendingHDRDiagMode = .none
+        }
+        let position = playerVC?.player?.currentTime().seconds ?? 0
+        BTRTrace.shared.event("hdr_diag_begin", ["eligibleForHDR": AVPlayer.eligibleForHDRPlayback,
+                                                 "hdrModes": AVPlayer.availableHDRModes.rawValue,
+                                                 "position": position])
+        Diag.eventWindow("HDR 诊断")
+        for mode in [BilibiliVideoResourceLoaderDelegate.HDRDiagnosticMode.original, .noIFrame, .appleCodec, .noRange] {
+            pendingHDRDiagMode = mode
+            let generation = beginLoadGeneration()
+            let started = Date()
+            do {
+                try await playmedia(urlInfo: playData.videoPlayURLInfo, playerInfo: playData.playerInfo, generation: generation,
+                                    maxQuality: lastMaxQuality, streamIndex: lastStreamIndex, isQualitySwitch: true)
+            } catch {
+                BTRTrace.shared.event("hdr_diag", ["mode": mode.rawValue, "result": "load_error", "error": String(describing: error).prefix(120)])
+                continue
+            }
+            var result = "timeout"
+            while Date().timeIntervalSince(started) < 6 {
+                guard loadGeneration == generation else { return }
+                if let item = playerVC?.player?.currentItem {
+                    if item.status == .readyToPlay { result = "ready"; break }
+                    if item.status == .failed { result = "failed"; break }
+                }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+            let item = playerVC?.player?.currentItem
+            let error = (item?.error as NSError?).map { "\($0.domain)#\($0.code)" } ?? "-"
+            let errorLog = item?.errorLog()?.events.last.map { "\($0.errorDomain)#\($0.errorStatusCode) \($0.errorComment ?? "")" } ?? "-"
+            BTRTrace.shared.event("hdr_diag", ["mode": mode.rawValue, "result": result,
+                                               "waitMs": Date().timeIntervalSince(started) * 1000,
+                                               "size": item.map { "\(Int($0.presentationSize.width))x\(Int($0.presentationSize.height))" } ?? "-",
+                                               "error": error, "errorLog": errorLog])
+        }
+        // 恢复原样（正常写法），回到诊断前的位置。
+        pendingHDRDiagMode = .none
+        let generation = beginLoadGeneration()
+        try? await playmedia(urlInfo: playData.videoPlayURLInfo, playerInfo: playData.playerInfo, generation: generation,
+                             maxQuality: lastMaxQuality, streamIndex: lastStreamIndex, isQualitySwitch: true)
+        if loadGeneration == generation, let player = playerVC?.player, position > 0 {
+            _ = await player.seek(to: CMTime(seconds: position, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+        BTRTrace.shared.event("hdr_diag_end")
     }
 
     private func probeCDN() {
@@ -838,6 +903,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         if playerDelegate !== delegate { playerDelegate?.btrPlayback.invalidate() }
         playerDelegate = delegate
         delegate.deliveryGate = shadowGate
+        delegate.hdrDiagnosticMode = pendingHDRDiagMode
         markStartup("prepared")
         // diag13: start the first segment before AVPlayer asks for it, from the history position
         // when there is one (EXT-X-START makes AVPlayer request that segment directly).

@@ -238,6 +238,17 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     private var hdrVariants = [Int: HDRVariant]()
     private var hdrProbeTask: Task<Void, Never>?
 
+    /// 「HDR 诊断」：依次换几种主播放列表写法，看系统播放器肯不肯加载（只用于诊断）。
+    enum HDRDiagnosticMode: String, CaseIterable {
+        case none
+        case original
+        case noIFrame
+        case appleCodec
+        case noRange
+    }
+
+    var hdrDiagnosticMode: HDRDiagnosticMode = .none
+
     private static func marker(_ index: Int, _ field: String) -> String { "{{BTR-\(field)-\(index)}}" }
 
     /// 从视频文件开头的格式说明（init 段里的 dvcC / dvvC）读出真实的杜比视界配置，按苹果的规范声明：
@@ -289,10 +300,26 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     private func renderedMasterPlaylist() -> String {
         var text = masterPlaylist
         for (index, decl) in variantDecls {
-            text = text.replacingOccurrences(of: Self.marker(index, "CODECS"), with: decl.codecs)
+            var codecs = decl.codecs
+            if hdrDiagnosticMode == .appleCodec, hdrVariants[index] != nil {
+                // 苹果文档的写法：样本入口 hvc1、约束标志 B0（如 hvc1.2.4.L153.B0）。
+                var parts = codecs.split(separator: ".").map(String.init)
+                if parts.first == "hev1" { parts[0] = "hvc1" }
+                if parts.count >= 5 { parts[4] = "B0" }
+                codecs = parts.joined(separator: ".")
+            }
+            text = text.replacingOccurrences(of: Self.marker(index, "CODECS"), with: codecs)
             text = text.replacingOccurrences(of: Self.marker(index, "SUPP"),
                                              with: decl.supplemental.isEmpty ? "" : ",SUPPLEMENTAL-CODECS=\"\(decl.supplemental)\"")
             text = text.replacingOccurrences(of: Self.marker(index, "RANGE"), with: decl.range)
+        }
+        switch hdrDiagnosticMode {
+        case .noIFrame:
+            text = text.components(separatedBy: "\n").filter { !$0.hasPrefix("#EXT-X-I-FRAME-STREAM-INF") }.joined(separator: "\n")
+        case .noRange:
+            text = text.replacingOccurrences(of: ",VIDEO-RANGE=PQ", with: "")
+        default:
+            break
         }
         return text
     }

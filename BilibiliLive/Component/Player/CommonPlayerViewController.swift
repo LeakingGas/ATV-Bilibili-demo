@@ -84,6 +84,8 @@ class CommonPlayerViewController: UIViewController {
     }
 
     private var avkitObserved = false
+    private var playheadTimer: Timer?
+    private var playheadSampleUntil = Date.distantPast
 
     // MARK: - 加载背景（封面毛玻璃，代替黑屏）
 
@@ -445,7 +447,6 @@ class CommonPlayerViewController: UIViewController {
     private static func menuRank(_ element: UIMenuElement) -> Int {
         if let action = element as? UIAction {
             if action.identifier.rawValue == "btr.interaction.like" { return 0 }
-            if action.title == "Show Danmu" { return 3 }
         }
         if let menu = element as? UIMenu {
             switch menu.identifier.rawValue {
@@ -453,7 +454,7 @@ class CommonPlayerViewController: UIViewController {
             case "setting": return 2
             default: break
             }
-            if menu.title == "弹幕设置" { return 4 }
+            if menu.title == "弹幕设置" { return 3 }
         }
         return 10
     }
@@ -604,6 +605,24 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
         if endOverlayShown { replayBadge.setDimmed(visible, animated: true) }
     }
 
+    /// 诊断：用户跳转后的 3 秒里每 50 毫秒记一次播放位置（查连点快进快退时进度条来回跳）。
+    private func startPlayheadSampling() {
+        playheadSampleUntil = Date().addingTimeInterval(3)
+        guard playheadTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] timer in
+            guard let self, Date() < self.playheadSampleUntil, let player = self.playerVC.player else {
+                timer.invalidate()
+                self?.playheadTimer = nil
+                return
+            }
+            let seconds = player.currentTime().seconds
+            BTRTrace.shared.event("playhead", ["pos": seconds.isFinite ? seconds : -1, "rate": player.rate,
+                                               "tcs": player.timeControlStatus.rawValue])
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        playheadTimer = timer
+    }
+
     // 系统在用户跳转（点按快进快退、滑动进度条后确认）时的明确通知：转给插件（VLC 模式据此跳转）。
     func playerViewController(_ playerViewController: AVPlayerViewController,
                               timeToSeekAfterUserNavigatedFrom oldTime: CMTime,
@@ -614,6 +633,7 @@ extension CommonPlayerViewController: AVPlayerViewControllerDelegate {
         Diag.mark(String(format: "PLAYER %@ user navigated %.1f -> %.1f", Diag.id(self), from, to))
         BTRTrace.shared.event("user_navigated", ["from": from, "to": to, "rate": playerViewController.player?.rate ?? 0])
         if to >= 0 { activePlugins.forEach { $0.playerUserNavigated(to: to) } }
+        startPlayheadSampling()
         return targetTime
     }
 
