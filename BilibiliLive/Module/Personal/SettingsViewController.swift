@@ -298,6 +298,7 @@ class SettingsViewController: UIViewController {
                     Settings.btrNodeRegion = $0
                 }
                 Toggle(title: "边下边播", setting: Settings.playWithoutWaiting, onChange: Settings.playWithoutWaiting.toggle())
+                Toggle(title: "小块播放（实验）", setting: Settings.chunkedVideo, onChange: Settings.chunkedVideo.toggle())
             }
 
             SectionModel(title: "其他") {

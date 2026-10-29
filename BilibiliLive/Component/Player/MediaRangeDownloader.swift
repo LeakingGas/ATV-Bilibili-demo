@@ -1078,11 +1078,49 @@ actor MediaRangeDownloader {
     private var verifying = [String: Task<Void, Error>]()
     private func verify(_ url: String, deadline: BTRDeadline) async throws {
         guard candidates.count > 1, !verified.contains(url) else { return }
-        if let running = verifying[url] { return try await running.value }
-        let task = Task { try await self.verifyNow(url, deadline: deadline) }
-        verifying[url] = task
-        defer { verifying[url] = nil }
-        try await task.value
+        let task: Task<Void, Error>
+        if let running = verifying[url] {
+            task = running
+        } else {
+            task = Task {
+                do {
+                    try await self.verifyNow(url, deadline: deadline)
+                    await self.verificationFinished(url)
+                } catch {
+                    await self.verificationFinished(url)
+                    throw error
+                }
+            }
+            verifying[url] = task
+        }
+        // 设备日志：校验卡在不回应的节点上时，同一片段已由另一个节点下完，却因为这里的等待不响应取消，
+        // 结果迟迟交不出去（视频文件开头 1 KB 等了 5 秒，系统播放器报「No response for map」）。
+        // 等待可以被取消；校验本身照常在后台跑完，供以后复用。
+        try await Self.awaitCancellable(task)
+    }
+
+    private func verificationFinished(_ url: String) {
+        verifying[url] = nil
+    }
+
+    /// 等一个共享的后台任务，但自己被取消时立刻返回（不取消那个任务）。
+    private static func awaitCancellable(_ task: Task<Void, Error>) async throws {
+        let box = CancellableWait()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                box.install(continuation)
+                Task {
+                    do {
+                        try await task.value
+                        box.finish(.success(()))
+                    } catch {
+                        box.finish(.failure(error))
+                    }
+                }
+            }
+        } onCancel: {
+            box.finish(.failure(CancellationError()))
+        }
     }
     private func verifyNow(_ url: String, deadline: BTRDeadline) async throws {
         guard !verified.contains(url) else { return }
@@ -1107,4 +1145,43 @@ final class BTRFirstByte: @unchecked Sendable {
     private var value: Double?
     var at: Double? { lock.lock(); defer { lock.unlock() }; return value }
     func mark() { lock.lock(); if value == nil { value = ProcessInfo.processInfo.systemUptime }; lock.unlock() }
+}
+
+
+/// 只恢复一次的等待（结果和取消谁先到用谁）。
+private final class CancellableWait: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var pending: Result<Void, Error>?
+    private var done = false
+
+    func install(_ continuation: CheckedContinuation<Void, Error>) {
+        lock.lock()
+        if let pending, !done {
+            done = true
+            lock.unlock()
+            continuation.resume(with: pending)
+            return
+        }
+        if done {
+            lock.unlock()
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func finish(_ result: Result<Void, Error>) {
+        lock.lock()
+        guard !done else { lock.unlock(); return }
+        guard let continuation else {
+            if pending == nil { pending = result }
+            lock.unlock()
+            return
+        }
+        done = true
+        self.continuation = nil
+        lock.unlock()
+        continuation.resume(with: result)
+    }
 }

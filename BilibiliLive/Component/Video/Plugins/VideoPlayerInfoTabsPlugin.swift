@@ -22,6 +22,7 @@ final class VideoPlayerInfoTabsPlugin: NSObject, CommonPlayerPlugin {
     private let interactions: VideoInteractionController
     private let relatedCandidates: [PlayInfo]
     private let ownerMid: Int
+    private let uploader: UploaderMenuController?
     private var uploaderLoadTask: Task<Void, Never>?
     private weak var playerVC: PlayerHost?
 
@@ -30,6 +31,7 @@ final class VideoPlayerInfoTabsPlugin: NSObject, CommonPlayerPlugin {
         self.sequenceProvider = sequenceProvider
         self.detail = detail
         ownerMid = detail?.View.owner.mid ?? 0
+        uploader = detail.map { UploaderMenuController(owner: $0.View.owner) }
         relatedCandidates = Self.makeRelatedEntries(detail: detail, currentPlayInfo: currentPlayInfo)
         feedInfoViewController = VideoPlayerFeedInfoViewController(aid: detail?.View.aid ?? currentPlayInfo.aid, detail: detail)
         interactions = VideoInteractionController(aid: detail?.View.aid ?? currentPlayInfo.aid, detail: detail)
@@ -64,6 +66,10 @@ final class VideoPlayerInfoTabsPlugin: NSObject, CommonPlayerPlugin {
         }
         feedInfoViewController.update(related: relatedCandidates.prefix(20).map(Self.makeViewEntry(from:)))
         interactions.onStateChange = { [weak self] in self?.refreshInteractionItems() }
+        uploader?.onChange = { [weak self] in
+            guard let container = self?.playerVC?.hostViewController.parent as? CommonPlayerViewController else { return }
+            container.updateMenus()
+        }
         loadUploaderEntriesIfNeeded()
     }
 
@@ -74,6 +80,8 @@ final class VideoPlayerInfoTabsPlugin: NSObject, CommonPlayerPlugin {
     func playerDidLoad(host: PlayerHost) {
         playerVC = host
         interactions.attach(to: host)
+        uploader?.host = host
+        uploader?.load()
         refreshCustomInfoViewControllers()
     }
 
@@ -91,7 +99,7 @@ final class VideoPlayerInfoTabsPlugin: NSObject, CommonPlayerPlugin {
     }
 
     func addMenuItems(current: inout [UIMenuElement]) -> [UIMenuElement] {
-        interactions.menuItems()
+        (uploader.map { [$0.menu()] } ?? []) + interactions.menuItems()
     }
 
     private func refreshInteractionItems() {
@@ -996,6 +1004,90 @@ final class PlayerCommentCell: UICollectionViewCell {
         coordinator.addCoordinatedAnimations {
             self.background.backgroundColor = UIColor.white.withAlphaComponent(self.isFocused ? 0.28 : 0.08)
             self.transform = self.isFocused ? CGAffineTransform(scaleX: 1.015, y: 1.015) : .identity
+        }
+    }
+}
+
+
+// MARK: - 控制栏最左边的 UP 主按钮（头像）：进入主页、关注 / 取消关注
+
+final class UploaderMenuController {
+    static let identifier = UIMenu.Identifier("btr.uploader")
+
+    var onChange: (() -> Void)?
+    weak var host: PlayerHost?
+
+    private let owner: VideoOwner
+    private var avatar: UIImage?
+    private var following: Bool?
+    private var loaded = false
+
+    init(owner: VideoOwner) {
+        self.owner = owner
+    }
+
+    func load() {
+        guard !loaded, owner.mid > 0 else { return }
+        loaded = true
+        if let face = owner.face.flatMap({ URL(string: $0.hasPrefix("//") ? "https:" + $0 : $0) }) {
+            KingfisherManager.shared.retrieveImage(with: face, options: [.processor(DownsamplingImageProcessor(size: CGSize(width: 120, height: 120)))]) { [weak self] result in
+                guard let self, case let .success(value) = result else { return }
+                DispatchQueue.main.async {
+                    self.avatar = Self.circle(value.image, side: 60)
+                    self.onChange?()
+                }
+            }
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let relation = try? await WebRequest.requestUpSpaceRelation(mid: self.owner.mid) {
+                self.following = relation.attribute == 2 || relation.attribute == 6
+                self.onChange?()
+            }
+        }
+    }
+
+    func menu() -> UIMenu {
+        let open = UIAction(title: "进入主页", image: UIImage(systemName: "person.crop.square")) { [weak self] _ in
+            self?.openSpace()
+        }
+        var children: [UIMenuElement] = [open]
+        if let following {
+            let follow = UIAction(title: following ? "取消关注" : "关注",
+                                  image: UIImage(systemName: following ? "person.badge.minus" : "person.badge.plus"),
+                                  attributes: following ? [.destructive] : []) { [weak self] _ in
+                self?.toggleFollow()
+            }
+            children.append(follow)
+        }
+        let image = avatar?.withRenderingMode(.alwaysOriginal) ?? UIImage(systemName: "person.crop.circle")
+        return UIMenu(title: owner.name, image: image, identifier: Self.identifier, children: children)
+    }
+
+    private func openSpace() {
+        guard let presenter = host?.hostViewController else { return }
+        host?.avPlayerViewController?.player?.pause()
+        let space = UpSpaceViewController()
+        space.mid = owner.mid
+        var top: UIViewController = presenter
+        while let presented = top.presentedViewController { top = presented }
+        top.present(space, animated: true)
+    }
+
+    private func toggleFollow() {
+        guard let following else { return }
+        let next = !following
+        WebRequest.follow(mid: owner.mid, follow: next)
+        self.following = next
+        onChange?()
+        VideoInteractionAnimationView.show(in: host?.hostViewController.view, kinds: [], text: next ? "已关注 \(owner.name)" : "已取消关注")
+    }
+
+    private static func circle(_ image: UIImage, side: CGFloat) -> UIImage {
+        let size = CGSize(width: side, height: side)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            UIBezierPath(ovalIn: CGRect(origin: .zero, size: size)).addClip()
+            image.draw(in: CGRect(origin: .zero, size: size))
         }
     }
 }

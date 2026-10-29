@@ -371,8 +371,28 @@ class CommonPlayerViewController: UIViewController {
     }
 
     /// 触控板滑动：恢复系统控件（事件照常分发）。
+    /// 长按 2 倍速期间和松手后片刻不算（手指一直搭在触控板上，松手也是一次触摸）。
     func noteTouchWhileSuppressed() {
+        guard !boostActive, Date().timeIntervalSince(boostEndedAt) > 0.6 else { return }
         restoreControls()
+    }
+
+    // MARK: 长按 2 倍速：不显示控制栏
+
+    private(set) var boostActive = false
+    private var boostEndedAt = Date.distantPast
+
+    /// 长按 2 倍速开始：控制栏已经出来就收起，整个 2 倍速期间不让它出来。
+    func beginBoostUI() {
+        boostActive = true
+        hideTransportBar()
+    }
+
+    /// 松手：保持收起，等用户下一次操作再恢复（和按返回收起控制栏后一样）。
+    func endBoostUI() {
+        guard boostActive else { return }
+        boostActive = false
+        boostEndedAt = Date()
     }
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
@@ -449,6 +469,7 @@ class CommonPlayerViewController: UIViewController {
             if action.identifier.rawValue == "btr.interaction.like" { return 0 }
         }
         if let menu = element as? UIMenu {
+            if menu.identifier.rawValue == "btr.uploader" { return -1 }
             switch menu.identifier.rawValue {
             case "quality": return 1
             case "setting": return 2

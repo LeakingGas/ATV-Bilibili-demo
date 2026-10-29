@@ -296,9 +296,25 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         return nil
     }
 
+    /// 纯 HDR10（PQ、不是杜比视界）时返回主视频流的参数：系统播放器在电视还是 SDR 模式时会直接拒绝 PQ 流
+    /// （设备日志：AVFoundation -11868「没有能在当前显示设备上播放的版本」），要先把电视切到 HDR10 再加载。
+    func hdr10DisplayNeed() async -> (frameRate: Float, width: Int, height: Int)? {
+        await hdrProbeTask?.value
+        guard let first = videoInfo.indices.first(where: { variantDecls[$0] != nil }),
+              let decl = variantDecls[first], decl.range == "PQ", decl.supplemental.isEmpty,
+              !decl.codecs.hasPrefix("dvh") else { return nil }
+        let media = videoInfo[first].info
+        let rate = Float(media.frame_rate ?? "") ?? 60
+        return (rate, media.width ?? 3840, media.height ?? 2160)
+    }
+
     /// 定稿后的主播放列表（替换占位符）。
     private func renderedMasterPlaylist() -> String {
         var text = masterPlaylist
+        if Settings.chunkedVideo {
+            // 小块不是每块都从关键帧开始。
+            text = text.replacingOccurrences(of: "#EXT-X-INDEPENDENT-SEGMENTS\n", with: "")
+        }
         for (index, decl) in variantDecls {
             var codecs = decl.codecs
             if hdrDiagnosticMode == .appleCodec, hdrVariants[index] != nil {
@@ -346,7 +362,7 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         Logger.info("cdn candidates for qn \(video.id) (\(video.bandwidth / 1000)kbps):\n\(detail)")
     }
 
-    private func getVideoPlayList(info: PlaybackInfo) async throws -> String {
+    private func getVideoPlayList(info: PlaybackInfo, index: Int = -1) async throws -> String {
         BTRTrace.shared.event("playlist_begin",["session":btrPlayback.id.uuidString,"quality":info.info.id,"codec":info.info.codecs])
         let indexStarted = BTRTrace.now
         let sidxResult = await segmentInfoCache.sidx(from: info.info, preferredHost: preferredHost)
@@ -393,6 +409,36 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         guard let mediaURL = mediaTransportURL(for: info.info) else {
             updateAccelerationText("BTR ONLY error: proxy-unavailable")
             throw NSError(domain: "BTRStrict", code: 2, userInfo: [NSLocalizedDescriptionKey: "BTR代理不可用；直连已禁用"])
+        }
+        // 小块播放（实验）：只对主视频流（不含音频、缩略图流）。先确认这条流的段能切，切不了就照常整段。
+        if Settings.chunkedVideo, variantDecls[index] != nil, httpPort > 0,
+           let mediaID = proxyRegistry.id(for: info.info),
+           let downloader = proxyRegistry.downloader(for: info.info),
+           let first = segment.segments.first, segment.timescale > 0 {
+            let firstOffset = offset + 1
+            let probeStarted = BTRTrace.now
+            let supported = await Self.runBlocking {
+                (try? self.fragmentIndex(mediaID: mediaID, downloader: downloader, offset: firstOffset,
+                                         size: Int(first.size), duration: Int(first.duration))) != nil
+            }
+            BTRTrace.shared.event("chunk_probe", ["quality": info.info.id, "supported": supported, "elapsedMs": BTRTrace.now - probeStarted])
+            if supported {
+                if let downloader = proxyRegistry.downloader(for: info.info) {
+                    var timings = [BTRSegmentTiming]()
+                    var presentation = 0.0
+                    var cursor = firstOffset
+                    for seg in segment.segments {
+                        if seg.size > 0, let range = try? MediaByteRange(start: Int64(cursor), end: Int64(cursor + seg.size - 1)) {
+                            timings.append(BTRSegmentTiming(range: range, start: presentation))
+                        }
+                        presentation += Double(seg.duration) / Double(segment.timescale)
+                        cursor += seg.size
+                    }
+                    await downloader.setTimings(timings)
+                }
+                return chunkedPlaylist(segment: segment, firstOffset: firstOffset, mediaURL: mediaURL, mediaID: mediaID,
+                                       moovOffset: moovOffset, moovEnd: moovIdx, quality: info.info.id)
+            }
         }
         var playList = """
         #EXTM3U
@@ -799,7 +845,7 @@ private extension BilibiliVideoResourceLoaderDelegate {
             BTRTrace.shared.event("loader_media_begin", ["index": index, "quality": info.info.id])
             Task {
                 do {
-                    let list = try await getVideoPlayList(info: info)
+                    let list = try await getVideoPlayList(info: info, index: index)
                     BTRTrace.shared.event("loader_media_served", ["index": index, "quality": info.info.id, "elapsedMs": BTRTrace.now - requested])
                     report(loadingRequest, content: list)
                 } catch {
@@ -837,6 +883,136 @@ private extension BilibiliVideoResourceLoaderDelegate {
         Logger.debug("handle loading \(customUrl)")
     }
 
+    // MARK: - 小块播放
+
+    /// 每块大约 1 秒。
+    private static let chunkSeconds = 1.0
+    private let fragmentLock = NSLock()
+    private var fragmentIndexes = [String: FragmentIndex]()
+
+    private func chunkedPlaylist(segment: SidxParseUtil.Sidx, firstOffset: Int, mediaURL: String, mediaID: String,
+                                 moovOffset: String, moovEnd: Int, quality: Int) -> String {
+        var lines = [String]()
+        var cursor = firstOffset
+        var maxPart = 1.0
+        var partCount = 0
+        for seg in segment.segments {
+            let seconds = Double(seg.duration) / Double(segment.timescale)
+            let parts = max(1, Int((seconds / Self.chunkSeconds).rounded()))
+            let partSeconds = seconds / Double(parts)
+            maxPart = max(maxPart, partSeconds)
+            for part in 0..<parts {
+                lines.append("#EXTINF:\(String(format: "%.6f", partSeconds)),")
+                lines.append("http://127.0.0.1:\(httpPort)/part/\(mediaID)?o=\(cursor)&s=\(seg.size)&d=\(seg.duration)&k=\(parts)&j=\(part)")
+            }
+            partCount += parts
+            cursor += seg.size
+        }
+        BTRTrace.shared.event("chunked_playlist", ["quality": quality, "segments": segment.segments.count, "parts": partCount])
+        var playList = """
+        #EXTM3U
+        #EXT-X-VERSION:7
+        #EXT-X-TARGETDURATION:\(Int(maxPart.rounded(.up)))
+        #EXT-X-MEDIA-SEQUENCE:1
+        #EXT-X-PLAYLIST-TYPE:VOD
+        #EXT-X-MAP:URI="\(mediaURL)",BYTERANGE="\(moovEnd + 1)@\(moovOffset)"
+
+        """
+        if let startOffset, startOffset > 0 {
+            playList.append("#EXT-X-START:TIME-OFFSET=\(String(format: "%.3f", startOffset)),PRECISE=YES\n")
+        }
+        playList.append(lines.joined(separator: "\n"))
+        playList.append("\n#EXT-X-ENDLIST")
+        return playList
+    }
+
+    /// 在后台线程跑一段会阻塞的代码（等下载用），不占用 Swift 并发的线程。
+    private static func runBlocking<T>(_ work: @escaping () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async { continuation.resume(returning: work()) }
+        }
+    }
+
+    /// 经 BTR 下载一段字节（阻塞，只在代理线程 / 后台线程调用）。
+    private static func fetchBlocking(_ downloader: MediaRangeDownloader, _ range: MediaByteRange) throws -> Data {
+        let pipe = MediaBytePipe()
+        let task = Task { await downloader.stream(range: range, to: pipe) }
+        var data = Data()
+        do {
+            while let chunk = try pipe.readSync(maxLength: 256 * 1024, timeout: 30) { data.append(chunk) }
+        } catch {
+            task.cancel()
+            throw error
+        }
+        return data
+    }
+
+    /// 一段的目录（moof）解析结果，按「流 + 位置」缓存。
+    private func fragmentIndex(mediaID: String, downloader: MediaRangeDownloader, offset: Int, size: Int, duration: Int) throws -> FragmentIndex {
+        let key = "\(mediaID)-\(offset)"
+        fragmentLock.lock()
+        if let cached = fragmentIndexes[key] { fragmentLock.unlock(); return cached }
+        fragmentLock.unlock()
+        var want = min(size, 64 * 1024)
+        for _ in 0..<4 {
+            let prefix = try Self.fetchBlocking(downloader, MediaByteRange(start: Int64(offset), end: Int64(offset + want - 1)))
+            switch FragmentIndex.parse(prefix, fragmentDuration: duration, fragmentSize: size) {
+            case let .index(index):
+                fragmentLock.lock()
+                if fragmentIndexes.count > 400 { fragmentIndexes.removeAll() }
+                fragmentIndexes[key] = index
+                fragmentLock.unlock()
+                return index
+            case let .needBytes(count):
+                guard count > want, want < size else { throw NSError(domain: "Chunk", code: 1) }
+                want = min(size, count)
+            case let .failure(reason):
+                BTRTrace.shared.event("chunk_parse_failed", ["reason": reason, "offset": offset])
+                throw NSError(domain: "Chunk", code: 2, userInfo: [NSLocalizedDescriptionKey: reason])
+            }
+        }
+        throw NSError(domain: "Chunk", code: 3)
+    }
+
+    private func handlePartRequest(_ req: HttpRequest) -> HttpResponse {
+        let query = Dictionary(req.queryParams, uniquingKeysWith: { first, _ in first })
+        guard let mediaID = req.params[":id"],
+              let offset = query["o"].flatMap(Int.init), let size = query["s"].flatMap(Int.init),
+              let duration = query["d"].flatMap(Int.init), let parts = query["k"].flatMap(Int.init),
+              let part = query["j"].flatMap(Int.init),
+              let entry = proxyRegistry.snapshot(for: mediaID)
+        else { return HttpResponse.badRequest(nil) }
+        let started = BTRTrace.now
+        do {
+            let index = try fragmentIndex(mediaID: mediaID, downloader: entry.downloader, offset: offset, size: size, duration: duration)
+            let samples = index.sampleRange(part: part, of: parts)
+            let bytes = index.byteRange(of: samples)
+            let range = try MediaByteRange(start: Int64(offset + bytes.lowerBound), end: Int64(offset + bytes.upperBound - 1))
+            let sampleData = try Self.fetchBlocking(entry.downloader, range)
+            guard sampleData.count == bytes.count else { throw NSError(domain: "Chunk", code: 4) }
+            var body = index.buildPart(samples, sampleData: sampleData, sequence: UInt32(part + 1))
+            BTRTrace.shared.event("part_served", ["offset": offset, "part": part, "parts": parts, "bytes": body.count,
+                                                  "samples": samples.count, "elapsedMs": BTRTrace.now - started])
+            var status = 200
+            var headers = ["Content-Type": "video/mp4", "Accept-Ranges": "bytes"]
+            if let header = req.headers["range"],
+               case let .single(range) = MediaRangeParsing.parse(header: header, fileLength: Int64(body.count)) {
+                let total = body.count
+                body = body.subdata(in: Int(range.start)..<Int(range.end) + 1)
+                status = 206
+                headers["Content-Range"] = "bytes \(range.start)-\(range.end)/\(total)"
+            }
+            headers["Content-Length"] = String(body.count)
+            let payload = body
+            return HttpResponse.raw(status, status == 206 ? "Partial Content" : "OK", headers) { writer in
+                try writer.write(payload)
+            }
+        } catch {
+            BTRTrace.shared.event("part_failed", ["offset": offset, "part": part, "error": String(describing: error).prefix(120)])
+            return HttpResponse.raw(502, "Bad Gateway", nil, nil)
+        }
+    }
+
     func bindHttpServer() {
         httpServer["/subtitle"] = { [weak self] req in
             if let url = req.queryParams.first(where: { $0.0 == "u" })?.1 {
@@ -852,6 +1028,10 @@ private extension BilibiliVideoResourceLoaderDelegate {
         httpServer["/media/:id"] = { [weak self] req in
             guard let self else { return HttpResponse.internalServerError(nil) }
             return self.handleMediaProxyRequest(req)
+        }
+        httpServer["/part/:id"] = { [weak self] req in
+            guard let self else { return HttpResponse.internalServerError(nil) }
+            return self.handlePartRequest(req)
         }
     }
 

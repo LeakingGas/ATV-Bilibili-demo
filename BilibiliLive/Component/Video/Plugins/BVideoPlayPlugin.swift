@@ -405,6 +405,62 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         return []
     }
 
+    // MARK: - HDR10：先把电视切到 HDR10，再交给系统播放器
+
+    private var didSetDisplayCriteria = false
+    private weak var displayManager: AVDisplayManager?
+
+    /// 和 Infuse 一样：电视还在 SDR 模式时系统播放器会直接拒绝 HDR10 流，所以先请求切换显示模式，
+    /// 等切换完成再加载。只在 Apple TV 和本 App 都开着「匹配动态范围」时做。
+    @MainActor
+    private func switchDisplayForHDR10IfNeeded(asset: AVURLAsset) async {
+        guard !isShadow, let delegate = playerDelegate, delegate.isHDR,
+              let manager = playerVC?.view.window?.avDisplayManager ?? UIApplication.shared.connectedScenes
+              .compactMap({ ($0 as? UIWindowScene)?.windows.first }).first?.avDisplayManager
+        else { return }
+        guard let need = await delegate.hdr10DisplayNeed() else { return }
+        guard manager.isDisplayCriteriaMatchingEnabled, Settings.contentMatch else {
+            BTRTrace.shared.event("hdr10_display_switch", ["result": "matching_off", "system": manager.isDisplayCriteriaMatchingEnabled])
+            return
+        }
+        guard let criteria = await Self.hdr10Criteria(need: need, asset: asset) else {
+            BTRTrace.shared.event("hdr10_display_switch", ["result": "no_criteria"])
+            return
+        }
+        let started = Date()
+        manager.preferredDisplayCriteria = criteria
+        didSetDisplayCriteria = true
+        displayManager = manager
+        // 切换是异步开始的：先等它开始（最多 1 秒），再等它结束（最多 8 秒）。
+        var began = false
+        while Date().timeIntervalSince(started) < 1, !began {
+            began = manager.isDisplayModeSwitchInProgress
+            if !began { try? await Task.sleep(nanoseconds: 50_000_000) }
+        }
+        while began, manager.isDisplayModeSwitchInProgress, Date().timeIntervalSince(started) < 9 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        BTRTrace.shared.event("hdr10_display_switch", ["result": began ? "switched" : "no_switch_needed",
+                                                       "frameRate": need.frameRate, "waitMs": Date().timeIntervalSince(started) * 1000])
+    }
+
+    private static func hdr10Criteria(need: (frameRate: Float, width: Int, height: Int), asset: AVURLAsset) async -> AVDisplayCriteria? {
+        if #available(tvOS 17.0, *) {
+            var description: CMFormatDescription?
+            let extensions: [CFString: Any] = [
+                kCMFormatDescriptionExtension_ColorPrimaries: kCMFormatDescriptionColorPrimaries_ITU_R_2020,
+                kCMFormatDescriptionExtension_TransferFunction: kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ,
+                kCMFormatDescriptionExtension_YCbCrMatrix: kCMFormatDescriptionYCbCrMatrix_ITU_R_2020,
+            ]
+            CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault, codecType: kCMVideoCodecType_HEVC,
+                                           width: Int32(need.width), height: Int32(need.height),
+                                           extensions: extensions as CFDictionary, formatDescriptionOut: &description)
+            guard let description else { return nil }
+            return AVDisplayCriteria(refreshRate: need.frameRate, formatDescription: description)
+        }
+        return asset.preferredDisplayCriteria
+    }
+
     // MARK: - HDR 诊断（临时）
 
     private var pendingHDRDiagMode: BilibiliVideoResourceLoaderDelegate.HDRDiagnosticMode = .none
@@ -811,6 +867,10 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
 
     func playerWillCleanUp(host: PlayerHost) {
         Diag.mark("BPLAY \(Diag.id(self)) willCleanUp")
+        if didSetDisplayCriteria {
+            didSetDisplayCriteria = false
+            displayManager?.preferredDisplayCriteria = nil
+        }
         invalidatePendingLoad(tearingDown: true)
     }
 
@@ -1029,6 +1089,8 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
               !Task.isCancelled,
               let playerVC
         else { return }
+        await switchDisplayForHDR10IfNeeded(asset: asset)
+        guard loadGeneration == generation, !Task.isCancelled else { return }
         let playerItem = AVPlayerItem(asset: asset)
 
         // 设置 preferredPeakBitRate 为一个很高的值，让 AVPlayer 优先选择高码率流

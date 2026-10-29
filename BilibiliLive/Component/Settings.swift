@@ -65,6 +65,10 @@ enum Settings {
     @UserDefault("Settings.fixedExportAddress", defaultValue: false)
     static var fixedExportAddress: Bool
 
+    /// 小块播放（实验）：把视频的每段切成约 1 秒的小块交给系统播放器。
+    @UserDefault("Settings.chunkedVideo", defaultValue: false)
+    static var chunkedVideo: Bool
+
     @UserDefault("Settings.playWithoutWaiting", defaultValue: false)
     static var playWithoutWaiting: Bool
 

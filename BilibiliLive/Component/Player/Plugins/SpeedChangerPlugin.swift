@@ -84,6 +84,7 @@ class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
             if let player = engine.avPlayer, player.timeControlStatus != .playing { return }
             isBoosting = true
             host?.applyPlaybackSpeed(PlaySpeed(name: "2X", value: 2))
+            (host?.hostViewController.parent as? CommonPlayerViewController)?.beginBoostUI()
             showBoostLabel()
         case .ended, .cancelled, .failed:
             endBoost()
@@ -96,6 +97,7 @@ class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
         guard isBoosting else { return }
         isBoosting = false
         host?.applyPlaybackSpeed(currentPlaySpeed)
+        (host?.hostViewController.parent as? CommonPlayerViewController)?.endBoostUI()
         UIView.animate(withDuration: 0.2) { self.boostLabel?.alpha = 0 }
     }
 
