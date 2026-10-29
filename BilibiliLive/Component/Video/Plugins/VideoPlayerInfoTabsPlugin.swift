@@ -544,6 +544,10 @@ final class VideoPlayerFeedInfoViewController: UIViewController {
     private var roots = [Replys.Reply]()
     private var fetchedChildren = [Int: [Replys.Reply]]()
     private var expanded = Set<Int>()
+    /// 按下返回时决定要收起的评论（松开时收起）。
+    fileprivate var pendingCollapseRoot: Int?
+    /// 收起后焦点要回到的评论。
+    fileprivate var focusAfterCollapse: IndexPath?
     private var loadingRoots = Set<Int>()
     private var page = 0
     private var hasMore = true
@@ -823,6 +827,72 @@ extension VideoPlayerFeedInfoViewController: UICollectionViewDelegate {
 
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
         if case .status? = dataSource.itemIdentifier(for: indexPath), !roots.isEmpty { loadNextPage() }
+    }
+
+    func indexPathForPreferredFocusedView(in collectionView: UICollectionView) -> IndexPath? {
+        focusAfterCollapse
+    }
+}
+
+// MARK: - 返回键：焦点在已展开的评论（或它的回复）上时，先收起这条评论
+
+extension VideoPlayerFeedInfoViewController {
+    /// 焦点所在的评论属于哪条已展开的一级评论。
+    private func expandedRootUnderFocus() -> Int? {
+        guard let focused = view.window?.windowScene?.focusSystem?.focusedItem as? UICollectionViewCell,
+              let indexPath = collectionView.indexPath(for: focused),
+              let item = dataSource.itemIdentifier(for: indexPath)
+        else { return nil }
+        switch item {
+        case let .comment(root, _), let .rootLoading(root):
+            return expanded.contains(root) ? root : nil
+        default:
+            return nil
+        }
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.type == .menu }) {
+            pendingCollapseRoot = expandedRootUnderFocus()
+            Diag.mark("COMMENTS back down collapse=\(pendingCollapseRoot.map(String.init) ?? "none")")
+            if pendingCollapseRoot != nil { return }
+        }
+        super.pressesBegan(presses, with: event)
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.type == .menu }), let root = pendingCollapseRoot {
+            pendingCollapseRoot = nil
+            collapse(root: root)
+            return
+        }
+        super.pressesEnded(presses, with: event)
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if presses.contains(where: { $0.type == .menu }), pendingCollapseRoot != nil {
+            pendingCollapseRoot = nil
+            return
+        }
+        super.pressesCancelled(presses, with: event)
+    }
+
+    override var preferredFocusEnvironments: [UIFocusEnvironment] {
+        if let focusAfterCollapse, let cell = collectionView.cellForItem(at: focusAfterCollapse) { return [cell] }
+        return super.preferredFocusEnvironments
+    }
+
+    /// 收起回复，焦点回到这条评论本身。
+    private func collapse(root: Int) {
+        expanded.remove(root)
+        applySnapshot(animated: true)
+        guard let indexPath = dataSource.indexPath(for: .comment(root: root, child: nil)) else { return }
+        focusAfterCollapse = indexPath
+        collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: true)
+        setNeedsFocusUpdate()
+        updateFocusIfNeeded()
+        Diag.mark("COMMENTS collapsed root=\(root) focus=\(Diag.describeFocus())")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.focusAfterCollapse = nil }
     }
 }
 

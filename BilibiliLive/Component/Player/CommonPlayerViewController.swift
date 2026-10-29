@@ -373,10 +373,19 @@ class CommonPlayerViewController: UIViewController {
 
     /// 触控板滑动：恢复系统控件 / 进度条（事件照常分发）。
     /// 长按 2 倍速期间和松手后片刻不算（手指一直搭在触控板上，松手也是一次触摸）。
-    func noteTouchWhileSuppressed() {
-        guard !boostActive, Date().timeIntervalSince(boostEndedAt) > 0.6 else { return }
+    /// 返回是否恢复了（写日志用）。
+    @discardableResult
+    func noteTouchWhileSuppressed() -> Bool {
+        guard !boostActive, Date().timeIntervalSince(boostEndedAt) > 0.6 else { return false }
+        let wasHidden = controlsSuppressed || transportBarExcluded
         restoreControls()
         restoreTransportBar(reason: "touch")
+        return wasHidden
+    }
+
+    /// 只有焦点在画面上（没开详情 / 评论面板、菜单，上面没盖别的页面）才能长按 2 倍速。
+    var canStartBoost: Bool {
+        presentedViewController == nil && focusIsOnVideoSurface
     }
 
     // MARK: 长按 2 倍速：不显示控制栏
@@ -387,7 +396,11 @@ class CommonPlayerViewController: UIViewController {
     private(set) var boostActive = false
     private var boostEndedAt = Date.distantPast
     /// 进度条被 2 倍速暂时去掉了（松手后保持，等用户下一次操作再放回来）。
+    /// 去掉进度条时详情 / 评论面板也一起没了，所以必须保证放回。
     private(set) var transportBarExcluded = false
+    /// 去掉了进度条的播放器：窗口收到下一次按键 / 触控时直接找它放回，
+    /// 不依赖「最上层页面是播放器」（详情面板等盖在上面时找不到播放器）。
+    private(set) static weak var transportBarExcludedBy: CommonPlayerViewController?
 
     /// 长按 2 倍速开始：控制栏已经出来就收起，整个 2 倍速期间不让它出来。
     func beginBoostUI() {
@@ -395,6 +408,7 @@ class CommonPlayerViewController: UIViewController {
         Diag.mark("PLAYER \(Diag.id(self)) boost begin bar=\(transportBarVisible) suppressed=\(controlsSuppressed)")
         guard !transportBarExcluded else { return }
         transportBarExcluded = true
+        Self.transportBarExcludedBy = self
         playerVC.playbackControlsIncludeTransportBar = false
         Diag.mark("PLAYER \(Diag.id(self)) transport bar excluded")
     }
@@ -411,6 +425,7 @@ class CommonPlayerViewController: UIViewController {
     func restoreTransportBar(reason: String) {
         guard transportBarExcluded, !boostActive else { return }
         transportBarExcluded = false
+        if Self.transportBarExcludedBy === self { Self.transportBarExcludedBy = nil }
         playerVC.playbackControlsIncludeTransportBar = true
         Diag.mark("PLAYER \(Diag.id(self)) transport bar included (\(reason)) bar=\(transportBarVisible)")
     }

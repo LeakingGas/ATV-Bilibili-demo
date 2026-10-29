@@ -81,6 +81,10 @@ class SpeedChangerPlugin: NSObject, CommonPlayerPlugin {
         case .began:
             guard Date().timeIntervalSince(lastPressAt) > 0.8 else { return }
             guard let engine, engine.isPlaying else { return }
+            if let container = host?.hostViewController.parent as? CommonPlayerViewController, !container.canStartBoost {
+                Diag.mark("BOOST ignored: focus not on video (\(Diag.describeFocus()))")
+                return
+            }
             if let player = engine.avPlayer, player.timeControlStatus != .playing { return }
             isBoosting = true
             host?.applyPlaybackSpeed(PlaySpeed(name: "2X", value: 2))
