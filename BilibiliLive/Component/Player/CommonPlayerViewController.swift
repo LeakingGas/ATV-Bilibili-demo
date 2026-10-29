@@ -371,63 +371,39 @@ class CommonPlayerViewController: UIViewController {
         return true
     }
 
-    /// 触控板滑动：恢复系统控件 / 进度条（事件照常分发）。
+    /// 触控板滑动：恢复系统控件（事件照常分发）。
     /// 长按 2 倍速期间和松手后片刻不算（手指一直搭在触控板上，松手也是一次触摸）。
     /// 返回是否恢复了（写日志用）。
     @discardableResult
     func noteTouchWhileSuppressed() -> Bool {
         guard !boostActive, Date().timeIntervalSince(boostEndedAt) > 0.6 else { return false }
-        let wasHidden = controlsSuppressed || transportBarExcluded
+        let wasHidden = controlsSuppressed
         restoreControls()
-        restoreTransportBar(reason: "touch")
         return wasHidden
     }
 
-    /// 只有焦点在画面上（没开详情 / 评论面板、菜单，上面没盖别的页面）才能长按 2 倍速。
-    var canStartBoost: Bool {
-        presentedViewController == nil && focusIsOnVideoSurface
-    }
-
-    // MARK: 长按 2 倍速：不显示控制栏
+    // MARK: 长按 2 倍速：所有界面立刻消失
     //
-    // 不关系统控件（关掉后系统不接按键，要我们代接，容易出错），
-    // 只让控制界面暂时「不包含进度条」：按键仍由系统处理。
+    // 只有关掉系统控件才能让控制栏、详情 / 评论面板全部消失。
+    // （试过只去掉进度条：控制栏其余部分还在，时间位置变成当前钟点，不可用。）
+    // 关掉期间按键由窗口代接，按下和松开成对处理（见 BLWindow）。
 
     private(set) var boostActive = false
     private var boostEndedAt = Date.distantPast
-    /// 进度条被 2 倍速暂时去掉了（松手后保持，等用户下一次操作再放回来）。
-    /// 去掉进度条时详情 / 评论面板也一起没了，所以必须保证放回。
-    private(set) var transportBarExcluded = false
-    /// 去掉了进度条的播放器：窗口收到下一次按键 / 触控时直接找它放回，
-    /// 不依赖「最上层页面是播放器」（详情面板等盖在上面时找不到播放器）。
-    private(set) static weak var transportBarExcludedBy: CommonPlayerViewController?
 
-    /// 长按 2 倍速开始：控制栏已经出来就收起，整个 2 倍速期间不让它出来。
+    /// 长按 2 倍速开始：不管界面在显示什么，全部收起，整个 2 倍速期间不让它出来。
     func beginBoostUI() {
         boostActive = true
-        Diag.mark("PLAYER \(Diag.id(self)) boost begin bar=\(transportBarVisible) suppressed=\(controlsSuppressed)")
-        guard !transportBarExcluded else { return }
-        transportBarExcluded = true
-        Self.transportBarExcludedBy = self
-        playerVC.playbackControlsIncludeTransportBar = false
-        Diag.mark("PLAYER \(Diag.id(self)) transport bar excluded")
+        Diag.mark("PLAYER \(Diag.id(self)) boost begin bar=\(transportBarVisible) suppressed=\(controlsSuppressed) focus=\(Diag.describeFocus())")
+        hideTransportBar()
     }
 
-    /// 松手：保持不显示，等用户下一次操作再放回进度条。
+    /// 松手：保持收起，等用户下一次操作再恢复（和按返回收起控制栏后一样）。
     func endBoostUI() {
         guard boostActive else { return }
         boostActive = false
         boostEndedAt = Date()
-        Diag.mark("PLAYER \(Diag.id(self)) boost end bar=\(transportBarVisible)")
-    }
-
-    /// 用户的下一次操作（按键 / 触控板）：放回进度条。
-    func restoreTransportBar(reason: String) {
-        guard transportBarExcluded, !boostActive else { return }
-        transportBarExcluded = false
-        if Self.transportBarExcludedBy === self { Self.transportBarExcludedBy = nil }
-        playerVC.playbackControlsIncludeTransportBar = true
-        Diag.mark("PLAYER \(Diag.id(self)) transport bar included (\(reason)) bar=\(transportBarVisible)")
+        Diag.mark("PLAYER \(Diag.id(self)) boost end suppressed=\(controlsSuppressed)")
     }
 
     // MARK: 从别的页面（UP 主主页）回到播放器时亮一下控制栏
@@ -437,7 +413,6 @@ class CommonPlayerViewController: UIViewController {
 
     private func showControlsAfterReturn() {
         showControlsOnReturn = false
-        restoreTransportBar(reason: "return")
         if controlsSuppressed {
             // 恢复系统控件时 AVKit 会把控制栏显示出来（日志实测）。
             restoreControls()

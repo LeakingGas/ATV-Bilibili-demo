@@ -46,18 +46,14 @@ final class BLWindow: UIWindow {
                 takingPlayer = player
                 return
             }
-            if presses.allPresses.contains(where: { $0.phase == .began }) {
-                (CommonPlayerViewController.transportBarExcludedBy ?? player)?.restoreTransportBar(reason: "press")
-            }
         } else if event.type == .touches {
             // 每次手指放上触控板记一条（看滑动有没有把控件 / 进度条放回来）。
             let began = event.allTouches?.contains(where: { $0.phase == .began }) == true
             let top = rootViewController?.topMostViewController() as? CommonPlayerViewController
-            let target = CommonPlayerViewController.transportBarExcludedBy ?? (top?.controlsSuppressed == true ? top : nil)
-            if let target {
-                let restored = target.noteTouchWhileSuppressed()
-                if began { Diag.mark("TOUCH began player=\(Diag.id(target)) restored=\(restored)") }
-            } else if began, top != nil || CommonPlayerViewController.transportBarExcludedBy != nil {
+            if let top, top.controlsSuppressed {
+                let restored = top.noteTouchWhileSuppressed()
+                if began { Diag.mark("TOUCH began player=\(Diag.id(top)) restored=\(restored)") }
+            } else if began, top != nil {
                 Diag.mark("TOUCH began")
             }
         }
