@@ -304,8 +304,22 @@ func expected(_ start: Int, _ count: Int) -> Data { Data((start..<(start+count))
         try require(begins.count >= 4 && (begins.max() ?? .max) < firstHeaders, "pipeline overlaps first-byte latency " + timeline)
         await latency.cancelReadAhead()
         print(String(format:"PASS: 4 MiB with 0.4 s first-byte latency streamed in %.2fs", pipelineElapsed))
+        // Before playback starts nothing is read ahead (device trace: 9 read-ahead MiB on the same node
+        // starved the first segment to 88 KB/s).
+        let idle = MediaRangeDownloader(candidates:[base+"/prefetch"],referer:base)
+        let idleRange = try MediaByteRange(start:0,end:1024*1024-1)
+        let idlePipe = MediaBytePipe()
+        let idleProducer = Task { await idle.stream(range:idleRange,to:idlePipe) }
+        _ = try await drain(idlePipe, from:0)
+        await idleProducer.value
+        try await Task.sleep(nanoseconds:300_000_000)
+        let idleDiag = await idle.diagnostics()
+        try require(idleDiag.readAheadSlots == 0, "no read-ahead before playback")
+        print("PASS: no read-ahead before playback starts")
         // diag12: the bytes after a player range are prefetched and reused by the next request.
-        let ahead = MediaRangeDownloader(candidates:[base+"/prefetch"],referer:base)
+        let playingSession = BTRPlaybackSession()
+        playingSession.update(position:0,rate:1,advancing:true,intended:true,waiting:false,ahead:0)
+        let ahead = MediaRangeDownloader(candidates:[base+"/prefetch"],referer:base,playback:playingSession)
         let firstRange = try MediaByteRange(start:0,end:1024*1024-1)
         let firstPipe = MediaBytePipe()
         let firstProducer = Task { await ahead.stream(range:firstRange,to:firstPipe) }
