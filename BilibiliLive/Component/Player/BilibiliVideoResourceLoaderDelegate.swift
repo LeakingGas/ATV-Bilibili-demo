@@ -368,6 +368,16 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
         // 首选 CDN 挂掉时 segment 会整体切到探测成功的备用 URL
         let segment = sidxResult.sidx
         let segmentURL = sidxResult.url
+        // 分段统计：每段多长、多大（评估「切小块」能省多少）。
+        if segment.timescale > 0, !segment.segments.isEmpty {
+            let durations = segment.segments.map { Double($0.duration) / Double(segment.timescale) }
+            let sizes = segment.segments.map { Double($0.size) / 1_048_576 }
+            BTRTrace.shared.event("segment_stats", ["quality": info.info.id, "codecs": info.info.codecs, "count": durations.count,
+                                                    "durMin": durations.min() ?? 0, "durAvg": durations.reduce(0, +) / Double(durations.count),
+                                                    "durMax": durations.max() ?? 0, "firstDur": durations[0],
+                                                    "mbMin": sizes.min() ?? 0, "mbAvg": sizes.reduce(0, +) / Double(sizes.count),
+                                                    "mbMax": sizes.max() ?? 0, "firstMB": sizes[0]])
+        }
         currentSegmentHost = URLComponents(string: segmentURL)?.host
         // sidx 索引字节作为跨 CDN 等价性验证的信任锚点：它是播放前已从探测
         // 成功的 URL 取回的原始字节，后续各 CDN 的同区间样本必须与之逐字节一致。

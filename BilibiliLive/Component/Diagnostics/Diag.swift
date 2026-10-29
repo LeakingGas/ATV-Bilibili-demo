@@ -632,8 +632,24 @@ extension Diag {
         defer { startupLock.unlock() }
         guard startupFD >= 0 else { return }
         if startupBytes > 8 * 1024 * 1024 {
-            ftruncate(startupFD, 0)
-            startupBytes = 0
+            // 满了只丢掉最旧的一半（以前整个清空，刚记下的诊断结果会一起丢掉）。
+            let path = file("startups.log").path
+            if let data = FileManager.default.contents(atPath: path), data.count > 4 * 1024 * 1024 {
+                var keep = data.suffix(4 * 1024 * 1024)
+                if let newline = keep.firstIndex(of: 0x0A) { keep = keep.suffix(from: keep.index(after: newline)) }
+                ftruncate(startupFD, 0)
+                lseek(startupFD, 0, SEEK_SET)
+                let header = "（较早的起播记录已删除，保留最近的部分）\n"
+                startupBytes = writeAll(startupFD, header)
+                startupBytes += keep.withUnsafeBytes { raw -> Int in
+                    guard let base = raw.baseAddress else { return 0 }
+                    return write(startupFD, base, raw.count)
+                }
+            } else {
+                ftruncate(startupFD, 0)
+                lseek(startupFD, 0, SEEK_SET)
+                startupBytes = 0
+            }
         }
         startupBytes += writeAll(startupFD, text)
     }

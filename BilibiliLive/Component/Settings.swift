@@ -61,7 +61,7 @@ enum Settings {
     static var preferAvc: Bool
 
     /// 不等缓冲：数据一到就开播 / 卡顿后数据一到就继续，不让系统播放器先评估网速、攒缓冲。
-    @UserDefault("Settings.playWithoutWaiting", defaultValue: true)
+    @UserDefault("Settings.playWithoutWaiting", defaultValue: false)
     static var playWithoutWaiting: Bool
 
     /// 试验：用 VLC 引擎播放（不支持杜比视界 / HDR、画中画、画质切换，需要时关掉切回系统播放器）。
