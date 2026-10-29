@@ -198,12 +198,14 @@ class SettingsViewController: UIViewController {
             }
 
             SectionModel(title: "播放") {
+                if VideoPlayerViewModel.vlcModeEnabled {
                 Actions(title: "播放器", message: "VLC 起播更快；杜比视界只能用系统播放器。「自动」：会播杜比视界时用系统播放器，其余用 VLC",
                         current: Settings.playerEngine.title,
                         options: PlayerEngineChoice.allCases,
                         optionString: PlayerEngineChoice.allCases.map({ $0.title }))
                 {
                     Settings.playerEngine = $0
+                }
                 }
                 Actions(title: "最高画质", message: "4k以上需要大会员",
                         current: Settings.mediaQuality.desp,

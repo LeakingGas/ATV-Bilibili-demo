@@ -414,8 +414,11 @@ class VideoPlayerViewModel {
     }
 
     /// 系统 / VLC / 自动（会选中杜比视界时用系统播放器，其余用 VLC）。预览和刷视频流只用系统播放器。
+    /// 暂时只用系统播放器（双播放器同步问题太多）；VLC 代码和设置值都保留，改回来只需删掉这个开关。
+    static let vlcModeEnabled = false
+
     private func resolveEngineKind(_ data: PlayerDetailData) -> PlayerEngineKind {
-        guard playMode == .regular else { return .system }
+        guard playMode == .regular, Self.vlcModeEnabled else { return .system }
         switch Settings.playerEngine {
         case .system: return .system
         case .vlc: return .vlc
