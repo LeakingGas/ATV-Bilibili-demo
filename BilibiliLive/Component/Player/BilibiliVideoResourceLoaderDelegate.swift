@@ -974,6 +974,9 @@ private extension BilibiliVideoResourceLoaderDelegate {
         throw NSError(domain: "Chunk", code: 3)
     }
 
+    /// 一小块 = 新的 moof + mdat 头（从目录算出，立刻能发）+ 这几帧原样的数据（边下边发）。
+    /// 不等整块下完再回：系统播放器 1 秒收不到第一个字节就放弃这个请求（-12889）。
+    /// 系统挂断后写入失败，立刻取消这次下载，不再占网速。
     private func handlePartRequest(_ req: HttpRequest) -> HttpResponse {
         let query = Dictionary(req.queryParams, uniquingKeysWith: { first, _ in first })
         guard let mediaID = req.params[":id"],
@@ -983,33 +986,88 @@ private extension BilibiliVideoResourceLoaderDelegate {
               let entry = proxyRegistry.snapshot(for: mediaID)
         else { return HttpResponse.badRequest(nil) }
         let started = BTRTrace.now
+        let index: FragmentIndex
         do {
-            let index = try fragmentIndex(mediaID: mediaID, downloader: entry.downloader, offset: offset, size: size, duration: duration)
-            let samples = index.sampleRange(part: part, of: parts)
-            let bytes = index.byteRange(of: samples)
-            let range = try MediaByteRange(start: Int64(offset + bytes.lowerBound), end: Int64(offset + bytes.upperBound - 1))
-            let sampleData = try Self.fetchBlocking(entry.downloader, range)
-            guard sampleData.count == bytes.count else { throw NSError(domain: "Chunk", code: 4) }
-            var body = index.buildPart(samples, sampleData: sampleData, sequence: UInt32(part + 1))
-            BTRTrace.shared.event("part_served", ["offset": offset, "part": part, "parts": parts, "bytes": body.count,
-                                                  "samples": samples.count, "elapsedMs": BTRTrace.now - started])
-            var status = 200
-            var headers = ["Content-Type": "video/mp4", "Accept-Ranges": "bytes"]
-            if let header = req.headers["range"],
-               case let .single(range) = MediaRangeParsing.parse(header: header, fileLength: Int64(body.count)) {
-                let total = body.count
-                body = body.subdata(in: Int(range.start)..<Int(range.end) + 1)
-                status = 206
-                headers["Content-Range"] = "bytes \(range.start)-\(range.end)/\(total)"
-            }
-            headers["Content-Length"] = String(body.count)
-            let payload = body
-            return HttpResponse.raw(status, status == 206 ? "Partial Content" : "OK", headers) { writer in
-                try writer.write(payload)
-            }
+            index = try fragmentIndex(mediaID: mediaID, downloader: entry.downloader, offset: offset, size: size, duration: duration)
         } catch {
-            BTRTrace.shared.event("part_failed", ["offset": offset, "part": part, "error": String(describing: error).prefix(120)])
+            BTRTrace.shared.event("part_failed", ["offset": offset, "part": part, "stage": "index",
+                                                  "error": String(describing: error).prefix(120)])
             return HttpResponse.raw(502, "Bad Gateway", nil, nil)
+        }
+        let samples = index.sampleRange(part: part, of: parts)
+        let bytes = index.byteRange(of: samples)
+        let header = index.partHeader(samples, sequence: UInt32(part + 1))
+        let total = header.count + bytes.count
+
+        // 要发的范围（整块，或系统带 Range 时的一段），在「头 + 数据」拼起来的坐标里。
+        var sendStart = 0
+        var sendEnd = total - 1
+        var status = 200
+        var headers = ["Content-Type": "video/mp4", "Accept-Ranges": "bytes"]
+        if let rangeHeader = req.headers["range"] {
+            guard case let .single(range) = MediaRangeParsing.parse(header: rangeHeader, fileLength: Int64(total)) else {
+                return HttpResponse.raw(416, "Range Not Satisfiable", ["Content-Range": "bytes */\(total)"], nil)
+            }
+            sendStart = Int(range.start)
+            sendEnd = Int(range.end)
+            status = 206
+            headers["Content-Range"] = "bytes \(sendStart)-\(sendEnd)/\(total)"
+        }
+        headers["Content-Length"] = String(sendEnd - sendStart + 1)
+        let indexMs = BTRTrace.now - started
+        let downloader = entry.downloader
+
+        return HttpResponse.raw(status, status == 206 ? "Partial Content" : "OK", headers) { writer in
+            var written = 0
+            var firstByteMs: Double?
+            // 头部分
+            if sendStart < header.count {
+                let slice = header.subdata(in: sendStart..<min(header.count, sendEnd + 1))
+                do {
+                    try writer.write(slice)
+                } catch {
+                    BTRTrace.shared.event("part_failed", ["offset": offset, "part": part, "stage": "write", "written": written,
+                                                          "error": String(describing: error).prefix(120)])
+                    throw error
+                }
+                written += slice.count
+                firstByteMs = BTRTrace.now - started
+            }
+            // 数据部分：这一段原样的字节，边下边写。
+            let dataStart = max(sendStart, header.count) - header.count
+            let dataEnd = sendEnd - header.count
+            if dataEnd >= dataStart {
+                let pipe = MediaBytePipe()
+                let streamTask: Task<Void, Never>
+                do {
+                    let range = try MediaByteRange(start: Int64(offset + bytes.lowerBound + dataStart),
+                                                   end: Int64(offset + bytes.lowerBound + dataEnd))
+                    streamTask = Task { await downloader.stream(range: range, to: pipe) }
+                } catch {
+                    BTRTrace.shared.event("part_failed", ["offset": offset, "part": part, "stage": "range",
+                                                          "error": String(describing: error).prefix(120)])
+                    throw error
+                }
+                var dataWritten = 0
+                do {
+                    while let chunk = try pipe.readSync(maxLength: 256 * 1024, timeout: 30) {
+                        try writer.write(chunk)
+                        if firstByteMs == nil { firstByteMs = BTRTrace.now - started }
+                        written += chunk.count
+                        dataWritten += chunk.count
+                    }
+                    guard dataWritten == dataEnd - dataStart + 1 else { throw NSError(domain: "Chunk", code: 4) }
+                } catch {
+                    streamTask.cancel()
+                    BTRTrace.shared.event("part_failed", ["offset": offset, "part": part, "stage": "data", "written": written,
+                                                          "elapsedMs": BTRTrace.now - started,
+                                                          "error": String(describing: error).prefix(120)])
+                    throw error
+                }
+            }
+            BTRTrace.shared.event("part_served", ["offset": offset, "part": part, "parts": parts, "bytes": written,
+                                                  "samples": samples.count, "indexMs": indexMs,
+                                                  "firstByteMs": firstByteMs ?? -1, "elapsedMs": BTRTrace.now - started])
         }
     }
 

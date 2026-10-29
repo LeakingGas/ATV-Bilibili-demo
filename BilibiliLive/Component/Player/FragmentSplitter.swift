@@ -165,8 +165,9 @@ struct FragmentIndex {
         samples[range.lowerBound].offset..<(samples[range.upperBound - 1].offset + samples[range.upperBound - 1].size)
     }
 
-    /// 生成一小块：新的 moof + mdat（sampleData 是这几帧原样的数据，按 byteRange 取出）。
-    func buildPart(_ range: Range<Int>, sampleData: Data, sequence: UInt32) -> Data {
+    /// 一小块的开头：新的 moof + mdat 头。只用到每帧的大小和时长，不需要画面数据，
+    /// 所以可以先发出去，画面数据（byteRange 那一段原样的字节）边下边接在后面。
+    func partHeader(_ range: Range<Int>, sequence: UInt32) -> Data {
         let chosen = Array(samples[range])
         let decodeTime = baseDecodeTime + samples[..<range.lowerBound].reduce(UInt64(0)) { $0 + UInt64($1.duration) }
 
@@ -207,10 +208,11 @@ struct FragmentIndex {
         let dataOffset = UInt32(moof.count + 8)
         moof.replaceSubrange(offsetPosition..<offsetPosition + 4, with: dataOffset.bigEndianBytes)
 
+        let dataSize = byteRange(of: range).count
         var mdatHeader = Data()
-        mdatHeader.append32(UInt32(8 + sampleData.count))
+        mdatHeader.append32(UInt32(8 + dataSize))
         mdatHeader.append("mdat".data(using: .ascii)!)
-        return moof + mdatHeader + sampleData
+        return moof + mdatHeader
     }
 
     private static func be32(_ b: [UInt8], _ i: Int) -> UInt32 {

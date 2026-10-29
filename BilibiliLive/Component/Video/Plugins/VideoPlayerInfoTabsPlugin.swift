@@ -1009,7 +1009,8 @@ final class PlayerCommentCell: UICollectionViewCell {
 }
 
 
-// MARK: - 控制栏最左边的 UP 主按钮（头像）：进入主页、关注 / 取消关注
+// MARK: - 控制栏最左边的 UP 主按钮：进入主页、关注 / 取消关注
+// 图标用系统人像符号：控制栏菜单的图标会被系统当成单色图标整片涂白，放头像只会显示成白圆。
 
 final class UploaderMenuController {
     static let identifier = UIMenu.Identifier("btr.uploader")
@@ -1018,7 +1019,6 @@ final class UploaderMenuController {
     weak var host: PlayerHost?
 
     private let owner: VideoOwner
-    private var avatar: UIImage?
     private var following: Bool?
     private var loaded = false
 
@@ -1029,15 +1029,6 @@ final class UploaderMenuController {
     func load() {
         guard !loaded, owner.mid > 0 else { return }
         loaded = true
-        if let face = owner.face.flatMap({ URL(string: $0.hasPrefix("//") ? "https:" + $0 : $0) }) {
-            KingfisherManager.shared.retrieveImage(with: face, options: [.processor(DownsamplingImageProcessor(size: CGSize(width: 120, height: 120)))]) { [weak self] result in
-                guard let self, case let .success(value) = result else { return }
-                DispatchQueue.main.async {
-                    self.avatar = Self.circle(value.image, side: 60)
-                    self.onChange?()
-                }
-            }
-        }
         Task { @MainActor [weak self] in
             guard let self else { return }
             if let relation = try? await WebRequest.requestUpSpaceRelation(mid: self.owner.mid) {
@@ -1060,18 +1051,37 @@ final class UploaderMenuController {
             }
             children.append(follow)
         }
-        let image = avatar?.withRenderingMode(.alwaysOriginal) ?? UIImage(systemName: "person.crop.circle")
-        return UIMenu(title: owner.name, image: image, identifier: Self.identifier, children: children)
+        return UIMenu(title: owner.name, image: UIImage(systemName: "person.crop.circle"), identifier: Self.identifier, children: children)
     }
 
+    /// 点菜单项时菜单自己正在关闭；之前在「最上层页面」（就是这个菜单）上打开主页，会被菜单一起关掉（闪一下就回来）。
+    /// 现在从播放器本身打开，等菜单完全关掉再弹出。
     private func openSpace() {
-        guard let presenter = host?.hostViewController else { return }
-        host?.avPlayerViewController?.player?.pause()
-        let space = UpSpaceViewController()
-        space.mid = owner.mid
-        var top: UIViewController = presenter
-        while let presented = top.presentedViewController { top = presented }
-        top.present(space, animated: true)
+        guard let host else { return }
+        let player = host.hostViewController.parent as? CommonPlayerViewController
+        let presenter: UIViewController = player ?? host.hostViewController
+        host.avPlayerViewController?.player?.pause()
+        let mid = owner.mid
+        let started = Date()
+        func attempt() {
+            let blocking = presenter.presentedViewController
+            if let blocking, Date().timeIntervalSince(started) < 2 {
+                Diag.mark("UPSPACE wait presenter=\(type(of: presenter)) blocking=\(type(of: blocking)) dismissing=\(blocking.isBeingDismissed)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { attempt() }
+                return
+            }
+            if let blocking {
+                Diag.mark("UPSPACE failed mid=\(mid) presenter=\(type(of: presenter)) still presenting \(type(of: blocking))")
+                return
+            }
+            let space = UpSpaceViewController()
+            space.mid = mid
+            Diag.mark("UPSPACE present mid=\(mid) presenter=\(type(of: presenter)) waitMs=\(Int(Date().timeIntervalSince(started) * 1000))")
+            presenter.present(space, animated: true) {
+                Diag.mark("UPSPACE presented=\(presenter.presentedViewController === space)")
+            }
+        }
+        DispatchQueue.main.async { attempt() }
     }
 
     private func toggleFollow() {
@@ -1081,13 +1091,5 @@ final class UploaderMenuController {
         self.following = next
         onChange?()
         VideoInteractionAnimationView.show(in: host?.hostViewController.view, kinds: [], text: next ? "已关注 \(owner.name)" : "已取消关注")
-    }
-
-    private static func circle(_ image: UIImage, side: CGFloat) -> UIImage {
-        let size = CGSize(width: side, height: side)
-        return UIGraphicsImageRenderer(size: size).image { _ in
-            UIBezierPath(ovalIn: CGRect(origin: .zero, size: size)).addClip()
-            image.draw(in: CGRect(origin: .zero, size: size))
-        }
     }
 }
