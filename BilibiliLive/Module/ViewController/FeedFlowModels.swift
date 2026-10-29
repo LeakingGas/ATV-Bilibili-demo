@@ -20,6 +20,8 @@ struct FeedFlowItem: Hashable {
     let viewCountText: String
     let danmakuCountText: String
     let reasonText: String?
+    /// 首页推荐「不感兴趣」目标（只有推荐流的条目有）。
+    var dislike: RecommendDislike?
 
     init(aid: Int,
          cid: Int? = nil,

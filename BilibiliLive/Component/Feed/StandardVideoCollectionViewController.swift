@@ -49,7 +49,10 @@ class StandardVideoCollectionViewController<T: PlayableData>: UIViewController, 
             collectionVC.didLongPress = {
                 [weak self] record in
                 guard let self, let record = record as? T else { return }
-                VideoQuickActionMenu.shared.present(aid: record.aid, title: record.title, from: self)
+                let dislike = (record as? RecommendFeedItem)?.dislike
+                VideoQuickActionMenu.shared.present(aid: record.aid, title: record.title, dislike: dislike, onDisliked: { [weak self] in
+                    self?.collectionVC.remove { ($0 as? T)?.aid == record.aid }
+                }, from: self)
             }
         }
     }

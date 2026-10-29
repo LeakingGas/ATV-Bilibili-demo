@@ -650,10 +650,25 @@ struct WebTopFeedRecommendResponse: Codable, Hashable {
         let stat: Stat?
         let rcmd_reason: RecommendReason?
         let pubdate: Int?
+        /// 推荐流追踪 ID（「不感兴趣」要带上）。
+        let track_id: String?
     }
 
     let item: [Item]
     let mid: Int?
+}
+
+// MARK: - 首页推荐：不感兴趣
+
+extension WebRequest {
+    /// 网页首页推荐「不感兴趣」：字段照网页发送；reason_id 1 = 内容不感兴趣。
+    static func requestRecommendDislike(aid: Int, mid: Int, trackID: String, complete: @escaping (Result<JSON, RequestError>) -> Void) {
+        requestJSON(method: .post, url: "https://api.bilibili.com/x/web-interface/feedback/dislike",
+                    parameters: ["app_id": 100, "platform": 5, "from_spmid": "", "spmid": "333.1007.0.0",
+                                 "goto": "av", "id": aid, "mid": mid, "track_id": trackID,
+                                 "feedback_page": 1, "reason_id": 1],
+                    headers: ["Referer": "https://www.bilibili.com/"], complete: complete)
+    }
 }
 
 // MARK: - User

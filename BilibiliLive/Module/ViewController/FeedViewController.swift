@@ -117,6 +117,19 @@ struct RecommendFeedItem: PlayableData {
         }
     }
 
+    /// 「不感兴趣」目标；拿不到必要字段时为 nil（菜单里就不出现这一项）。
+    var dislike: RecommendDislike? {
+        switch source {
+        case let .app(item):
+            guard let reasons = item.three_point?.dislike_reasons, !reasons.isEmpty, item.aid > 0 else { return nil }
+            return .app(goto: item.goto, id: item.aid, reasons: reasons)
+        case let .web(item):
+            guard let aid = item.id, aid > 0, let mid = item.owner?.mid, mid > 0,
+                  let trackID = item.track_id, !trackID.isEmpty else { return nil }
+            return .web(aid: aid, mid: mid, trackID: trackID)
+        }
+    }
+
     var ownerName: String {
         switch source {
         case let .app(item): return item.ownerName

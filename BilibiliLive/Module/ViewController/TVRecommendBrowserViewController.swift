@@ -21,7 +21,7 @@ private extension WebTopFeedRecommendResponse.Item {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let avatarURL = owner?.face.flatMap(URL.init(string:))?.addSchemeIfNeed()
 
-        return FeedFlowItem(aid: aid,
+        var item = FeedFlowItem(aid: aid,
                             cid: cid,
                             title: title,
                             ownerName: owner?.name ?? "",
@@ -32,6 +32,10 @@ private extension WebTopFeedRecommendResponse.Item {
                             danmakuCountText: (stat?.danmaku ?? 0).numberString(),
                             reasonText: reasonContent?.isEmpty == false ? reasonContent : nil,
                             identityKey: FeedFlowItem.makeIdentityKey(aid: aid))
+        if let mid = owner?.mid, mid > 0, let track_id, !track_id.isEmpty {
+            item.dislike = .web(aid: aid, mid: mid, trackID: track_id)
+        }
+        return item
     }
 }
 

@@ -271,10 +271,12 @@ enum ApiRequest {
             let cover_left_text_2: String?
             let cover_left_text_3: String?
             let cover_right_text: String?
+            /// 卡片的「更多」菜单：不感兴趣的原因（reason_id 从这里取）。
+            let three_point: ThreePoint?
 
             enum CodingKeys: String, CodingKey {
                 case can_play, title, param, args, idx, cover, goto, top_rcmd_reason, bottom_rcmd_reason, desc, player_args
-                case cover_left_text_1, cover_left_text_2, cover_left_text_3, cover_right_text
+                case cover_left_text_1, cover_left_text_2, cover_left_text_3, cover_right_text, three_point
                 case avatar_info = "avatar"
             }
 
@@ -314,6 +316,16 @@ enum ApiRequest {
                 }
                 return DisplayOverlay(leftItems: leftItems, rightItems: rightItems)
             }
+        }
+
+        struct ThreePoint: Codable, Hashable {
+            struct Reason: Codable, Hashable {
+                let id: Int
+                let name: String?
+                let toast: String?
+            }
+
+            let dislike_reasons: [Reason]?
         }
 
         struct Args: Codable, Hashable {
@@ -370,6 +382,12 @@ enum ApiRequest {
         let idx = "\(lastIdx)"
         let resp: FeedResp = try await request(EndPoint.feed, parameters: ["idx": idx, "flush": "0", "column": "4", "device": "pad", "pull": idx == "0" ? "1" : "0"])
         return resp.items.filter({ $0.goto == "av" })
+    }
+
+    /// App 首页推荐「不感兴趣」（告诉推荐系统少推这类内容）。reason_id 来自卡片的 three_point.dislike_reasons。
+    static func requestFeedDislike(goto: String, id: Int, reasonID: Int, complete: @escaping (Result<JSON, RequestError>) -> Void) {
+        requestJSON("https://app.bilibili.com/x/feed/dislike", method: .get,
+                    parameters: ["goto": goto, "id": id, "reason_id": reasonID, "build": 1], complete: complete)
     }
 
     static func requestDislike(aid: Int, dislike: Bool) {

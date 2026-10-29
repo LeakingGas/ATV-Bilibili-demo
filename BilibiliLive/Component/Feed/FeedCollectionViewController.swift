@@ -160,6 +160,20 @@ class FeedCollectionViewController: UIViewController {
         }
     }
 
+    /// 去掉一个视频（例如点了不感兴趣），后面的顶上来，焦点落在顶上来的那个上。
+    func remove(where match: (any DisplayData) -> Bool) {
+        guard let index = _displayData.firstIndex(where: { match($0.data) }) else { return }
+        _displayData.remove(at: index)
+        guard !_displayData.isEmpty else { return }
+        lastFocusedIndexPath = IndexPath(item: min(index, _displayData.count - 1), section: 0)
+        collectionView.setNeedsFocusUpdate()
+        collectionView.updateFocusIfNeeded()
+        if _displayData.count < 12, !finished, !isLoading {
+            isLoading = true
+            loadMore?()
+        }
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: makeCollectionViewLayout())

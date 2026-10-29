@@ -2,7 +2,7 @@
 //  VideoQuickActionMenu.swift
 //  BilibiliLive
 //
-//  视频快捷操作菜单：加入/移出稍后再看、收藏视频、不感兴趣。
+//  视频快捷操作菜单：加入/移出稍后再看、收藏视频、不感兴趣（只有首页推荐的视频有）。
 //  经典 Feed（FeedCollectionViewController）与沉浸式 Feed（FeedFlowBrowserViewController）共用。
 //
 
@@ -18,7 +18,9 @@ final class VideoQuickActionMenu {
 
     private init() {}
 
-    func present(aid: Int, title: String?, from presenter: UIViewController) {
+    /// - dislike: 首页推荐的「不感兴趣」目标；nil 时不提供这一项（别的列表没有这个接口）。
+    /// - onDisliked: 不感兴趣提交成功后调用（列表据此去掉这个视频）。失败会弹出错误，视频留在列表里。
+    func present(aid: Int, title: String?, dislike: RecommendDislike? = nil, onDisliked: (() -> Void)? = nil, from presenter: UIViewController) {
         guard aid > 0 else { return }
         let alert = UIAlertController(title: title, message: nil, preferredStyle: .actionSheet)
 
@@ -36,9 +38,11 @@ final class VideoQuickActionMenu {
             self?.favorite(aid: aid, presenter: presenter)
         })
 
-        alert.addAction(UIAlertAction(title: "不感兴趣", style: .default) { _ in
-            ApiRequest.requestDislike(aid: aid, dislike: true)
-        })
+        if let dislike {
+            alert.addAction(UIAlertAction(title: "不感兴趣", style: .default) { [weak self, weak presenter] _ in
+                self?.submitDislike(dislike, aid: aid, presenter: presenter, onDisliked: onDisliked)
+            })
+        }
 
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         presenter.present(alert, animated: true)
@@ -73,6 +77,36 @@ final class VideoQuickActionMenu {
                 self?.inFlightAids.remove(aid)
                 self?.showError(title: "移出稍后再看失败", error: err, presenter: presenter)
             }
+        }
+    }
+
+    // MARK: - 不感兴趣
+
+    private func submitDislike(_ dislike: RecommendDislike, aid: Int, presenter: UIViewController?, onDisliked: (() -> Void)?) {
+        let finish: (Result<JSON, RequestError>) -> Void = { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success:
+                    Diag.mark("FEED dislike aid=\(aid) \(dislike.logText) ok")
+                    onDisliked?()
+                case let .failure(error):
+                    Diag.mark("FEED dislike aid=\(aid) \(dislike.logText) failed \(error)")
+                    self?.showError(title: "不感兴趣提交失败", error: error, presenter: presenter)
+                }
+            }
+        }
+        switch dislike {
+        case let .app(goto, id, reasons):
+            // 「不感兴趣」对应的原因：名字是「不感兴趣」的那一项，没有就用 id 1。
+            guard let reason = reasons.first(where: { $0.name?.contains("不感兴趣") == true }) ?? reasons.first(where: { $0.id == 1 }) else {
+                let list = reasons.map { "\($0.id):\($0.name ?? "")" }.joined(separator: ",")
+                Diag.mark("FEED dislike aid=\(aid) no reason in [\(list)]")
+                showError(title: "不感兴趣提交失败", error: RequestError.statusFail(code: -1, message: "这条推荐没有「不感兴趣」选项（\(list)）"), presenter: presenter)
+                return
+            }
+            ApiRequest.requestFeedDislike(goto: goto, id: id, reasonID: reason.id, complete: finish)
+        case let .web(aid, mid, trackID):
+            WebRequest.requestRecommendDislike(aid: aid, mid: mid, trackID: trackID, complete: finish)
         }
     }
 
@@ -112,6 +146,19 @@ final class VideoQuickActionMenu {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Ok", style: .cancel))
         presenter.present(alert, animated: true)
+    }
+}
+
+/// 首页推荐「不感兴趣」要提交的内容（App 推荐和网页推荐是两个接口）。
+enum RecommendDislike: Hashable {
+    case app(goto: String, id: Int, reasons: [ApiRequest.FeedResp.ThreePoint.Reason])
+    case web(aid: Int, mid: Int, trackID: String)
+
+    var logText: String {
+        switch self {
+        case let .app(goto, id, reasons): return "app goto=\(goto) id=\(id) reasons=\(reasons.map(\.id))"
+        case let .web(_, mid, trackID): return "web mid=\(mid) track=\(trackID)"
+        }
     }
 }
 

@@ -268,6 +268,26 @@ class FeedFlowBrowserViewController: UIViewController, BLTabBarContentVCProtocol
         }
     }
 
+    /// 去掉一个视频（不感兴趣），后面的顶上来，焦点落在顶上来的那个上。
+    private func removeItem(_ item: FeedFlowItem) {
+        guard let index = items.firstIndex(of: item) else { return }
+        items.remove(at: index)
+        if lastPlayedItemIdentity == item.identityKey { lastPlayedItemIdentity = nil }
+        configureSequenceProvider(with: items)
+        listCollectionView.performBatchUpdates {
+            listCollectionView.deleteItems(at: [IndexPath(item: index, section: 0)])
+        }
+        guard !items.isEmpty else {
+            restoreEmptyState()
+            return
+        }
+        focusedIndex = min(index, items.count - 1)
+        sequenceProvider.setCurrentIndex(focusedIndex)
+        setNeedsFocusUpdate()
+        updateFocusIfNeeded()
+        schedulePreview(for: items[focusedIndex])
+    }
+
     private func configureSequenceProvider(with items: [FeedFlowItem]) {
         sequenceProvider = VideoSequenceProvider(seq: items.map(\.playInfo))
         sequenceProvider.onNeedMore = { [weak self] in
@@ -721,7 +741,9 @@ extension FeedFlowBrowserViewController: UICollectionViewDataSource {
         cell.configure(with: item, isCurrent: indexPath.item == focusedIndex)
         cell.onLongPress = { [weak self] in
             guard let self else { return }
-            VideoQuickActionMenu.shared.present(aid: item.aid, title: item.title, from: self)
+            VideoQuickActionMenu.shared.present(aid: item.aid, title: item.title, dislike: item.dislike, onDisliked: { [weak self] in
+                self?.removeItem(item)
+            }, from: self)
         }
         return cell
     }
