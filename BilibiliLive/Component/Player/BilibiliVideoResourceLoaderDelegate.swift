@@ -237,6 +237,9 @@ class BilibiliVideoResourceLoaderDelegate: NSObject, AVAssetResourceLoaderDelega
     private var variantDecls = [Int: (codecs: String, supplemental: String, range: String)]()
     private var hdrVariants = [Int: HDRVariant]()
     private var hdrProbeTask: Task<Void, Never>?
+    /// 小块播放：各段目录（moof）的解析缓存。
+    fileprivate let fragmentLock = NSLock()
+    fileprivate var fragmentIndexes = [String: FragmentIndex]()
 
     /// 「HDR 诊断」：依次换几种主播放列表写法，看系统播放器肯不肯加载（只用于诊断）。
     enum HDRDiagnosticMode: String, CaseIterable {
@@ -887,9 +890,6 @@ private extension BilibiliVideoResourceLoaderDelegate {
 
     /// 每块大约 1 秒。
     private static let chunkSeconds = 1.0
-    private let fragmentLock = NSLock()
-    private var fragmentIndexes = [String: FragmentIndex]()
-
     private func chunkedPlaylist(segment: SidxParseUtil.Sidx, firstOffset: Int, mediaURL: String, mediaID: String,
                                  moovOffset: String, moovEnd: Int, quality: Int) -> String {
         var lines = [String]()
