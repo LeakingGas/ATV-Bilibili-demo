@@ -6,6 +6,7 @@
 //  经典 Feed（FeedCollectionViewController）与沉浸式 Feed（FeedFlowBrowserViewController）共用。
 //
 
+import SwiftyJSON
 import UIKit
 
 @MainActor
@@ -84,7 +85,7 @@ final class VideoQuickActionMenu {
 
     private func submitDislike(_ dislike: RecommendDislike, aid: Int, presenter: UIViewController?, onDisliked: (() -> Void)?) {
         let finish: (Result<JSON, RequestError>) -> Void = { [weak self] result in
-            DispatchQueue.main.async {
+            Task { @MainActor in
                 switch result {
                 case .success:
                     Diag.mark("FEED dislike aid=\(aid) \(dislike.logText) ok")
