@@ -1,0 +1,20 @@
+Bili-ATV-MultiThread
+
+Copyright (C) 2026 LeakingGas
+  本仓库相对原项目的修改和新增部分。
+
+基于 ATV-Bilibili-demo（https://github.com/yichengchen/ATV-Bilibili-demo）
+Copyright (C) yichengchen 及其贡献者
+
+本项目整体以 GNU General Public License v2.0 发布，许可证全文见 LICENSE.md。
+本程序不提供任何担保；详见 LICENSE.md。
+
+修改说明（GPL-2.0 第 2(a) 条）：
+  自 2026 年起，LeakingGas 对原项目的多个文件进行了修改，并新增了文件。
+  每处修改的具体内容和日期见本仓库的 git 提交记录。
+
+第三方组件：
+  - Bilibili-thread-ripper（BTR，https://github.com/MrTangLuyao/Bilibili-thread-ripper）
+    Copyright (c) 2026 Bilibili-thread-ripper contributors，MIT 许可。
+    原文和原始源码见 ThirdParty/BTR/，许可证随应用保留在 BilibiliLive/BTR-LICENSE.txt。
+  - 其他依赖库的许可证见各自的软件包。
