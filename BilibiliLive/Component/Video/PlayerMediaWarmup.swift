@@ -64,15 +64,33 @@ actor PlayerMediaWarmupManager {
         let task: Task<PreparedPlayerMedia, Error>
     }
 
-    private let maxPreparedEntries = 4
+    private let maxPreparedEntries: Int
     private let playContextCache: PlayContextCache
+    /// 预载时不取视频详情（少一个接口请求；播放器起播后自己补）。
+    private let fillDetail: Bool
     private var prepared = [String: PreparedPlayerMedia]()
     private var inFlight = [String: InFlightEntry]()
     private var accessOrder = [String]()
     private var cancellationGeneration = 0
 
-    init(playContextCache: PlayContextCache) {
+    init(playContextCache: PlayContextCache, maxPreparedEntries: Int = 4, fillDetail: Bool = true) {
         self.playContextCache = playContextCache
+        self.maxPreparedEntries = maxPreparedEntries
+        self.fillDetail = fillDetail
+    }
+
+    /// 只保留这些视频（sequenceKey）的预载，其余的停止下载并丢弃。
+    func retain(sequenceKeys: Set<String>) {
+        let keep: (String) -> Bool = { key in sequenceKeys.contains(String(key.split(separator: "#").first ?? "")) }
+        for (key, entry) in inFlight where !keep(key) {
+            entry.task.cancel()
+            inFlight[key] = nil
+        }
+        for (key, media) in prepared where !keep(key) {
+            media.delegate.btrPlayback.invalidate()
+            prepared[key] = nil
+            accessOrder.removeAll { $0 == key }
+        }
     }
 
     func preload(playInfo: PlayInfo) async {
@@ -90,16 +108,20 @@ actor PlayerMediaWarmupManager {
         let key = resolvedPlayInfo.sequenceKey + "#" + transportCacheKey(for: transportSnapshot)
         if let cached = prepared[key] {
             touch(key)
+            BTRTrace.shared.event("warmup_hit", ["key": key])
             return cached
         }
         if let entry = inFlight[key] {
+            BTRTrace.shared.event("warmup_join", ["key": key])
             return try await resolve(entry, for: key)
         }
+        BTRTrace.shared.event("warmup_miss", ["key": key])
 
         let token = UUID()
+        let fillDetail = self.fillDetail
         let task = Task<PreparedPlayerMedia, Error> {
             try Task.checkCancellation()
-            let snapshot = try await playContextCache.context(for: resolvedPlayInfo, mode: .regular)
+            let snapshot = try await playContextCache.context(for: resolvedPlayInfo, mode: .regular, fillDetail: fillDetail)
             try Task.checkCancellation()
             return try await PlayerMediaFactory.prepare(
                 aid: resolvedPlayInfo.aid,

@@ -95,6 +95,8 @@ class FeedCollectionViewController: UIViewController {
     var styleOverride: FeedDisplayStyle?
     var didSelect: ((any DisplayData) -> Void)?
     var didLongPress: ((any DisplayData) -> Void)?
+    /// 焦点进入一行时调用：这一行的全部视频，和焦点所在的那个。
+    var didFocusRow: (([any DisplayData], (any DisplayData)?) -> Void)?
     var loadMore: (() -> Void)?
     var finished = false
     var pageSize = 20
@@ -321,6 +323,27 @@ extension FeedCollectionViewController: UICollectionViewDelegate {
 
     func collectionView(_ collectionView: UICollectionView, didUpdateFocusIn context: UICollectionViewFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
         if let next = context.nextFocusedIndexPath { lastFocusedIndexPath = next }
+        reportFocusedRow(context.nextFocusedIndexPath)
+    }
+
+    /// 找出焦点所在那一行（同一高度）的全部视频。
+    private func reportFocusedRow(_ indexPath: IndexPath?) {
+        guard let didFocusRow, let indexPath,
+              let focusedFrame = collectionView.layoutAttributesForItem(at: indexPath)?.frame
+        else { return }
+        let count = collectionView.numberOfItems(inSection: indexPath.section)
+        let lower = max(0, indexPath.item - 8), upper = min(count - 1, indexPath.item + 8)
+        guard lower <= upper else { return }
+        var row = [any DisplayData]()
+        for item in lower...upper {
+            let path = IndexPath(item: item, section: indexPath.section)
+            guard let frame = collectionView.layoutAttributesForItem(at: path)?.frame,
+                  abs(frame.midY - focusedFrame.midY) < focusedFrame.height / 2,
+                  let data = dataSource.itemIdentifier(for: path)?.data
+            else { continue }
+            row.append(data)
+        }
+        didFocusRow(row, dataSource.itemIdentifier(for: indexPath)?.data)
     }
 
     func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {

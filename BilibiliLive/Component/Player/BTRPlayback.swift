@@ -349,7 +349,7 @@ final class BTRTrace: @unchecked Sendable {
         "play_immediately", "playback_stalled", "startup_hedge",
         "hdr_probe", "hdr_master", "hdr_diag_begin", "hdr_diag", "hdr_diag_end", "segment_stats",
         "user_navigated", "user_navigated_resume",
-        "hdr_display_switch", "loader_subtitle", "subtitle_fetched", "subtitle_redirect", "subtitle_failed", "subtitle_served"]
+        "hdr_display_switch", "prefetch_ready", "warmup_hit", "warmup_join", "warmup_miss", "loader_subtitle", "subtitle_fetched", "subtitle_redirect", "subtitle_failed", "subtitle_served"]
     /// 由 App 的闪退诊断模块注入（测试里不存在）。
     static var persistentSink: ((String) -> Void)?
     /// 起播记录（App 注入）：每个事件都转给它，由它决定当前是否在记录起播过程。

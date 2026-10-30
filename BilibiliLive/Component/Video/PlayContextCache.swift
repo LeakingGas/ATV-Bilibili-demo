@@ -19,6 +19,8 @@ struct PlayContextSnapshot {
     let playerInfo: PlayerInfo?
     let videoPlayURLInfo: VideoPlayURLInfo
     var detail: VideoDetail?
+    /// 取到的时间：播放地址带签名、有有效期，缓存太久的要重新取。
+    var fetchedAt = Date()
 }
 
 enum PlayContextMode: String, Hashable {
@@ -65,13 +67,21 @@ actor PlayContextCache {
         _ = try? await context(for: playInfo, mode: mode)
     }
 
-    func context(for playInfo: PlayInfo, mode: PlayContextMode) async throws -> PlayContextSnapshot {
+    /// 缓存超过这么久就重新取（B 站播放地址的签名有有效期）。
+    private let maxAge: TimeInterval = 25 * 60
+
+    /// - fillDetail: 缓存里没有视频详情时是否当场补取（会多等一个接口）。播放器起播时传 false，详情由它自己晚到再补。
+    func context(for playInfo: PlayInfo, mode: PlayContextMode, fillDetail: Bool = true) async throws -> PlayContextSnapshot {
         let resolvedPlayInfo = try await PlayInfoResolver.resolve(playInfo)
         let entryKey = PlayContextEntryKey(contextKey: resolvedPlayInfo.contextKey, mode: mode)
 
+        if let cached = entries[entryKey], Date().timeIntervalSince(cached.fetchedAt) > maxAge {
+            entries[entryKey] = nil
+            accessOrder.removeAll { $0 == entryKey }
+        }
         if var cached = entries[entryKey] {
             touch(entryKey)
-            if mode.includeDetail, cached.detail == nil {
+            if fillDetail, mode.includeDetail, cached.detail == nil {
                 cached.detail = try? await WebRequest.requestDetailVideo(aid: resolvedPlayInfo.aid)
                 entries[entryKey] = cached
             }
@@ -81,7 +91,7 @@ actor PlayContextCache {
         if let entry = inFlightTasks[entryKey] {
             var snapshot = try await entry.task.value
             touch(entryKey)
-            if mode.includeDetail, snapshot.detail == nil {
+            if fillDetail, mode.includeDetail, snapshot.detail == nil {
                 snapshot.detail = try? await WebRequest.requestDetailVideo(aid: resolvedPlayInfo.aid)
                 entries[entryKey] = snapshot
             }
@@ -92,7 +102,7 @@ actor PlayContextCache {
         let task = Task<PlayContextSnapshot, Error> {
             try Task.checkCancellation()
             async let playerInfoReq = try? WebRequest.requestPlayerInfo(aid: resolvedPlayInfo.aid, cid: resolvedPlayInfo.cid ?? 0)
-            async let detailReq = mode.includeDetail ? (try? WebRequest.requestDetailVideo(aid: resolvedPlayInfo.aid)) : nil
+            async let detailReq = fillDetail && mode.includeDetail ? (try? WebRequest.requestDetailVideo(aid: resolvedPlayInfo.aid)) : nil
 
             let playURLInfo: VideoPlayURLInfo
             if resolvedPlayInfo.isBangumi {

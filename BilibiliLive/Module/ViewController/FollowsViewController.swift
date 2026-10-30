@@ -118,6 +118,12 @@ final class FollowsGridViewController: StandardVideoCollectionViewController<Dyn
         return []
     }
 
+    override func prefetchInfo(for record: DynamicFeedData) -> PlayInfo? {
+        // 番剧走另一套播放地址，不预载。
+        if (record.modules.module_dynamic.major?.pgc?.epid ?? 0) > 0 { return nil }
+        return super.prefetchInfo(for: record)
+    }
+
     override func goDetail(with feed: DynamicFeedData) {
         let epid = feed.modules.module_dynamic.major?.pgc?.epid
         VideoLauncher.play(aid: feed.aid, cid: feed.cid, epid: epid, cover: feed.pic, from: self)

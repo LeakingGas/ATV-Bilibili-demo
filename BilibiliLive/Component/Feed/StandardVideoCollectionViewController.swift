@@ -45,6 +45,12 @@ class StandardVideoCollectionViewController<T: PlayableData>: UIViewController, 
             [weak self] in
             self?.loadMore()
         }
+        collectionVC.didFocusRow = { [weak self] row, focused in
+            guard let self else { return }
+            let infos = row.compactMap { ($0 as? T).flatMap { self.prefetchInfo(for: $0) } }
+            let focusedInfo = (focused as? T).flatMap { self.prefetchInfo(for: $0) }
+            RowPrefetcher.shared.focusRow(infos, focused: focusedInfo)
+        }
         if supportVideoQuickActions() {
             collectionVC.didLongPress = {
                 [weak self] record in
@@ -59,6 +65,14 @@ class StandardVideoCollectionViewController<T: PlayableData>: UIViewController, 
 
     func supportPullToLoad() -> Bool {
         return true
+    }
+
+    /// 焦点所在行预载用的播放信息；返回 nil 表示这个视频不预载（例如番剧）。
+    func prefetchInfo(for record: T) -> PlayInfo? {
+        guard record.aid > 0, record.cid > 0 else { return nil }
+        var info = PlayInfo(aid: record.aid, cid: record.cid, epid: 0)
+        info.coverURL = record.pic
+        return info
     }
 
     /// 长按视频时是否弹出视频快捷操作菜单（加入稍后再看 / 收藏视频 / 不感兴趣）

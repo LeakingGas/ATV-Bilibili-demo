@@ -298,6 +298,7 @@ class SettingsViewController: UIViewController {
                     Settings.btrNodeRegion = $0
                 }
                 Toggle(title: "边下边播", setting: Settings.playWithoutWaiting, onChange: Settings.playWithoutWaiting.toggle())
+                Toggle(title: "预载当前行", setting: Settings.prefetchRow, onChange: Settings.prefetchRow.toggle())
             }
 
             SectionModel(title: "其他") {

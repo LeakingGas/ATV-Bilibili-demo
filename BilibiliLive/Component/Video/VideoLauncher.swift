@@ -29,7 +29,12 @@ enum VideoLauncher {
         let presenter = presenter ?? UIViewController.topMostViewController()
         // Open the CDN connections while the play URL is still being requested.
         BTRHTTPClient.shared.preconnect(hosts: BTRCDN.preconnectHosts(region: Settings.btrNodeRegion))
-        let player = VideoPlayerViewController(playInfo: info)
+        // 普通视频：和列表预载共用缓存，预载好的播放地址和第一段直接用上。
+        let shared = RowPrefetcher.shared
+        let usePrefetch = Settings.prefetchRow && !info.isBangumi && (info.cid ?? 0) > 0
+        let player = usePrefetch
+            ? VideoPlayerViewController(playInfo: info, playContextCache: shared.contextCache, mediaWarmupManager: shared.warmup)
+            : VideoPlayerViewController(playInfo: info)
         player.askResume = askResume
         // 列表页本身可能还盖着别的弹窗（例如搜索），从最上层弹出。
         presenter.topMostViewController().present(player, animated: true)

@@ -307,7 +307,7 @@ class VideoPlayerViewModel {
         assert(playInfo.isCidVaild)
         let existingVideoDetail = videoDetail?.View.aid == playInfo.aid ? videoDetail : nil
         if !playInfo.isBangumi, let playContextCache {
-            let cached = try await playContextCache.context(for: playInfo, mode: playContextMode)
+            let cached = try await playContextCache.context(for: playInfo, mode: playContextMode, fillDetail: false)
             let resolvedDetail = cached.detail ?? existingVideoDetail
 
             var detail = PlayerDetailData(aid: playInfo.aid,
@@ -327,6 +327,13 @@ class VideoPlayerViewModel {
                                                            lastPlayCid: lastPlayCid,
                                                            playTimeInSecond: playTimeInSecond,
                                                            playInfo: playInfo)
+            // 缓存里没有详情（例如列表预载时没取）：不等它，晚到再补插件。
+            if resolvedDetail == nil {
+                let aid = playInfo.aid
+                detail.pendingDetail = Task { [weak self] () -> VideoDetail? in
+                    await self?.fetchVideoDetail(aid: aid, existing: nil)
+                }
+            }
             return detail
         }
 
@@ -522,7 +529,7 @@ class VideoPlayerViewModel {
                                           reportWatchHistory: playMode != .preview,
                                           minimizeStalling: true,
                                           isMuted: playMode == .preview && previewMuted,
-                                          mediaWarmupManager: playMode == .feedFlow ? mediaWarmupManager : nil)
+                                          mediaWarmupManager: playMode == .preview ? nil : mediaWarmupManager)
             system.onLoadFailure = { [weak self] message in
                 self?.loadResult.send(.failure(message))
             }

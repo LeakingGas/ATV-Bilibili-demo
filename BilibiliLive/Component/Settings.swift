@@ -64,6 +64,10 @@ enum Settings {
     @UserDefault("Settings.fixedExportAddress", defaultValue: false)
     static var fixedExportAddress: Bool
 
+    /// 列表里焦点所在的那一行：同时预载每个视频的播放地址和第一段，点开更快。
+    @UserDefault("Settings.prefetchRow", defaultValue: true)
+    static var prefetchRow: Bool
+
     /// 不等缓冲：数据一到就开播 / 卡顿后数据一到就继续，不让系统播放器先评估网速、攒缓冲。
     @UserDefault("Settings.playWithoutWaiting", defaultValue: false)
     static var playWithoutWaiting: Bool
