@@ -6,4 +6,4 @@
 - 生命周期：暂停不作缓冲压力信号；seek/换清晰度/退出使旧generation失效；排队、实际URLSession下载和背压管道均检查取消。
 - 验证：保留原BTR函数生成131组对照，增加倍速、暂停、过期快照、seek取消真实HTTP请求等Swift断言，接入macOS构建前置测试。
 
-本次补齐的是代码与测试，不是已验证的IPA。本机无Swift/Xcode，也未连接可启动Actions的GitHub仓库；原生测试、完整Archive与Apple TV实际播放仍未执行。请勿把语法解析通过理解为编译通过。构建步骤见根目录START-HERE.zh-CN.md；无需提供账号密码。
+本次补齐的是代码与测试，不是已验证的IPA。本机无Swift/Xcode，也未连接可启动Actions的GitHub仓库；原生测试、完整Archive与Apple TV实际播放仍未执行。请勿把语法解析通过理解为编译通过。构建步骤见根目录 README.md；无需提供账号密码。

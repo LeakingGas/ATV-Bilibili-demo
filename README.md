@@ -1,50 +1,61 @@
-# BiliBili tvOS 客户端 Demo
+# Bili-ATV-MultiThread
 
-### 本项目没有任何授权的 Testflight 发放以及任何收费版本，请注意辨别和考虑安全性问题。
+Apple TV（tvOS）上的哔哩哔哩客户端，用系统播放器播放，视频经本地代理从多个 CDN 节点多线程下载。
 
- **BiliBili tvOS 客户端 Demo 从未在任何平台上架和收费（包括AppStore与Testflight）**
+基于 [yichengchen/ATV-Bilibili-demo](https://github.com/yichengchen/ATV-Bilibili-demo) 修改，下载核心移植自 BTR。
 
- 如果您在任何平台上看到有人以收费方式提供本项目的服务或应用，请注意这是**未经授权的**行为，并且与我们的原始意图不符。我们强烈谴责将本项目用于商业盈利的行为，由此引发的任何安全风险与此项目无关。
+> **本项目没有任何 Testflight 发放，也没有任何收费版本，从未在 App Store 或其他平台上架。**
+> 如果看到有人以收费方式提供本项目或基于本项目的应用，那是未经授权的行为，由此引发的安全风险与本项目无关。
+> （这条声明沿用自原项目，原作者明确反对把项目用于商业盈利。）
 
+## 和原版相比
 
-### 支持功能
-- 二维码登录
-- 云视听小电视投屏协议
-- 直播与弹幕
-- 推荐Feed
-- 热门
-- 排行榜
-- 搜索
-- 关注列表
-- 历史播放
-- 稍后再看
-- 系统播放器播放视频
-- 视频弹幕
-- 热门评论
-- 弹幕防挡
-- 云视听投屏
-- HDR播放
-- 字幕
+**播放**
+- 多线程、多 CDN 节点并行下载：节点自动测速、慢节点自动避开，慢的分片会同时向别的节点请求。
+- 起播时只下载播放器正在等的数据，开始播放后再预读后面的内容；视频详情不挡起播。
+- HDR10 和杜比视界：加载前按片源自动把电视切到对应的显示模式（需要打开系统的「匹配动态范围」）。杜比视界按片源的配置正确声明，电视显示杜比视界标志。
+- 长按触控板 1 秒：2 倍速播放，期间不显示控制栏，松手恢复原速。
+- 播完停在最后一帧（毛玻璃）并显示重播按钮，不自动退出；是否自动连播可在设置里开关。
+- 加载时显示封面毛玻璃，不黑屏。
 
- ![](imgs/1.jpg)
- ![](imgs/2.jpg)
- ![](imgs/3.png)
+**控制栏和面板**
+- 最左边的 UP 主按钮：进入主页、关注 / 取消关注。
+- 点赞、点踩（长按点赞一键三连）。
+- 弹幕设置合并到一个菜单：开关、透明度、显示区域。
+- 下滑面板：简介、选集、UP 主的其他视频、相关推荐、评论（可展开回复，按返回先收起展开的评论）。
 
+**列表**
+- 推荐里长按「不感兴趣」：提交给 B 站推荐系统，视频从列表消失，后面的顶上来。
 
+**诊断**
+- 运行日志、下载过程记录、投屏日志可在设置里扫码导出（地址可选固定或随机），方便排查问题。
 
-### Telegram Group
- - https://t.me/appletvbilibilidemo
+## 原版已有的功能
 
-### 未签名iPA文件
+二维码登录、推荐、热门、排行榜、搜索、关注、历史、稍后再看、直播与弹幕、视频弹幕、弹幕防挡、字幕、云视听小电视投屏协议。
 
-从 https://github.com/yichengchen/ATV-Bilibili-demo/releases/tag/nightly 获取基于最新代码构建的
+![](imgs/1.jpg)
+![](imgs/2.jpg)
+![](imgs/3.png)
 
-### Links
+## 获取安装包
 
-- App Icon [【22娘×33娘】亲爱的UP主，你怎么还在咕咕咕？](https://www.bilibili.com/video/BV1AB4y1k7em)
+本项目不提供现成的安装包，需要自己编译、自己签名侧载：
 
-- [thmatuza/MPEGDASHAVPlayerDemo](https://github.com/thmatuza/MPEGDASHAVPlayerDemo)
+1. 在本仓库的 **Actions** 里选 **BTR unsigned tvOS IPA**，点 **Run workflow**，分支选 `main`。
+2. 跑完后在那次运行页面的最下方下载 **ATV-BTR-unsigned**，解压得到未签名的 IPA。
+3. 用你自己的签名工具签名后侧载到 Apple TV。编译流程不需要任何 Apple 账号、证书或密钥。
 
-- [dreamCodeMan/B-webmask](https://github.com/dreamCodeMan/B-webmask)
+如果编译失败，下载同一页面的 **BTR-build-diagnostics** 查看失败原因。
 
-- [分析Bilibili客户端的“哔哩必连”协议](https://xfangfang.github.io/028)
+最低系统要求：tvOS 16.0。
+
+## 许可证和致谢
+
+- 本项目基于 [yichengchen/ATV-Bilibili-demo](https://github.com/yichengchen/ATV-Bilibili-demo)，以 **GPL-2.0** 发布，见 [LICENSE.md](LICENSE.md)。分发修改版时须保留许可证并提供对应源码（Actions 编译时会把该次提交的源码一并打包）。
+- 下载核心移植自 BTR，**MIT** 许可，原文和原始核心源码保存在 [ThirdParty/BTR](ThirdParty/BTR)，许可证随应用保留在 `BilibiliLive/BTR-LICENSE.txt`。移植细节见 [docs/BTR-PORT.md](docs/BTR-PORT.md)。
+- 原项目的致谢：
+  - App Icon [【22娘×33娘】亲爱的UP主，你怎么还在咕咕咕？](https://www.bilibili.com/video/BV1AB4y1k7em)
+  - [thmatuza/MPEGDASHAVPlayerDemo](https://github.com/thmatuza/MPEGDASHAVPlayerDemo)
+  - [dreamCodeMan/B-webmask](https://github.com/dreamCodeMan/B-webmask)
+  - [分析Bilibili客户端的“哔哩必连”协议](https://xfangfang.github.io/028)
