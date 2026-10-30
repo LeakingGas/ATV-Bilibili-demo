@@ -121,7 +121,11 @@ final class FollowsGridViewController: StandardVideoCollectionViewController<Dyn
     override func prefetchInfo(for record: DynamicFeedData) -> PlayInfo? {
         // 番剧走另一套播放地址，不预载。
         if (record.modules.module_dynamic.major?.pgc?.epid ?? 0) > 0 { return nil }
-        return super.prefetchInfo(for: record)
+        // 动态接口不给 cid（固定 0）：预载时先用 aid 查 cid。
+        guard record.aid > 0 else { return nil }
+        var info = PlayInfo(aid: record.aid, cid: 0, epid: 0)
+        info.coverURL = record.pic
+        return info
     }
 
     override func goDetail(with feed: DynamicFeedData) {

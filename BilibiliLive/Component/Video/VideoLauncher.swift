@@ -26,11 +26,17 @@ enum VideoLauncher {
     }
 
     static func play(_ info: PlayInfo, askResume: Bool = true, from presenter: UIViewController? = nil) {
+        var info = info
         let presenter = presenter ?? UIViewController.topMostViewController()
         // Open the CDN connections while the play URL is still being requested.
         BTRHTTPClient.shared.preconnect(hosts: BTRCDN.preconnectHosts(region: Settings.btrNodeRegion))
         // 普通视频：和列表预载共用缓存，预载好的播放地址和第一段直接用上。
         let shared = RowPrefetcher.shared
+        // 列表里没有 cid 的视频（例如关注动态）：用预载时查到的 cid，省掉播放器里再查一次。
+        if !info.isBangumi, !info.isCidVaild, info.aid > 0, let cid = shared.cachedCid(aid: info.aid) {
+            info.cid = cid
+            Diag.mark("PREFETCH cid_reused aid=\(info.aid) cid=\(cid)")
+        }
         let usePrefetch = Settings.prefetchRow && !info.isBangumi && (info.cid ?? 0) > 0
         let player = usePrefetch
             ? VideoPlayerViewController(playInfo: info, playContextCache: shared.contextCache, mediaWarmupManager: shared.warmup)

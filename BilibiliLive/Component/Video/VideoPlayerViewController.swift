@@ -191,6 +191,8 @@ class VideoPlayerViewController: CommonPlayerViewController {
     private var hasRetriedCurrentItem = false
     private var isStopping = false
     private var pendingAutoTriggeredInfoActionKey: String?
+    /// 这个播放器放过的视频（aid）。用列表预载的共享缓存时，退出只丢掉这几个。
+    private var playedAids = Set<Int>()
 
     init(playInfo: PlayInfo,
          playMode: VideoPlayerMode = .regular,
@@ -210,6 +212,7 @@ class VideoPlayerViewController: CommonPlayerViewController {
                                          previewMuted: previewMuted,
                                          startTimeOverride: startTimeOverride)
         currentRetryKey = playInfo.sequenceKey
+        playedAids.insert(playInfo.aid)
         super.init(nibName: nil, bundle: nil)
         if playMode == .preview {
             showsPlaybackControls = false
@@ -363,6 +366,7 @@ class VideoPlayerViewController: CommonPlayerViewController {
             hasRetriedCurrentItem = false
         }
         pendingAutoTriggeredInfoActionKey = nil
+        playedAids.insert(info.aid)
         onPlayInfoChanged?(info)
     }
 
@@ -373,8 +377,14 @@ class VideoPlayerViewController: CommonPlayerViewController {
         neighborPreloadTask = nil
         viewModel.cancelLoading()
         cancelable.removeAll()
-        Task { [mediaWarmupManager] in
-            await mediaWarmupManager?.cancelAll()
+        if let mediaWarmupManager, mediaWarmupManager === RowPrefetcher.shared.warmup {
+            // 列表预载的缓存是共享的：只丢掉这个播放器用过的视频，同一行（和上一行）其他视频保留，
+            // 返回列表后不用重下。
+            RowPrefetcher.shared.playerDidExit(playedAids: playedAids.filter { $0 > 0 })
+        } else {
+            Task { [mediaWarmupManager] in
+                await mediaWarmupManager?.cancelAll()
+            }
         }
     }
 

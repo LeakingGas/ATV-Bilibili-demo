@@ -79,18 +79,37 @@ actor PlayerMediaWarmupManager {
         self.fillDetail = fillDetail
     }
 
-    /// 只保留这些视频（sequenceKey）的预载，其余的停止下载并丢弃。
-    func retain(sequenceKeys: Set<String>) {
-        let keep: (String) -> Bool = { key in sequenceKeys.contains(String(key.split(separator: "#").first ?? "")) }
-        for (key, entry) in inFlight where !keep(key) {
+    /// 缓存键 "aid-cid-epid-season#模式" 里的 aid。
+    private static func aid(of key: String) -> Int {
+        Int(key.split(separator: "-").first ?? "") ?? 0
+    }
+
+    /// 只保留这些视频（aid）的预载，其余的停止下载并丢弃。返回丢弃的个数。
+    @discardableResult
+    func retain(aids: Set<Int>) -> Int {
+        drop { !aids.contains(Self.aid(of: $0)) }
+    }
+
+    /// 丢弃这些视频（aid）的预载（播放器用过的那个，代理已经随播放器关闭）。返回丢弃的个数。
+    @discardableResult
+    func evict(aids: Set<Int>) -> Int {
+        drop { aids.contains(Self.aid(of: $0)) }
+    }
+
+    private func drop(where shouldDrop: (String) -> Bool) -> Int {
+        var count = 0
+        for (key, entry) in inFlight where shouldDrop(key) {
             entry.task.cancel()
             inFlight[key] = nil
+            count += 1
         }
-        for (key, media) in prepared where !keep(key) {
+        for (key, media) in prepared where shouldDrop(key) {
             media.delegate.btrPlayback.invalidate()
             prepared[key] = nil
             accessOrder.removeAll { $0 == key }
+            count += 1
         }
+        return count
     }
 
     func preload(playInfo: PlayInfo) async {
