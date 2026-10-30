@@ -457,10 +457,10 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         let startedAt = started
         var flagOnMs: Double?, flagOffMs: Double?
         let center = NotificationCenter.default
-        let startObserver = center.addObserver(forName: AVDisplayManager.modeSwitchStartNotification, object: manager, queue: .main) { _ in
+        let startObserver = center.addObserver(forName: .AVDisplayManagerModeSwitchStart, object: manager, queue: .main) { _ in
             notes.markStart(Date().timeIntervalSince(startedAt) * 1000)
         }
-        let endObserver = center.addObserver(forName: AVDisplayManager.modeSwitchEndNotification, object: manager, queue: .main) { _ in
+        let endObserver = center.addObserver(forName: .AVDisplayManagerModeSwitchEnd, object: manager, queue: .main) { _ in
             notes.markEnd(Date().timeIntervalSince(startedAt) * 1000)
         }
         defer {
