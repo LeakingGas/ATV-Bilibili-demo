@@ -2,7 +2,7 @@
 
 Apple TV（tvOS）上的哔哩哔哩客户端，用系统播放器播放，视频经本地代理从多个 CDN 节点多线程下载。
 
-基于 [yichengchen/ATV-Bilibili-demo](https://github.com/yichengchen/ATV-Bilibili-demo) 修改，下载核心移植自 BTR。
+基于 [yichengchen/ATV-Bilibili-demo](https://github.com/yichengchen/ATV-Bilibili-demo) 修改，下载核心移植自 [Bilibili-thread-ripper（BTR，B 站线程撕裂者）](https://github.com/MrTangLuyao/Bilibili-thread-ripper)。
 
 > **本项目没有任何 Testflight 发放，也没有任何收费版本，从未在 App Store 或其他平台上架。**
 > 如果看到有人以收费方式提供本项目或基于本项目的应用，那是未经授权的行为，由此引发的安全风险与本项目无关。
@@ -53,7 +53,7 @@ Apple TV（tvOS）上的哔哩哔哩客户端，用系统播放器播放，视�
 ## 许可证和致谢
 
 - 本项目基于 [yichengchen/ATV-Bilibili-demo](https://github.com/yichengchen/ATV-Bilibili-demo)，以 **GPL-2.0** 发布，见 [LICENSE.md](LICENSE.md)。分发修改版时须保留许可证并提供对应源码（Actions 编译时会把该次提交的源码一并打包）。
-- 下载核心移植自 BTR，**MIT** 许可，原文和原始核心源码保存在 [ThirdParty/BTR](ThirdParty/BTR)，许可证随应用保留在 `BilibiliLive/BTR-LICENSE.txt`。移植细节见 [docs/BTR-PORT.md](docs/BTR-PORT.md)。
+- 下载核心移植自 [Bilibili-thread-ripper（BTR）](https://github.com/MrTangLuyao/Bilibili-thread-ripper)：一个为海外用户加速 B 站播放的浏览器扩展，把视频按字节范围拆开、从多个 CDN 节点并发下载。本项目把它的下载调度（分片、测速、节点选择、慢分片补发、自动并发）用 Swift 原生重写到 tvOS 上。**MIT** 许可，原文和原始核心源码保存在 [ThirdParty/BTR](ThirdParty/BTR)，许可证随应用保留在 `BilibiliLive/BTR-LICENSE.txt`。移植细节见 [docs/BTR-PORT.md](docs/BTR-PORT.md)。
 - 原项目的致谢：
   - App Icon [【22娘×33娘】亲爱的UP主，你怎么还在咕咕咕？](https://www.bilibili.com/video/BV1AB4y1k7em)
   - [thmatuza/MPEGDASHAVPlayerDemo](https://github.com/thmatuza/MPEGDASHAVPlayerDemo)
