@@ -302,10 +302,7 @@ class SettingsViewController: UIViewController {
 
             SectionModel(title: "其他") {
                 makeDLNACell()
-                Toggle(title: "港澳台解锁", setting: Settings.areaLimitUnlock, onChange: Settings.areaLimitUnlock.toggle())
-                TextField(title: "港澳台解析服务器", message: "为了安全考虑建议自建服务器，公共服务器可用性难保证，请多尝试几个。\n公共服务器请参考：http://985.so/mjq9u", current: Settings.areaLimitCustomServer, placeholder: "api.example.com") {
-                    Settings.areaLimitCustomServer = $0 ?? ""
-                }
+                // 港澳台解锁的开关和解析服务器不在设置里显示（绕开地区版权限制，公开仓库不提供入口）。代码保留，默认关闭。
             }
 
             SectionModel(title: "诊断") {
