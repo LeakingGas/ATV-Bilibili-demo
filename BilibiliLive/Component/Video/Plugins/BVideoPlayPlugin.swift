@@ -21,6 +21,8 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     private let playWithoutWaiting = Settings.playWithoutWaiting
     /// 不等缓冲模式下，播放因数据不足停住（不是用户暂停），数据一到就自动继续。
     private var stalledAwaitingData = false
+    /// 快速起播进行中：每个新播放器从这里开始，画面开始播放后结束，之后快进、卡顿都按正常模式处理。
+    private var fastStartActive = false
     private var lastImmediateKick = -Double.infinity
     private let isMuted: Bool
     private let mediaWarmupManager: PlayerMediaWarmupManager?
@@ -666,7 +668,9 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         observeAVState(player: player, item: item)
         if playWithoutWaiting {
             avStateObservers.append(NotificationCenter.default.addObserver(forName: .AVPlayerItemPlaybackStalled, object: item, queue: .main) { [weak self] _ in
-                self?.stalledAwaitingData = true
+                // 只在起播阶段接管；开始播放后交还系统播放器自己等缓冲。
+                guard let self, self.fastStartActive else { return }
+                self.stalledAwaitingData = true
                 BTRTrace.shared.event("playback_stalled",["position":player.currentTime().seconds])
                 // 不等缓冲模式下系统卡住时会直接变成「暂停」（画面上出现暂停符号）。
                 // 改为等待状态（显示加载圈），数据一到由 playIfDataArrived 立刻继续。
@@ -722,9 +726,14 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
     /// 不等缓冲模式：只要播放头前面有一点数据就立刻播，不等系统评估网速。
     private func playIfDataArrived(player: AVPlayer, item: AVPlayerItem, ahead: Double) {
         if player.timeControlStatus == .playing {
+            // 画面开始播放：快速起播结束，恢复正常缓冲（之后快进、卡顿由系统播放器自己等数据）。
             stalledAwaitingData = false
-            if player.automaticallyWaitsToMinimizeStalling { player.automaticallyWaitsToMinimizeStalling = false }
+            fastStartActive = false
+            player.automaticallyWaitsToMinimizeStalling = minimizeStalling
             if !isShadow, item.preferredForwardBufferDuration < 15 { item.preferredForwardBufferDuration = 15 }
+            BTRTrace.shared.event("fast_start_off", ["position": player.currentTime().seconds, "ahead": ahead,
+                                                     "waitsToMinimizeStalling": player.automaticallyWaitsToMinimizeStalling,
+                                                     "forwardBuffer": item.preferredForwardBufferDuration])
             return
         }
         guard item.status == .readyToPlay else { return }
@@ -754,7 +763,7 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             if start.isFinite && finish.isFinite && start <= end + 0.05 && finish > end { end = finish }
         }
         kickStartIfBuffered(player: player, ahead: max(0, end - position))
-        if playWithoutWaiting { playIfDataArrived(player: player, item: item, ahead: max(0, end - position)) }
+        if fastStartActive { playIfDataArrived(player: player, item: item, ahead: max(0, end - position)) }
         if player.timeControlStatus == .playing { markStartup("playing") }
         session.update(position: position, rate: btrLastRate,
             advancing: player.timeControlStatus == .playing,
@@ -1172,6 +1181,8 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
         }
         let player = AVPlayer(playerItem: playerItem)
         player.automaticallyWaitsToMinimizeStalling = playWithoutWaiting ? false : minimizeStalling
+        fastStartActive = playWithoutWaiting
+        stalledAwaitingData = false
         Diag.startupStep("av_player_created", ["waitsToMinimizeStalling": player.automaticallyWaitsToMinimizeStalling,
                                                "forwardBuffer": playerItem.preferredForwardBufferDuration])
         player.isMuted = isMuted

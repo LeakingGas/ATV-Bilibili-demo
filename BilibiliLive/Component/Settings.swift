@@ -68,7 +68,8 @@ enum Settings {
     @UserDefault("Settings.prefetchRow", defaultValue: true)
     static var prefetchRow: Bool
 
-    /// 不等缓冲：数据一到就开播 / 卡顿后数据一到就继续，不让系统播放器先评估网速、攒缓冲。
+    /// 快速起播：起播时不等缓冲，数据一到就出画面；开始播放后恢复正常缓冲（快进、卡顿按系统默认方式等数据）。
+    /// 键名沿用旧的「边下边播」，已开启的用户不受影响。
     @UserDefault("Settings.playWithoutWaiting", defaultValue: false)
     static var playWithoutWaiting: Bool
 
