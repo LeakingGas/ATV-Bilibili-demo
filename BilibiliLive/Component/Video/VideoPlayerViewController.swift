@@ -236,6 +236,9 @@ class VideoPlayerViewController: CommonPlayerViewController {
             viewModel.onLoadingCover = { [weak self] cover in
                 self?.showLoadingBackdrop(cover: cover)
             }
+            viewModel.onLateCover = { [weak self] cover in
+                self?.fillLoadingCover(cover)
+            }
         }
         if playMode == .regular, askResume {
             viewModel.resumeChooser = { [weak self] prompt in

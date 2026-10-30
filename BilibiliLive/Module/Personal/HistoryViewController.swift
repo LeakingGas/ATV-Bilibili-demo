@@ -21,7 +21,7 @@ class HistoryViewController: UIViewController {
     }
 
     func goDetail(with history: HistoryData) {
-        VideoLauncher.play(aid: history.aid, cid: history.cid ?? 0, from: self)
+        VideoLauncher.play(aid: history.aid, cid: history.cid ?? 0, cover: history.pic, from: self)
     }
 
     override func viewWillAppear(_ animated: Bool) {

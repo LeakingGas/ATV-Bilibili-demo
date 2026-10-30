@@ -120,7 +120,7 @@ final class FollowsGridViewController: StandardVideoCollectionViewController<Dyn
 
     override func goDetail(with feed: DynamicFeedData) {
         let epid = feed.modules.module_dynamic.major?.pgc?.epid
-        VideoLauncher.play(aid: feed.aid, cid: feed.cid, epid: epid, from: self)
+        VideoLauncher.play(aid: feed.aid, cid: feed.cid, epid: epid, cover: feed.pic, from: self)
     }
 }
 

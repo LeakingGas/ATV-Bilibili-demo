@@ -440,21 +440,60 @@ class BVideoPlayPlugin: NSObject, CommonPlayerPlugin {
             BTRTrace.shared.event("hdr_display_switch", fields)
             return
         }
+        // 以系统的「切换开始 / 结束」通知为准（设备日志：只查「正在切换」状态时两次都一直等到 9 秒上限，
+        // 另一次 2.9 秒就好，分不清是电视真慢还是状态没及时变回来）。状态查询保留作对照，9 秒上限兜底。
         let started = Date()
+        func ms() -> Double { Date().timeIntervalSince(started) * 1000 }
+        final class NoteTimes: @unchecked Sendable {
+            private let lock = NSLock()
+            private var startValue: Double?
+            private var endValue: Double?
+            var start: Double? { lock.lock(); defer { lock.unlock() }; return startValue }
+            var end: Double? { lock.lock(); defer { lock.unlock() }; return endValue }
+            func markStart(_ v: Double) { lock.lock(); if startValue == nil { startValue = v }; lock.unlock() }
+            func markEnd(_ v: Double) { lock.lock(); if endValue == nil { endValue = v }; lock.unlock() }
+        }
+        let notes = NoteTimes()
+        let startedAt = started
+        var flagOnMs: Double?, flagOffMs: Double?
+        let center = NotificationCenter.default
+        let startObserver = center.addObserver(forName: AVDisplayManager.modeSwitchStartNotification, object: manager, queue: .main) { _ in
+            notes.markStart(Date().timeIntervalSince(startedAt) * 1000)
+        }
+        let endObserver = center.addObserver(forName: AVDisplayManager.modeSwitchEndNotification, object: manager, queue: .main) { _ in
+            notes.markEnd(Date().timeIntervalSince(startedAt) * 1000)
+        }
+        defer {
+            center.removeObserver(startObserver)
+            center.removeObserver(endObserver)
+        }
         manager.preferredDisplayCriteria = criteria
         didSetDisplayCriteria = true
         displayManager = manager
-        // 切换是异步开始的：先等它开始（最多 1 秒），再等它结束（最多 8 秒）。
-        var began = false
-        while Date().timeIntervalSince(started) < 1, !began {
-            began = manager.isDisplayModeSwitchInProgress
-            if !began { try? await Task.sleep(nanoseconds: 50_000_000) }
+        // 先等切换开始（通知或状态，最多 1 秒），再等结束（结束通知，或状态变回来，最多 9 秒）。
+        while ms() < 1000, notes.start == nil, flagOnMs == nil {
+            if manager.isDisplayModeSwitchInProgress { flagOnMs = ms() }
+            else { try? await Task.sleep(nanoseconds: 50_000_000) }
         }
-        while began, manager.isDisplayModeSwitchInProgress, Date().timeIntervalSince(started) < 9 {
-            try? await Task.sleep(nanoseconds: 100_000_000)
+        let began = notes.start != nil || flagOnMs != nil
+        var endedBy = "-"
+        while began, ms() < 9000 {
+            let inProgress = manager.isDisplayModeSwitchInProgress
+            if inProgress, flagOnMs == nil { flagOnMs = ms() }
+            if !inProgress, flagOnMs != nil, flagOffMs == nil { flagOffMs = ms() }
+            if notes.end != nil { endedBy = "end_notification"; break }
+            if flagOffMs != nil, notes.start == nil { endedBy = "flag"; break }
+            try? await Task.sleep(nanoseconds: 50_000_000)
         }
+        if began, endedBy == "-" { endedBy = "timeout" }
         fields["result"] = began ? "switched" : "no_switch_needed"
-        fields["waitMs"] = Date().timeIntervalSince(started) * 1000
+        fields["endedBy"] = endedBy
+        fields["waitMs"] = ms()
+        fields["startNoteMs"] = notes.start ?? -1
+        fields["endNoteMs"] = notes.end ?? -1
+        fields["flagOnMs"] = flagOnMs ?? -1
+        fields["flagOffMs"] = flagOffMs ?? -1
+        fields["flagNow"] = manager.isDisplayModeSwitchInProgress
         BTRTrace.shared.event("hdr_display_switch", fields)
     }
 

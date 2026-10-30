@@ -56,7 +56,7 @@ class ToViewViewController: StandardVideoCollectionViewController<ToViewData> {
     }
 
     override func goDetail(with feed: ToViewData) {
-        VideoLauncher.play(aid: feed.aid, cid: feed.cid, from: self)
+        VideoLauncher.play(aid: feed.aid, cid: feed.cid, cover: feed.pic, from: self)
     }
 
     private func confirmClearWatched() {

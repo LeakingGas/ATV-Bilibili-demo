@@ -9,9 +9,12 @@
 import UIKit
 
 enum VideoLauncher {
-    static func play(aid: Int, cid: Int? = nil, epid: Int? = nil, from presenter: UIViewController? = nil) {
+    /// - cover: 列表卡片上的封面，加载时立刻用作毛玻璃背景（不必等视频详情）。
+    static func play(aid: Int, cid: Int? = nil, epid: Int? = nil, cover: URL? = nil, from presenter: UIViewController? = nil) {
         let epid = (epid ?? 0) > 0 ? epid : nil
-        play(PlayInfo(aid: aid, cid: cid ?? 0, epid: epid ?? 0), from: presenter)
+        var info = PlayInfo(aid: aid, cid: cid ?? 0, epid: epid ?? 0)
+        info.coverURL = cover
+        play(info, from: presenter)
     }
 
     static func play(seasonId: Int, from presenter: UIViewController? = nil) {

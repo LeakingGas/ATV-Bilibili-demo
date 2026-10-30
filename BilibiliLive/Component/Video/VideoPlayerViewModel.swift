@@ -54,6 +54,8 @@ class VideoPlayerViewModel {
     var onPlayInfoChanged: ((PlayInfo) -> Void)?
     /// 开始加载 / 拿到详情时的封面，用来显示加载背景。
     var onLoadingCover: ((URL?) -> Void)?
+    /// 封面晚到（视频详情晚到）时补到加载背景上（背景已经消失就不动）。
+    var onLateCover: ((URL) -> Void)?
     var sequenceProvider: VideoSequenceProvider?
     /// 有观看记录时询问继续还是从头；返回 nil 表示不询问（直接续播）。
     var resumeChooser: ((ResumePrompt) async -> ResumeChoice)?
@@ -205,6 +207,7 @@ class VideoPlayerViewModel {
                 guard let detail else { return }
                 data.detail = detail
                 videoDetail = detail
+                if resolvedPlayInfo.coverURL == nil, let pic = detail.pic { onLateCover?(pic) }
                 var late = [CommonPlayerPlugin]()
                 if playMode == .regular, !hasBuiltSequence {
                     hasBuiltSequence = true

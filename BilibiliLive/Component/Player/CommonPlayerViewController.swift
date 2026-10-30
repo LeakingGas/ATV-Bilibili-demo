@@ -101,6 +101,12 @@ class CommonPlayerViewController: UIViewController {
         loadingBackdrop.show(cover: cover)
     }
 
+    /// 封面晚到（例如视频详情晚到）：加载背景还在且没有封面时补上。
+    func fillLoadingCover(_ cover: URL) {
+        let filled = loadingBackdrop.fillCover(cover)
+        Diag.mark("PLAYER \(Diag.id(self)) late cover filled=\(filled)")
+    }
+
     /// 画面出来了，淡出加载背景。
     func loadingBackdropFrameReady() {
         loadingBackdrop.hide()
@@ -826,6 +832,13 @@ final class PlayerLoadingBackdropView: UIView {
             imageView.kf.cancelDownloadTask()
             imageView.image = nil
         }
+    }
+
+    /// 加载背景还显示着、但没有封面时补上封面（视频详情晚到）；画面已经出来就不动。
+    func fillCover(_ cover: URL) -> Bool {
+        guard !isHidden, alpha > 0, currentURL == nil else { return false }
+        show(cover: cover)
+        return true
     }
 
     func hide() {
