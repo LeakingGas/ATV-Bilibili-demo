@@ -1,5 +1,7 @@
 # Bili-ATV-MultiThread
 
+### 让 Apple TV 告别 B 站海外卡顿
+
 Apple TV（tvOS）上的哔哩哔哩客户端，用系统播放器播放，视频经本地代理从多个 CDN 节点多线程下载。
 
 基于 [yichengchen/ATV-Bilibili-demo](https://github.com/yichengchen/ATV-Bilibili-demo) 修改，下载核心移植自 [Bilibili-thread-ripper（BTR，B 站线程撕裂者）](https://github.com/MrTangLuyao/Bilibili-thread-ripper)。
